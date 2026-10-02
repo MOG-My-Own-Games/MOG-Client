@@ -25,10 +25,16 @@ $py = "build\venv\Scripts\python.exe"
 & $py -m pip install --quiet --upgrade pip
 & $py -m pip install --quiet ".[gui,build]"
 
+# Absolute paths: PyInstaller resolves relative ones against the spec dir (build\exe).
+$root = (Get-Location).Path
+$icon = Join-Path $root "packaging\mog-client.png"
+$entry = Join-Path $root "packaging\entry.py"
+
 & $py -m PyInstaller --noconfirm --clean --onefile --windowed --name "MOG-Client-$Version" `
-  --icon packaging\mog-client.png `
-  --distpath dist --workpath build\exe\work --specpath build\exe `
-  --paths . packaging\entry.py
+  --icon $icon `
+  --distpath (Join-Path $root "dist") --workpath (Join-Path $root "build\exe\work") `
+  --specpath (Join-Path $root "build\exe") `
+  --paths $root $entry
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 Write-Host "Built dist\MOG-Client-$Version.exe"
