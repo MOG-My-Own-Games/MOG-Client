@@ -1,11 +1,13 @@
 [project]
 name = "mog-client"
 version = "0.1.0"
-description = "MOG Client: CLI to drive a MOG-Server install (stdlib only)"
+description = "MOG Client: GUI and CLI to browse, install and launch games from a MOG-Server"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+build = ["pyinstaller>=6.6", "pillow"]
 dev = ["mcp[cli]>=1.2", "httpx>=0.27"]
 
 [project.scripts]
