@@ -19,7 +19,7 @@ mkdir -p build dist
 
 python3 -m venv build/venv
 build/venv/bin/pip install --quiet --upgrade pip
-build/venv/bin/pip install --quiet ".[gui,build]"
+build/venv/bin/pip install --quiet ".[gui,build]" patchelf
 
 build/venv/bin/pyinstaller --noconfirm --clean --onedir --name mog-client \
   --distpath build/appimage/pyi --workpath build/appimage/work --specpath build/appimage \
@@ -28,6 +28,15 @@ build/venv/bin/pyinstaller --noconfirm --clean --onedir --name mog-client \
 APPDIR=build/appimage/MOG-Client.AppDir
 mkdir -p "$APPDIR/usr/bin"
 cp -a build/appimage/pyi/mog-client/. "$APPDIR/usr/bin/"
+
+# Some Python builds (e.g. the ones GitHub's setup-python ships) mark libpython
+# as needing an executable stack, which current glibc refuses to load
+# ("cannot enable executable stack as shared object requires"). Nothing in it
+# actually needs one, so clear the flag on every bundled library.
+find "$APPDIR/usr/bin" -type f -name '*.so*' ! -type l -print0 |
+  while IFS= read -r -d '' lib; do
+    build/venv/bin/patchelf --clear-execstack "$lib" 2>/dev/null || true
+  done
 cp packaging/mog-client.desktop "$APPDIR/mog-client.desktop"
 cp packaging/mog-client.png "$APPDIR/mog-client.png"
 ln -sf mog-client.png "$APPDIR/.DirIcon"
