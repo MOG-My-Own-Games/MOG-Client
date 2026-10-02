@@ -20,16 +20,25 @@ change is not itself a request to commit it.
 
 ```
 mog_client/
-  cli.py        Everything: HTTP client, stream-install loop, argparse entry
-                 point (console script `mog`, see pyproject.toml)
+  api.py        HTTP client (Client, MogClient), shared by CLI and GUI
+  transfer.py   Stream-install loops (download, verify, poll) with log callbacks
+  cli.py        argparse entry point (console script `mog`); no action = GUI
+  config.py     Settings + installed-games record (JSON under XDG dirs)
+  manager.py    Install / finish-setup / uninstall workflows (GUI side)
+  launcher.py   Executable discovery (redists excluded), launch, .desktop entry
+  steam.py      shortcuts.vdf read/write + grid artwork
+  scrape.py     Artwork URLs from the server's already-scraped metadata
+  gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
+packaging/      PyInstaller entry point, .desktop file and icon
+scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
+.github/workflows/release.yml  tag push -> AppImage + exe -> DRAFT release
 mcp/
   server.py     Dev-loop MCP wrapping the CLI's own commands
 ```
 
-Kept as a single file by design (stdlib-only, no internal layering needed
-yet) - split it only when a GUI client needs to reuse the HTTP client
-(`MogClient`) independently of the CLI's own argparse/print-based UI, at
-which point `MogClient` moves to its own module first.
+`mog` with `--game-id`/`--list`/`--launch` is the CLI; with no action (or
+`--gui`) it opens the GUI. Everything except `gui/` stays stdlib-only; PySide6
+lives in the `gui` extra.
 
 ## Conventions
 
@@ -40,10 +49,20 @@ which point `MogClient` moves to its own module first.
 - Same naming/comment-style conventions as MOG-Server (short comments
   focused on why, not what).
 
+- **Single window.** The GUI is one `QMainWindow` with a page stack
+  (`MainWindow.push`/`back`). Never open a `QDialog`, `QMessageBox` or native
+  file dialog: settings, confirmations, the executable picker and the file
+  browser are pages. Back (button, Esc, gamepad B) pops the stack and installs
+  keep running on worker threads meanwhile. Every page must be usable with
+  arrows + Enter only.
+
 ## Commands
 
 ```bash
-pip install -e .
+pip install -e '.[gui]'
+mog                      # GUI
+mog --list
+mog --launch 1
 mog --base http://localhost:5000 --user admin --pass <password> --game-id 1
 ```
 
