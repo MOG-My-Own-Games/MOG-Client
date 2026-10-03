@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from mog_client import net
 from mog_client.version import UPDATE_METHOD, __version__
 
 REPO = "MOG-My-Own-Games/MOG-Client"
@@ -37,8 +38,13 @@ class UpdateInfo:
     page_url: str
 
 
+def supported() -> bool:
+    """This build can replace itself (see the UPDATE_METHOD build flag)."""
+    return UPDATE_METHOD in ASSET_SUFFIX and __version__ != "dev"
+
+
 def enabled() -> bool:
-    return UPDATE_METHOD in ASSET_SUFFIX and __version__ != "dev" and not os.environ.get(DISABLE_ENV)
+    return supported() and not os.environ.get(DISABLE_ENV)
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -52,7 +58,7 @@ def is_newer(latest: str, current: str) -> bool:
 
 
 def _open(url: str):
-    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "mog-client"}), timeout=30)
+    return net.urlopen(urllib.request.Request(url, headers={"User-Agent": "mog-client"}), timeout=30)
 
 
 def _get_json(url: str) -> dict:

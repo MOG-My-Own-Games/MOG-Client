@@ -47,6 +47,8 @@ class Settings:
     games_dir: str = ""
     # "auto", "faugus", "umu", "wine" (Linux) or "native" (Windows)
     launcher: str = "auto"
+    # Look for a newer release at startup (only in builds that can self-update).
+    check_updates: bool = True
 
     @property
     def games_path(self) -> Path:
