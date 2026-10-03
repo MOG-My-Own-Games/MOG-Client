@@ -31,7 +31,7 @@ mog_client/
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
-.github/workflows/release.yml  push to main -> GitVersion -> AppImage + exe -> DRAFT release v<version>
+.github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>
 mcp/
   server.py     Dev-loop MCP wrapping the CLI's own commands
 ```

@@ -39,7 +39,7 @@ finish before files start arriving. Run `mog --help` for every option
 ## Releases
 
 Every push to `main` runs `.github/workflows/release.yml`. It computes the
-version with GitVersion (from conventional commits and the branch name), builds
+version with `scripts/version.py` (from conventional commits and the branch name), builds
 a Linux AppImage and a Windows exe and attaches them (plus `SHA256SUMS.txt`)
 to a **draft** release tagged `v<version>`. The version is embedded in the
 build (shown in Settings) but not in the file names. Nothing goes public until

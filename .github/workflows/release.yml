@@ -1,6 +1,6 @@
 name: Release
 
-# Every push to main computes the version with GitVersion, builds the AppImage
+# Every push to main computes the version with scripts/version.py, builds the AppImage
 # and the Windows exe and attaches them to a DRAFT release tagged v<version>.
 # Nothing is published until someone reviews the draft on GitHub and clicks
 # "Publish release" (which is also what creates the tag).
@@ -16,16 +16,13 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      semver: ${{ steps.gv.outputs.semVer }}
+      semver: ${{ steps.gv.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # GitVersion needs the full history
-      - uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: 6.x
-      - uses: gittools/actions/gitversion/execute@v3
-        id: gv
+          fetch-depth: 0 # version script needs the full history
+      - id: gv
+        run: python3 scripts/version.py
 
   appimage:
     needs: version
