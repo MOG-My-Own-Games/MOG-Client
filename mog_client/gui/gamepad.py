@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ctypes
 import glob
+import os
+import re
 import struct
 import sys
 import threading
@@ -17,11 +19,41 @@ import time
 from typing import Callable
 
 # Logical buttons handed to the callback.
-UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU = (
-    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu"
+UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT = (
+    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit"
 )
 
-_JS_BUTTONS = {0: ACCEPT, 1: BACK, 3: MENU, 4: PAGE_PREV, 5: PAGE_NEXT, 7: MENU}
+# Start (7) and Select (6) are handled by _Combo.
+_JS_BUTTONS = {0: ACCEPT, 1: BACK, 3: MENU, 4: PAGE_PREV, 5: PAGE_NEXT}
+_JS_SELECT, _JS_START = 6, 7
+XBOX, PLAYSTATION, NINTENDO, STEAM = "xbox", "playstation", "nintendo", "steam"
+_FAMILY_PATTERNS = (
+    (STEAM, re.compile(r"steam|valve")),
+    (PLAYSTATION, re.compile(r"sony|playstation|dualshock|dualsense|ps[345]|wireless controller")),
+    (NINTENDO, re.compile(r"nintendo|pro controller|joy-?con")),
+)
+
+
+def family_of(name: str, deck: bool | None = None) -> str:
+    """Controller family from the device name, for picking button glyphs. Steam
+    Input hands the app a virtual Xbox pad, which on a Deck is the Deck itself."""
+    lowered = name.lower()
+    for family, pattern in _FAMILY_PATTERNS:
+        if pattern.search(lowered):
+            return family
+    if deck is None:
+        deck = os.environ.get("SteamDeck") == "1"
+    return STEAM if deck else XBOX
+
+
+def _joydev_name(path: str) -> str:
+    try:
+        with open(f"/sys/class/input/{os.path.basename(path)}/device/name") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 _DEADZONE = 16000
 _REPEAT_DELAY, _REPEAT_RATE = 0.4, 0.09
 
@@ -48,6 +80,32 @@ class _Repeater:
                 self.emit(name)
 
 
+class _Combo:
+    """Start+Select quits; Start alone opens the menu once released, so the
+    menu does not flash up before the combo completes."""
+
+    def __init__(self, emit: Callable[[str], None]):
+        self.emit = emit
+        self.start = self.select = self.used = False
+
+    def set_start(self, down: bool) -> None:
+        if down:
+            self.start = True
+            if self.select:
+                self.used = True
+                self.emit(QUIT)
+        else:
+            if self.start and not self.used:
+                self.emit(MENU)
+            self.start = self.used = False
+
+    def set_select(self, down: bool) -> None:
+        self.select = down
+        if down and self.start and not self.used:
+            self.used = True
+            self.emit(QUIT)
+
+
 class _Axes:
     """Turns raw axis values into directional presses/releases."""
 
@@ -68,11 +126,14 @@ class _Axes:
                 self.rep.press(name)
 
 
-def _run_joydev(emit: Callable[[str], None], stop: threading.Event) -> None:
-    import os
+def _run_joydev(
+    emit: Callable[[str], None], stop: threading.Event, on_connection: Callable[[bool, str], None]
+) -> None:
     import select
 
     rep = _Repeater(emit)
+    combo = _Combo(emit)
+    connected = False
     sticks, hats = _Axes(rep), _Axes(rep)
     fds: dict[int, str] = {}
     next_scan = 0.0
@@ -85,6 +146,9 @@ def _run_joydev(emit: Callable[[str], None], stop: threading.Event) -> None:
                         fds[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = path
                     except OSError:
                         pass
+        if bool(fds) != connected:
+            connected = bool(fds)
+            on_connection(connected, family_of(_joydev_name(next(iter(fds.values())))) if fds else XBOX)
         if not fds:
             stop.wait(1.0)
             continue
@@ -100,10 +164,13 @@ def _run_joydev(emit: Callable[[str], None], stop: threading.Event) -> None:
                 _, value, kind, number = struct.unpack_from("<IhBB", data, off)
                 if kind & 0x80:  # synthetic init event
                     continue
-                if kind == 0x01 and value:
-                    name = _JS_BUTTONS.get(number)
-                    if name:
-                        emit(name)
+                if kind == 0x01:
+                    if number == _JS_START:
+                        combo.set_start(bool(value))
+                    elif number == _JS_SELECT:
+                        combo.set_select(bool(value))
+                    elif value and number in _JS_BUTTONS:
+                        emit(_JS_BUTTONS[number])
                 elif kind == 0x02:
                     if number == 0:
                         sticks.set("x", value, LEFT, RIGHT)
@@ -130,12 +197,17 @@ class _XInputState(ctypes.Structure):
 
 
 _XI_BUTTONS = {
-    0x0001: UP, 0x0002: DOWN, 0x0004: LEFT, 0x0008: RIGHT, 0x0010: MENU,
+    0x0001: UP, 0x0002: DOWN, 0x0004: LEFT, 0x0008: RIGHT,
     0x0100: PAGE_PREV, 0x0200: PAGE_NEXT, 0x1000: ACCEPT, 0x2000: BACK,
 }
 
 
-def _run_xinput(emit: Callable[[str], None], stop: threading.Event) -> None:
+_XI_START, _XI_BACK = 0x0010, 0x0020
+
+
+def _run_xinput(
+    emit: Callable[[str], None], stop: threading.Event, on_connection: Callable[[bool, str], None]
+) -> None:
     lib = None
     for dll in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
         try:
@@ -147,12 +219,26 @@ def _run_xinput(emit: Callable[[str], None], stop: threading.Event) -> None:
         return
     rep = _Repeater(emit)
     sticks = _Axes(rep)
+    combo = _Combo(emit)
     previous = 0
+    connected = False
     state = _XInputState()
     while not stop.is_set():
-        if lib.XInputGetState(0, ctypes.byref(state)) == 0:
+        present = lib.XInputGetState(0, ctypes.byref(state)) == 0
+        if present != connected:
+            connected = present
+            on_connection(connected, family_of("xinput"))
+        if present:
             pressed = state.buttons & ~previous
             released = previous & ~state.buttons
+            if pressed & _XI_START:
+                combo.set_start(True)
+            if released & _XI_START:
+                combo.set_start(False)
+            if pressed & _XI_BACK:
+                combo.set_select(True)
+            if released & _XI_BACK:
+                combo.set_select(False)
             for mask, name in _XI_BUTTONS.items():
                 if name in (UP, DOWN, LEFT, RIGHT):
                     if pressed & mask:
@@ -168,10 +254,11 @@ def _run_xinput(emit: Callable[[str], None], stop: threading.Event) -> None:
         stop.wait(0.016)
 
 
-def start(emit: Callable[[str], None]) -> threading.Event:
-    """Start the reader thread; set the returned event to stop it."""
+def start(emit: Callable[[str], None], on_connection: Callable[[bool, str], None]) -> threading.Event:
+    """Start the reader thread; set the returned event to stop it. `on_connection`
+    is called from that thread with (connected, family) whenever a pad appears or goes away."""
     stop = threading.Event()
     target = _run_xinput if sys.platform == "win32" else _run_joydev if sys.platform.startswith("linux") else None
     if target:
-        threading.Thread(target=target, args=(emit, stop), daemon=True, name="gamepad").start()
+        threading.Thread(target=target, args=(emit, stop, on_connection), daemon=True, name="gamepad").start()
     return stop
