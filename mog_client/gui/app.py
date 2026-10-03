@@ -407,7 +407,6 @@ class KeyboardPage(Page):
         self.display.setStyleSheet("font-size: 22px; padding: 10px; background: #1e232b; border-radius: 8px;")
         self.display.setWordWrap(True)
         board = QWidget()
-        board.setMaximumWidth(960)
         rows = QVBoxLayout(board)
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(6)
@@ -425,7 +424,7 @@ class KeyboardPage(Page):
         lay = QVBoxLayout(self)
         lay.addStretch()
         lay.addWidget(self.display)
-        lay.addWidget(board, 0, Qt.AlignHCenter)
+        lay.addWidget(board)
         self._refresh()
 
     def focus_default(self) -> None:
@@ -433,7 +432,7 @@ class KeyboardPage(Page):
 
     def _refresh(self) -> None:
         shown = "\u2022" * len(self.buffer.text) if self.password else self.buffer.text
-        self.display.setText(shown + "|")
+        self.display.setText(shown[: self.buffer.pos] + "|" + shown[self.buffer.pos :])
         for row in self.keys:
             for btn in row:
                 if len(btn.key) == 1:
@@ -448,9 +447,14 @@ class KeyboardPage(Page):
         if result == keyboard.DONE:
             if isinstance(self.target, QLineEdit):
                 self.target.setText(self.buffer.text)
+                self.target.setCursorPosition(self.buffer.pos)
             else:
                 self.target.setPlainText(self.buffer.text)
         self.target.setFocus()
+
+    def move_cursor(self, delta: int) -> None:
+        self.buffer.move(delta)
+        self._refresh()
 
     def move(self, at: tuple[int, int], d_row: int, d_col: int) -> None:
         r, c = keyboard.neighbour(*at, d_row, d_col)
@@ -460,8 +464,7 @@ class KeyboardPage(Page):
         if e.key() == Qt.Key_Backspace:
             self.press(keyboard.BACKSPACE)
         elif e.text() and e.text().isprintable():
-            for ch in e.text():
-                self.buffer.text += ch
+            self.buffer.insert(e.text())
             self._refresh()
         else:
             super().keyPressEvent(e)
@@ -1257,6 +1260,20 @@ class MainWindow(QMainWindow):
         if name == gamepad.QUIT:
             self.quit_app()
             return
+        page = self.current_page()
+        if isinstance(page, KeyboardPage):
+            if name == gamepad.PAGE_PREV:
+                page.move_cursor(-1)
+            elif name == gamepad.PAGE_NEXT:
+                page.move_cursor(1)
+            elif name == gamepad.TRIGGER_R:
+                page.press(keyboard.DONE)
+            elif name == gamepad.REFRESH:
+                page.press(keyboard.BACKSPACE)
+            elif name == gamepad.SEARCH:
+                page.press(keyboard.SPACE)
+            else:
+                self._post_key(name)
         if name in (gamepad.REFRESH, gamepad.SEARCH):
             if self.current_page() is self.library:
                 if name == gamepad.REFRESH:
@@ -1283,8 +1300,13 @@ class MainWindow(QMainWindow):
             if name == gamepad.ACCEPT and isinstance(focus, QLineEdit):
                 focus.focusNextPrevChild(True)
                 return
-        target = popup or focus or self.current_page()
-        key = _KEYS[name]
+        self._post_key(name)
+
+    def _post_key(self, name: str) -> None:
+        key = _KEYS.get(name)
+        if key is None:
+            return
+        target = QApplication.activePopupWidget() or QApplication.focusWidget() or self.current_page()
         for kind in (QEvent.KeyPress, QEvent.KeyRelease):
             QApplication.postEvent(target, QKeyEvent(kind, key, Qt.NoModifier))
 

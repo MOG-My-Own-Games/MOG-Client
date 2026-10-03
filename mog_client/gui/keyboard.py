@@ -17,24 +17,37 @@ WIDE = {SHIFT: 2, BACKSPACE: 2, SPACE: 4, DONE: 2, CANCEL: 2}
 
 
 class TextBuffer:
-    """The text being edited; Shift upper-cases the next letter only."""
+    """The text being edited with a cursor; Shift upper-cases the next letter only."""
 
     def __init__(self, text: str = "") -> None:
         self.text = text
+        self.pos = len(text)
         self.shift = False
+
+    def insert(self, chars: str) -> None:
+        self.text = self.text[: self.pos] + chars + self.text[self.pos :]
+        self.pos += len(chars)
+
+    def backspace(self) -> None:
+        if self.pos:
+            self.text = self.text[: self.pos - 1] + self.text[self.pos :]
+            self.pos -= 1
+
+    def move(self, delta: int) -> None:
+        self.pos = min(max(self.pos + delta, 0), len(self.text))
 
     def press(self, key: str) -> str | None:
         """Apply a key; returns DONE/CANCEL when the keyboard should close."""
         if key == SHIFT:
             self.shift = not self.shift
         elif key == BACKSPACE:
-            self.text = self.text[:-1]
+            self.backspace()
         elif key == SPACE:
-            self.text += " "
+            self.insert(" ")
         elif key in (DONE, CANCEL):
             return key
         else:
-            self.text += key.upper() if self.shift else key
+            self.insert(key.upper() if self.shift else key)
             self.shift = False
         return None
 

@@ -28,3 +28,25 @@ def test_navigation_wraps_and_keeps_position():
     assert neighbour(0, 0, -1, 0)[0] == len(keyboard.ROWS) - 1
     row, col = neighbour(1, 9, 1, 0)
     assert row == 2 and col == len(keyboard.ROWS[2]) - 1
+
+
+def test_cursor_moves_and_edits_in_place():
+    buf = TextBuffer("abcd")
+    buf.move(-2)
+    buf.press("x")
+    assert (buf.text, buf.pos) == ("abxcd", 3)
+    buf.press(keyboard.BACKSPACE)
+    assert (buf.text, buf.pos) == ("abcd", 2)
+    buf.move(-10)
+    assert buf.pos == 0
+    buf.press(keyboard.BACKSPACE)
+    assert buf.text == "abcd"
+    buf.move(10)
+    assert buf.pos == 4
+
+
+def test_physical_typing_inserts_at_the_cursor():
+    buf = TextBuffer("ac")
+    buf.move(-1)
+    buf.insert("b")
+    assert buf.text == "abc"
