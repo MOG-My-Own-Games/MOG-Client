@@ -48,6 +48,10 @@ LAUNCHER_LABELS = {
 
 
 def _flatpak_has(app_id: str) -> bool:
+    # Install directories first: cheap, and `flatpak info` can fail in a minimal environment.
+    for root in (Path.home() / ".local/share/flatpak/app", Path("/var/lib/flatpak/app")):
+        if (root / app_id).is_dir():
+            return True
     if not shutil.which("flatpak"):
         return False
     return subprocess.run(["flatpak", "info", app_id], capture_output=True).returncode == 0
