@@ -12,6 +12,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from mog_client import net
+
 POLL_INTERVAL = 3
 MANIFEST_INTERVAL = 3
 
@@ -62,7 +64,7 @@ class Client:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, method=method, headers=self._headers(headers))
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+            with net.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return resp.status, resp.read(), dict(resp.headers)
         except urllib.error.HTTPError as e:
             return e.code, e.read(), dict(e.headers)
@@ -270,7 +272,7 @@ def fetch_url(url: str, timeout: float = 30.0) -> bytes:
     provider, not by the MOG-Server, so no auth header)."""
     req = urllib.request.Request(url, headers={"User-Agent": "mog-client/0.2"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with net.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.URLError as e:
         raise RuntimeError(f"fetch {url}: {e}") from e
