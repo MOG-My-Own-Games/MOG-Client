@@ -91,7 +91,7 @@ def run_install(
     watcher.start()
     # The download, not the server's installer, decides when we're finished.
     _, finished = download_all_files(
-        client, gid, out_dir, stop, session_id, log=log, warn=log, on_bytes=on_bytes, server_done=server_done
+        client, gid, out_dir, stop, session_id, log=log, warn=log, on_bytes=on_bytes, server_done=server_done,
     )
     watcher.join(timeout=10)
     if not finished:

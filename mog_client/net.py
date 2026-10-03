@@ -4,9 +4,12 @@ not, which fails every HTTPS request with CERTIFICATE_VERIFY_FAILED."""
 
 from __future__ import annotations
 
+import http.client
 import os
 import ssl
+import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from functools import lru_cache
 
@@ -55,3 +58,53 @@ def _opener() -> urllib.request.OpenerDirector:
 
 def urlopen(request: urllib.request.Request | str, timeout: float | None = None):
     return _opener().open(request, timeout=timeout)
+
+
+# One persistent connection per thread and host: a download of many small files
+# otherwise pays a TCP (and TLS) handshake for every file, which dominates on a
+# link with any latency.
+_local = threading.local()
+
+
+def _connection_key(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.netloc
+
+
+def pooled_request(
+    method: str, url: str, headers: dict[str, str], timeout: float
+) -> http.client.HTTPResponse:
+    """Send a request over this thread's persistent connection and return the
+    response, still to be read. Read it to the end to keep the connection for the
+    next request; after an early stop call `discard(url)`."""
+    scheme, netloc = _connection_key(url)
+    parts = urllib.parse.urlsplit(url)
+    target = parts.path + (f"?{parts.query}" if parts.query else "")
+    conns: dict = _local.__dict__.setdefault("conns", {})
+    for attempt in (1, 2):
+        conn = conns.get((scheme, netloc))
+        reused = conn is not None
+        if conn is None:
+            if scheme == "https":
+                conn = http.client.HTTPSConnection(netloc, timeout=timeout, context=ssl_context())
+            else:
+                conn = http.client.HTTPConnection(netloc, timeout=timeout)
+            conns[(scheme, netloc)] = conn
+        conn.timeout = timeout
+        try:
+            conn.request(method, target, headers=headers)
+            return conn.getresponse()
+        except (http.client.HTTPException, OSError):
+            conn.close()
+            conns.pop((scheme, netloc), None)
+            # A kept-alive connection the server already closed is expected once; anything else is real.
+            if not reused or attempt == 2:
+                raise
+    raise AssertionError("unreachable")
+
+
+def discard(url: str) -> None:
+    """Drop this thread's connection to the URL's host (after a read that did not finish)."""
+    conn = _local.__dict__.setdefault("conns", {}).pop(_connection_key(url), None)
+    if conn is not None:
+        conn.close()

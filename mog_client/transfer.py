@@ -9,10 +9,12 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
 from mog_client.api import ACTIVE_STATES, MANIFEST_INTERVAL, POLL_INTERVAL, MogClient, bar, fmt_bytes, log, warn
+
 
 def download_all_files(
     client: MogClient,
@@ -32,11 +34,14 @@ def download_all_files(
     AND every listed file is fully on disk: the download's own end, not the
     server installer's. Transient errors are retried until `stop_event`.
 
+    How many files are fetched at once is the server's decision (its Settings); a server
+    that does not say gets one file at a time.
     `on_bytes(downloaded, known_total)` fires as data arrives; the known
     total grows while the server is still producing files.
     """
     stop_event = stop_event or threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
+    workers = client.download_workers() or 1
     done_paths: set[str] = set()
     # Bytes of each file on disk; the total is always their sum, so it cannot drift
     # (a file that restarts from zero just lowers its own entry).
@@ -62,9 +67,8 @@ def download_all_files(
             log(f"manifest: {len(files)} file(s)")
         known_total = sum(f.get("size_bytes", 0) for f in files)
         failed = False
+        todo: list[dict] = []
         for f in files:
-            if stop_event.is_set():
-                return total(), False
             path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
             if path in done_paths:
                 continue
@@ -76,9 +80,13 @@ def download_all_files(
                 done_paths.add(path)
                 if on_bytes:
                     on_bytes(total(), known_total)
-                continue
+            elif complete or on_disk[path] < f.get("sealed_bytes", 0):
+                todo.append(f)  # nothing new to ask for on a growing file that is already caught up
 
-            def in_flight(written_now: int, path: str = path, known: int = known_total) -> None:
+        def fetch(f: dict, known: int = known_total) -> tuple[str, int | None, str | None]:
+            path = f["path"]
+
+            def in_flight(written_now: int) -> None:
                 on_disk[path] = written_now
                 if on_bytes:
                     on_bytes(total(), known)
@@ -88,24 +96,42 @@ def download_all_files(
                     game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event
                 )
             except RuntimeError as e:
-                warn(str(e))
-                failed = True
-                break
-            if written != on_disk.get(path):
+                return path, None, str(e)
+            return path, written, None
+
+        progressed = False
+        before = total()
+        if todo:
+            # Several files at once: one connection per worker, so a link with latency stays full
+            # and many small files do not queue behind each other.
+            with ThreadPoolExecutor(max_workers=max(1, min(workers, len(todo)))) as pool:
+                results = list(pool.map(fetch, todo))
+            by_path = {f["path"]: f for f in todo}
+            for path, written, error in results:
+                f = by_path[path]
+                size, complete = f.get("size_bytes", 0), f.get("complete", False)
+                if error is not None:
+                    warn(error)
+                    failed = True
+                    continue
                 on_disk[path] = written
-            log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
+                log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
+                if complete and written >= size:
+                    done_paths.add(path)
+                elif complete:
+                    warn(f"  {path}: only got {fmt_bytes(written)} of {fmt_bytes(size)}")
             if on_bytes:
                 on_bytes(total(), known_total)
-            if complete and written >= size:
-                done_paths.add(path)
-            elif complete:
-                warn(f"  {path}: only got {fmt_bytes(written)} of {fmt_bytes(size)}")
+            progressed = total() > before
+        if stop_event.is_set():
+            return total(), False
         if not failed and server_was_done and files and all(f["path"] in done_paths for f in files):
             log("all files downloaded")
             return total(), True
         failures = failures + 1 if failed else 0
-        # A flaky link retries soon at first, then backs off to at most 30s.
-        if stop_event.wait(min(MANIFEST_INTERVAL * 2**failures, 30) if failed else MANIFEST_INTERVAL):
+        # Poll again soon while data is flowing; a flaky link retries soon at first, then backs off to 30s.
+        pause = min(MANIFEST_INTERVAL * 2**failures, 30) if failed else (0.5 if progressed else MANIFEST_INTERVAL)
+        if stop_event.wait(pause):
             break
     return total(), False
 

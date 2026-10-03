@@ -89,3 +89,31 @@ def test_stop_interrupts_a_download_between_chunks(tmp_path):
     assert got == (tmp_path / "game.bin").stat().st_size
     assert len(seen) == 1 and got < len(PAYLOAD)
     httpd.shutdown()
+
+
+def test_files_are_fetched_over_one_persistent_connection(tmp_path):
+    connections = []
+
+    class Keepalive(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def setup(self):
+            connections.append(1)
+            super().setup()
+
+        def do_GET(self):
+            body = b"data" * 1000
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = _serve(Keepalive)
+    client = MogClient(Client(f"http://127.0.0.1:{httpd.server_port}", "u", "p"))
+    for i in range(5):
+        assert client.stream_file(1, f"f{i}.bin", tmp_path) == 4000
+    assert len(connections) == 1
+    httpd.shutdown()

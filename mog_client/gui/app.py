@@ -344,11 +344,13 @@ class App:
 
         server_state = {"label": ""}
         meter = RateMeter()
+        meter_lock = threading.Lock()  # several files report at once
 
         def report(written: int, total: int) -> None:
-            meter.add(time.monotonic(), written)
+            with meter_lock:
+                meter.add(time.monotonic(), written)
+                speed, eta = meter.speed(), meter.eta(written, total)
             label = f"Downloading {fmt_bytes(written)} / {fmt_bytes(total)}"
-            speed, eta = meter.speed(), meter.eta(written, total)
             if speed:
                 label += f"  {fmt_bytes(speed)}/s"
             if eta is not None:

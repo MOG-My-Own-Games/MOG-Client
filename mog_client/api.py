@@ -21,7 +21,7 @@ from mog_client import net
 
 POLL_INTERVAL = 3
 STREAM_TIMEOUT = 60.0  # per socket read, not for the whole transfer
-STREAM_CHUNK = 256 * 1024
+STREAM_CHUNK = 1024 * 1024
 REQUEST_RETRIES = 3
 MANIFEST_INTERVAL = 3
 
@@ -272,40 +272,45 @@ class MogClient:
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         written = dest.stat().st_size if dest.exists() else 0
+        url = self.c.base + endpoint
         while not (stop and stop.is_set()):
-            headers = {"Range": f"bytes={written}-"} if written > 0 else {}
-            req = urllib.request.Request(self.c.base + endpoint, headers=self.c._headers(headers))
+            headers = self.c._headers({"Range": f"bytes={written}-"} if written > 0 else {})
             try:
-                resp = net.urlopen(req, timeout=STREAM_TIMEOUT)
-            except urllib.error.HTTPError as e:
-                if e.code == 416:
-                    return written
-                raise RuntimeError(extract_error(e.read(), e.code)) from e
+                resp = net.pooled_request("GET", url, headers, STREAM_TIMEOUT)
             except (OSError, http.client.HTTPException) as e:
                 raise RuntimeError(f"connection error ({self.c.base}): {getattr(e, 'reason', e)}") from e
+            status = resp.status
+            if status >= 300:
+                body = resp.read()  # reading it out keeps the connection usable
+                if status == 416:
+                    return written
+                if status < 400:
+                    raise RuntimeError(f"{url} redirects to {resp.headers.get('Location')}: use the final URL as the server URL")
+                raise RuntimeError(extract_error(body, status))
             got = 0
-            with resp:
-                status = resp.status
+            try:
                 restart = written > 0 and status == 200  # the server ignored Range: start over
                 if restart:
                     written = 0
-                try:
-                    with open(dest, "wb" if written == 0 else "ab") as f:
-                        while chunk := resp.read(STREAM_CHUNK):
-                            f.write(chunk)
-                            got += len(chunk)
-                            written += len(chunk)
-                            if on_chunk:
-                                on_chunk(written)
-                            if stop and stop.is_set():
-                                return written
-                except (OSError, http.client.HTTPException) as e:
-                    raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: {e}") from e
-                expected = resp.headers.get("Content-Length")
-                if expected and expected.isdigit() and got < int(expected):
-                    # http.client reports a body cut short as a clean end of stream.
-                    raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: body cut short")
-                content_range = resp.headers.get("Content-Range")
+                with open(dest, "wb" if written == 0 else "ab") as f:
+                    while chunk := resp.read1(STREAM_CHUNK):
+                        f.write(chunk)
+                        got += len(chunk)
+                        written += len(chunk)
+                        if on_chunk:
+                            on_chunk(written)
+                        if stop and stop.is_set():
+                            net.discard(url)  # the rest of the body is still on the wire
+                            return written
+            except (OSError, http.client.HTTPException) as e:
+                net.discard(url)
+                raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: {e}") from e
+            expected = resp.headers.get("Content-Length")
+            if expected and expected.isdigit() and got < int(expected):
+                # http.client reports a body cut short as a clean end of stream.
+                net.discard(url)
+                raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: body cut short")
+            content_range = resp.headers.get("Content-Range")
             if status == 200:
                 return written
             if content_range and "/" in content_range:
@@ -330,6 +335,15 @@ class MogClient:
         except RuntimeError:
             return None
         return content if status == 200 and content else None
+
+    def download_workers(self) -> int | None:
+        """How many files to download at once, per the server's Settings; None if it does not say."""
+        try:
+            status, data = self.c.get_json("/api/games/install/defaults")
+        except RuntimeError:
+            return None
+        workers = data.get("download_workers") if status == 200 and isinstance(data, dict) else None
+        return workers if isinstance(workers, int) and workers > 0 else None
 
     def notifications(self) -> dict:
         status, data = self.c.get_json("/api/notifications")
