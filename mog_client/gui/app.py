@@ -25,7 +25,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -38,6 +37,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QProgressBar,
+    QSizePolicy,
     QPushButton,
     QStackedWidget,
     QStyle,
@@ -55,7 +55,8 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.gui import gamepad, osk
+from mog_client.gui import gamepad, keyboard, osk
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss
 from mog_client.launcher import available_launchers, detect_launcher, launch, launcher_label, list_executables
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
 from mog_client.version import __version__
@@ -70,10 +71,10 @@ def asset_pixmap(name: str, height: int) -> QPixmap:
 STYLE = """
 * { font-size: 18px; }
 QMainWindow { background: #14171c; color: #e8eaed; }
-QLabel, QCheckBox { color: #e8eaed; }
+QLabel { color: #e8eaed; }
 QLineEdit, QComboBox, QPlainTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
-QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7fa8ff, stop:0.55 #5b8def, stop:1 #3c64c4); color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
-QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #94b7ff, stop:0.55 #709cf2, stop:1 #4d75d4); }
+QPushButton { background: {accent}; color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
+QPushButton:hover { background: {accent_hover}; }
 QPushButton:focus { border-color: white; }
 QPushButton[danger="true"] { background: #e2574c; }
 QPushButton[danger="true"]:hover { background: #c94439; }
@@ -82,8 +83,8 @@ QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius
 QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
 *:focus { border-color: #4c8dff; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
-QProgressBar::chunk { background: #2f6fed; border-radius: 6px; }
-"""
+QProgressBar::chunk { background: {accent}; border-radius: 6px; }
+""".replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss())
 
 COVER_SIZE = QSize(200, 270)
 PAD_ICON_HEIGHT = 28
@@ -302,8 +303,8 @@ def _row(*widgets, stretch_first: bool = True) -> QHBoxLayout:
     row = QHBoxLayout()
     if stretch_first:
         row.addStretch()
-    for w in widgets:
-        row.addWidget(w)
+    for i, w in enumerate(widgets):
+        row.addWidget(w, 1 if i == 0 and not stretch_first else 0)
     return row
 
 
@@ -366,6 +367,91 @@ class UpdatePage(Page):
         self.label.setText(f"Update failed: {error}")
 
 
+class KeyButton(QPushButton):
+    """A key; the D-pad moves over the grid instead of down the tab order."""
+
+    def __init__(self, page: "KeyboardPage", key: str, row: int, col: int):
+        super().__init__(keyboard.LABELS.get(key, key))
+        self.page, self.key, self.pos_in_grid = page, key, (row, col)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumHeight(64)
+        self.clicked.connect(lambda: page.press(key))
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        steps = {Qt.Key_Up: (-1, 0), Qt.Key_Down: (1, 0), Qt.Key_Left: (0, -1), Qt.Key_Right: (0, 1)}
+        if e.key() in steps:
+            self.page.move(self.pos_in_grid, *steps[e.key()])
+        else:
+            super().keyPressEvent(e)
+
+
+class KeyboardPage(Page):
+    """In-app on-screen keyboard that types into `target`; A presses a key, B cancels."""
+
+    title = "Type"
+
+    def __init__(self, win: "MainWindow", target: QWidget):
+        super().__init__()
+        self.win, self.target = win, target
+        self.password = isinstance(target, QLineEdit) and target.echoMode() != QLineEdit.Normal
+        text = target.text() if isinstance(target, QLineEdit) else target.toPlainText()
+        self.buffer = keyboard.TextBuffer(text)
+        self.display = QLabel()
+        self.display.setStyleSheet("font-size: 28px; padding: 12px; background: #1e232b; border-radius: 8px;")
+        self.display.setWordWrap(True)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.display)
+        self.keys: list[list[KeyButton]] = []
+        for r, row in enumerate(keyboard.ROWS):
+            line = QHBoxLayout()
+            buttons = []
+            for c, key in enumerate(row):
+                btn = KeyButton(self, key, r, c)
+                line.addWidget(btn, keyboard.WIDE.get(key, 1))
+                buttons.append(btn)
+            self.keys.append(buttons)
+            lay.addLayout(line, 1)
+        self._refresh()
+
+    def focus_default(self) -> None:
+        self.keys[1][0].setFocus()
+
+    def _refresh(self) -> None:
+        shown = "\u2022" * len(self.buffer.text) if self.password else self.buffer.text
+        self.display.setText(shown + "|")
+        for row in self.keys:
+            for btn in row:
+                if len(btn.key) == 1:
+                    btn.setText(btn.key.upper() if self.buffer.shift else btn.key)
+
+    def press(self, key: str) -> None:
+        result = self.buffer.press(key)
+        self._refresh()
+        if result is None:
+            return
+        self.win.back()
+        if result == keyboard.DONE:
+            if isinstance(self.target, QLineEdit):
+                self.target.setText(self.buffer.text)
+            else:
+                self.target.setPlainText(self.buffer.text)
+        self.target.setFocus()
+
+    def move(self, at: tuple[int, int], d_row: int, d_col: int) -> None:
+        r, c = keyboard.neighbour(*at, d_row, d_col)
+        self.keys[r][c].setFocus()
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() == Qt.Key_Backspace:
+            self.press(keyboard.BACKSPACE)
+        elif e.text() and e.text().isprintable():
+            for ch in e.text():
+                self.buffer.text += ch
+            self._refresh()
+        else:
+            super().keyPressEvent(e)
+
+
 class SettingsPage(Page):
     title = "Settings"
 
@@ -398,10 +484,12 @@ class SettingsPage(Page):
         form.addRow("Server URL", self.base)
         form.addRow("User", self.user)
         form.addRow("Password", self.password)
-        form.addRow("Games folder", self.games_dir)
+        browse_games = QPushButton("Browse...")
+        browse_games.clicked.connect(self.browse_games_dir)
+        form.addRow("Games folder", _row(self.games_dir, browse_games, stretch_first=False))
         form.addRow("Launcher", self.launcher)
         form.addRow("Version", QLabel(__version__))
-        self.check_updates_box = QCheckBox("Check for updates at startup")
+        self.check_updates_box = Toggle("Check for updates at startup")
         self.check_updates_box.setChecked(s.check_updates)
         self.update_status = QLabel()
         self.update_status.setWordWrap(True)
@@ -422,6 +510,12 @@ class SettingsPage(Page):
         lay.addWidget(note)
         lay.addStretch()
         lay.addLayout(_row(save))
+
+    def browse_games_dir(self) -> None:
+        start = Path(self.games_dir.text().strip() or str(self.win.app.settings.games_path))
+        while not start.is_dir() and start.parent != start:
+            start = start.parent
+        self.win.push(BrowsePage(self.win, start, self.games_dir.setText, folders=True))
 
     def check_updates(self) -> None:
         self.update_status.setText("Checking...")
@@ -444,7 +538,8 @@ class SettingsPage(Page):
             user=self.user.text().strip(),
             password=self.password.text(),
             games_dir=self.games_dir.text().strip(),
-            launcher=self.launcher.currentData() or "auto",
+            # "auto" keeps following the preference order (Faugus first) as launchers come and go.
+            launcher="auto" if self.launcher.currentData() == detect_launcher() else self.launcher.currentData() or "auto",
             check_updates=self.check_updates_box.isChecked(),
         )
         save_settings(self.win.app.settings)
@@ -457,9 +552,11 @@ class BrowsePage(Page):
 
     title = "Browse for the executable"
 
-    def __init__(self, win: "MainWindow", start: Path, on_pick):
+    def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False):
         super().__init__()
-        self.win, self.on_pick, self.cwd = win, on_pick, start
+        if folders:
+            self.title = "Choose a folder"
+        self.win, self.on_pick, self.cwd, self.folders = win, on_pick, start, folders
         self.where = QLabel()
         self.list = QListWidget()
         self.list.itemActivated.connect(self._activate)
@@ -475,12 +572,17 @@ class BrowsePage(Page):
         self.cwd = path
         self.where.setText(str(path))
         self.list.clear()
-        entries = [("..", path.parent)] if path.parent != path else []
+        entries = [("[ Use this folder ]", path)] if self.folders else []
+        entries += [("..", path.parent)] if path.parent != path else []
         try:
             children = sorted(path.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))
         except OSError:
             children = []
-        entries += [(c.name + ("/" if c.is_dir() else ""), c) for c in children if c.is_dir() or c.suffix.lower() == ".exe"]
+        entries += [
+            (c.name + ("/" if c.is_dir() else ""), c)
+            for c in children
+            if c.is_dir() or (not self.folders and c.suffix.lower() == ".exe")
+        ]
         for label, target in entries:
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, str(target))
@@ -490,7 +592,10 @@ class BrowsePage(Page):
 
     def _activate(self, item: QListWidgetItem) -> None:
         target = Path(item.data(Qt.UserRole))
-        if target.is_dir():
+        if self.folders and self.list.row(item) == 0:
+            self.win.back()
+            self.on_pick(str(self.cwd))
+        elif target.is_dir():
             self._load(target)
         else:
             self.win.back()
@@ -515,11 +620,11 @@ class ExecutablePage(Page):
         self.list.itemActivated.connect(lambda _: self.accept())
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._browse)
-        self.desktop = QCheckBox("Create a desktop entry")
+        self.desktop = Toggle("Create a desktop entry")
         self.desktop.setChecked(sys.platform != "win32")
         self.desktop.setVisible(sys.platform != "win32")
         self.steam_users = steam.steam_user_dirs()
-        self.steam = QCheckBox("Add to Steam")
+        self.steam = Toggle("Add to Steam")
         self.steam.setChecked(bool(self.steam_users))
         self.steam.setEnabled(bool(self.steam_users))
         self.steam_user = QComboBox()
@@ -851,12 +956,8 @@ def paint_installed_badge(painter: QPainter, cover: QRect) -> None:
     corner = QPolygonF(
         [QPointF(right, bottom - BADGE_SIZE), QPointF(right, bottom), QPointF(right - BADGE_SIZE, bottom)]
     )
-    grad = QLinearGradient(right - BADGE_SIZE, bottom, right, bottom - BADGE_SIZE)
-    grad.setColorAt(0.0, QColor("#3c64c4"))
-    grad.setColorAt(0.5, QColor("#4c8dff"))
-    grad.setColorAt(1.0, QColor("#8fb4ff"))
     painter.setPen(Qt.NoPen)
-    painter.setBrush(grad)
+    painter.setBrush(accent_gradient(right - BADGE_SIZE, bottom - BADGE_SIZE, right, bottom))
     painter.drawPolygon(corner)
     check = QPainterPath()
     check.moveTo(right - 25, bottom - 14)
@@ -892,7 +993,8 @@ class CoverDelegate(QStyledItemDelegate):
         if progress is not None:
             bar = QRect(cover.left(), cover.bottom() - 9, cover.width(), 10)
             painter.fillRect(bar, QColor(0, 0, 0, 170))
-            painter.fillRect(bar.adjusted(0, 0, int((progress - 1000) * bar.width() / 1000), 0), QColor("#2f6fed"))
+            filled = bar.adjusted(0, 0, int((progress - 1000) * bar.width() / 1000), 0)
+            painter.fillRect(filled, accent_gradient(bar.left(), bar.top(), bar.right(), bar.bottom()))
         if index.data(ROLE_INSTALLED):
             painter.setClipRect(cover)
             paint_installed_badge(painter, cover)
@@ -1042,7 +1144,7 @@ class MainWindow(QMainWindow):
         b.pad.connect(self.on_pad)
         b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
-        self.osk = osk.SteamKeyboard()
+        self.osk = osk.OnScreenKeyboard(self.open_keyboard)
         self.pad_stop = gamepad.start(b.pad.emit, b.pad_connected.emit)
         self._show(self.library)
 
@@ -1114,6 +1216,10 @@ class MainWindow(QMainWindow):
             self.legend.setText(pad_legend(family))
         self.legend.setVisible(connected)
 
+    def open_keyboard(self, target: QWidget) -> None:
+        if not isinstance(self.current_page(), KeyboardPage):
+            self.push(KeyboardPage(self, target))
+
     def quit_app(self) -> None:
         if self.app.installs:
             self.ask(
@@ -1125,13 +1231,13 @@ class MainWindow(QMainWindow):
             self.close()
 
     def on_pad(self, name: str) -> None:
-        if self.osk.visible:
+        if self.osk.steam_visible:
             # Steam's keyboard owns the controller while it is up; B dismisses it.
             if name == gamepad.BACK:
-                self.osk.hide()
+                self.osk.hide_steam()
             return
         if name == gamepad.ACCEPT and self.osk.enabled and osk.is_text_input(QApplication.focusWidget()):
-            self.osk.show()
+            self.osk.request(QApplication.focusWidget())
             return
         if name == gamepad.QUIT:
             self.quit_app()
@@ -1188,6 +1294,7 @@ class MainWindow(QMainWindow):
 
 
 def run_gui() -> int:
+    osk.prefer_xcb()
     qapp = QApplication(sys.argv[:1])
     qapp.setStyleSheet(STYLE)
     enter_filter = ActivateOnEnter()
