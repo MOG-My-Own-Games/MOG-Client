@@ -50,9 +50,8 @@ you open the draft on GitHub, check it and click "Publish release".
 ## Updates
 
 AppImage and exe builds check the latest published release at startup and
-offer to update: the new file is downloaded, verified against the release's
-`SHA256SUMS.txt`, swapped in for the running one and the app restarts. Settings
-has a "Check for updates" button. Set `MOG_NO_UPDATE_CHECK=1` to turn the check
+offer to update (Settings has a "Check for updates at startup" flag, on by default, and a "Check now" button): the new file is downloaded, verified against the release's
+`SHA256SUMS.txt`, swapped in for the running one and the app restarts. Set `MOG_NO_UPDATE_CHECK=1` to turn the check
 off.
 
 Self-update is a build flag: the build scripts write `UPDATE_METHOD`

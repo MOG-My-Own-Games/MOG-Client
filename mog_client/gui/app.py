@@ -401,12 +401,14 @@ class SettingsPage(Page):
         form.addRow("Games folder", self.games_dir)
         form.addRow("Launcher", self.launcher)
         form.addRow("Version", QLabel(__version__))
+        self.check_updates_box = QCheckBox("Check for updates at startup")
+        self.check_updates_box.setChecked(s.check_updates)
         self.update_status = QLabel()
         self.update_status.setWordWrap(True)
-        if updater.enabled():
-            check = QPushButton("Check for updates")
-            check.clicked.connect(self.check_updates)
-            form.addRow("", check)
+        if updater.supported():
+            check_now = QPushButton("Check now")
+            check_now.clicked.connect(self.check_updates)
+            form.addRow("Updates", _row(self.check_updates_box, check_now, stretch_first=False))
             form.addRow("", self.update_status)
             win.app.bridge.update_checked.connect(self.on_checked)
         save = QPushButton("Save")
@@ -443,6 +445,7 @@ class SettingsPage(Page):
             password=self.password.text(),
             games_dir=self.games_dir.text().strip(),
             launcher=self.launcher.currentData() or "auto",
+            check_updates=self.check_updates_box.isChecked(),
         )
         save_settings(self.win.app.settings)
         self.win.back()
@@ -1097,6 +1100,8 @@ class MainWindow(QMainWindow):
         self.push(page)
 
     def on_update_checked(self, info, error: str, manual: bool) -> None:
+        if error and not manual:
+            self.notify(f"Update check failed: {error}")
         if info is None:
             return
         self.ask(
@@ -1182,7 +1187,7 @@ def run_gui() -> int:
         win.showFullScreen()
     else:
         win.show()
-    if updater.enabled():
+    if updater.enabled() and app.settings.check_updates:
         app.check_update()
     if app.settings.configured:
         app.refresh()
