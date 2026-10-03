@@ -100,7 +100,7 @@ def run_install(
             raise RuntimeError(f"needs a manual installer pick, open {client.c.base}{server_final.get('vnc_url') or ''}")
         if state == "failed":
             raise RuntimeError(f"install failed: {server_final.get('error')}")
-        raise RuntimeError("install paused, resume to continue downloading")
+        return rec  # paused or cancelled: not a failure, the buttons already say so
     verify_and_repair(client, gid, out_dir, session_id=session_id, log=log, warn=log)
     _update(rec, state="awaiting_executable")
     return rec
