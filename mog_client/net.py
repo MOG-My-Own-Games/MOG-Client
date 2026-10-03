@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import ssl
+import urllib.error
 import urllib.request
 from functools import lru_cache
 
@@ -34,5 +35,23 @@ def ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+class _NoUpgradeRedirect(urllib.request.HTTPRedirectHandler):
+    """A plain-HTTP URL stays plain HTTP: a redirect to https is reported
+    instead of silently starting a TLS handshake the user never asked for."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.full_url.startswith("http://") and newurl.startswith("https://"):
+            raise urllib.error.URLError(
+                f"{req.full_url} redirects to {newurl}: use https:// in the server URL, "
+                "or serve the server over plain http"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@lru_cache(maxsize=1)
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context()), _NoUpgradeRedirect())
+
+
 def urlopen(request: urllib.request.Request | str, timeout: float | None = None):
-    return urllib.request.urlopen(request, timeout=timeout, context=ssl_context())
+    return _opener().open(request, timeout=timeout)

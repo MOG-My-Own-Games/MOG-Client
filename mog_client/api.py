@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -38,9 +39,15 @@ def basic_header(user: str, pw: str) -> str:
     return f"Basic {token}"
 
 
+def normalize_base(base: str) -> str:
+    """Server URL as typed, trailing slash dropped; a bare host:port means plain http."""
+    base = base.strip().rstrip("/")
+    return base if not base or "://" in base else f"http://{base}"
+
+
 class Client:
     def __init__(self, base: str, user: str, pw: str, timeout: float = 30.0):
-        self.base = base.rstrip("/")
+        self.base = normalize_base(base)
         self.user = user
         self.pw = pw
         self.timeout = timeout
@@ -69,7 +76,12 @@ class Client:
         except urllib.error.HTTPError as e:
             return e.code, e.read(), dict(e.headers)
         except urllib.error.URLError as e:
-            raise RuntimeError(f"connection error: {e}") from e
+            if isinstance(e.reason, ssl.SSLError):
+                raise RuntimeError(  # noqa: TRY004
+                    f"TLS error talking to {self.base}: {e.reason}. If the server only speaks "
+                    "plain http, set the Server URL to http://host:port"
+                ) from e
+            raise RuntimeError(f"connection error ({self.base}): {e.reason}") from e
 
     def get_json(self, path: str, **kw) -> tuple[int, dict]:
         status, content, _ = self.request("GET", path, **kw)
