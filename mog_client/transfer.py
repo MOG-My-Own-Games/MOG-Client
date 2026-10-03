@@ -41,6 +41,7 @@ def download_all_files(
     done_paths: set[str] = set()
     progress: dict[str, int] = {}
     last_logged: int | None = None
+    failures = 0
     while not stop_event.is_set():
         # Sampled before the manifest fetch: a manifest read after this
         # moment can't be missing files the finished install produced.
@@ -70,8 +71,14 @@ def download_all_files(
                 if on_bytes:
                     on_bytes(total, known_total)
                 continue
+            def in_flight(written_now: int, path: str = path, base: int = total, known: int = known_total) -> None:
+                if on_bytes:
+                    on_bytes(base + written_now - progress.get(path, 0), known)
+
             try:
-                written = client.stream_file(game_id, path, out_dir, session_id=session_id)
+                written = client.stream_file(
+                    game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event
+                )
             except RuntimeError as e:
                 warn(str(e))
                 failed = True
@@ -90,7 +97,9 @@ def download_all_files(
         if not failed and server_was_done and files and all(f["path"] in done_paths for f in files):
             log("all files downloaded")
             return total, True
-        if stop_event.wait(MANIFEST_INTERVAL):
+        failures = failures + 1 if failed else 0
+        # A flaky link retries soon at first, then backs off to at most 30s.
+        if stop_event.wait(min(MANIFEST_INTERVAL * 2**failures, 30) if failed else MANIFEST_INTERVAL):
             break
     return total, False
 

@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import re
 import ssl
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from mog_client import net
 
 POLL_INTERVAL = 3
+STREAM_TIMEOUT = 60.0  # per socket read, not for the whole transfer
+STREAM_CHUNK = 256 * 1024
+REQUEST_RETRIES = 3
 MANIFEST_INTERVAL = 3
 
 ACTIVE_STATES = {"detecting", "awaiting_installer", "installing", "streaming"}
@@ -70,18 +77,25 @@ class Client:
             headers = headers or {}
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, method=method, headers=self._headers(headers))
-        try:
-            with net.urlopen(req, timeout=timeout or self.timeout) as resp:
-                return resp.status, resp.read(), dict(resp.headers)
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(), dict(e.headers)
-        except urllib.error.URLError as e:
-            if isinstance(e.reason, ssl.SSLError):
-                raise RuntimeError(  # noqa: TRY004
-                    f"TLS error talking to {self.base}: {e.reason}. If the server only speaks "
-                    "plain http, set the Server URL to http://host:port"
-                ) from e
-            raise RuntimeError(f"connection error ({self.base}): {e.reason}") from e
+        # Only reads are retried: a repeated POST or DELETE could act twice.
+        attempts = REQUEST_RETRIES if method == "GET" else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                with net.urlopen(req, timeout=timeout or self.timeout) as resp:
+                    return resp.status, resp.read(), dict(resp.headers)
+            except urllib.error.HTTPError as e:
+                return e.code, e.read(), dict(e.headers)
+            except (OSError, http.client.HTTPException) as e:
+                reason = getattr(e, "reason", e)
+                if isinstance(reason, ssl.SSLError):
+                    raise RuntimeError(
+                        f"TLS error talking to {self.base}: {reason}. If the server only speaks "
+                        "plain http, set the Server URL to http://host:port"
+                    ) from e
+                if attempt == attempts:
+                    raise RuntimeError(f"connection error ({self.base}): {reason}") from e
+                time.sleep(0.5 * 3 ** (attempt - 1))
+        raise AssertionError("unreachable")
 
     def get_json(self, path: str, **kw) -> tuple[int, dict]:
         status, content, _ = self.request("GET", path, **kw)
@@ -154,9 +168,18 @@ class MogClient:
         return data
 
     def start_session(
-        self, game_id: int, installer_path: str | None, proton_build: str | None, ttl: int | None, auto_mode: bool | None = None, manual_mode: bool | None = None
+        self,
+        game_id: int,
+        installer_path: str | None,
+        proton_build: str | None,
+        ttl: int | None,
+        auto_mode: bool | None = None,
+        manual_mode: bool | None = None,
+        source_path: str | None = None,
     ) -> dict:
         body = {"installer_path": installer_path, "proton_build": proton_build}
+        if source_path is not None:
+            body["source_path"] = source_path
         if auto_mode is not None:
             body["auto_mode"] = auto_mode
         if manual_mode is not None:
@@ -237,27 +260,49 @@ class MogClient:
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         written = dest.stat().st_size if dest.exists() else 0
-        while True:
+        while not (stop and stop.is_set()):
             headers = {"Range": f"bytes={written}-"} if written > 0 else {}
-            status, content, resp_headers = self.c.request("GET", endpoint, headers=headers, timeout=60.0)
-            if status in (200, 206):
-                mode = "ab" if written > 0 else "wb"
-                with open(dest, mode) as f:
-                    f.write(content)
-                written += len(content)
-                if status == 200 and not headers.get("Range"):
+            req = urllib.request.Request(self.c.base + endpoint, headers=self.c._headers(headers))
+            try:
+                resp = net.urlopen(req, timeout=STREAM_TIMEOUT)
+            except urllib.error.HTTPError as e:
+                if e.code == 416:
                     return written
-                cr = resp_headers.get("Content-Range") or resp_headers.get("content-range")
-                if cr and "/" in cr:
-                    total_s = cr.rsplit("/", 1)[1]
-                    if total_s.isdigit() and int(total_s) > 0 and written >= int(total_s):
-                        return written
-                if len(content) == 0:
-                    return written
-                continue
-            if status == 416:
+                raise RuntimeError(extract_error(e.read(), e.code)) from e
+            except (OSError, http.client.HTTPException) as e:
+                raise RuntimeError(f"connection error ({self.c.base}): {getattr(e, 'reason', e)}") from e
+            got = 0
+            with resp:
+                status = resp.status
+                restart = written > 0 and status == 200  # the server ignored Range: start over
+                if restart:
+                    written = 0
+                try:
+                    with open(dest, "wb" if written == 0 else "ab") as f:
+                        while chunk := resp.read(STREAM_CHUNK):
+                            f.write(chunk)
+                            got += len(chunk)
+                            written += len(chunk)
+                            if on_chunk:
+                                on_chunk(written)
+                            if stop and stop.is_set():
+                                return written
+                except (OSError, http.client.HTTPException) as e:
+                    raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: {e}") from e
+                expected = resp.headers.get("Content-Length")
+                if expected and expected.isdigit() and got < int(expected):
+                    # http.client reports a body cut short as a clean end of stream.
+                    raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: body cut short")
+                content_range = resp.headers.get("Content-Range")
+            if status == 200:
                 return written
-            raise RuntimeError(extract_error(content, status))
+            if content_range and "/" in content_range:
+                total = content_range.rsplit("/", 1)[1]
+                if total.isdigit() and int(total) > 0 and written >= int(total):
+                    return written
+            if got == 0:
+                return written
+        return written
 
 
     def me(self) -> dict:
