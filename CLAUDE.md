@@ -31,6 +31,8 @@ mog_client/
   steam.py      shortcuts.vdf read/write + grid artwork
   scrape.py     Artwork URLs from the server's already-scraped metadata
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
+    widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
+    keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
 .github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>

@@ -24,7 +24,7 @@ Lists the server's games, installs/resumes/streams them, asks which
 executable to run once the install finishes, then creates a desktop entry and
 a Steam shortcut (with the server's scraped artwork). Games launch through
 Faugus Launcher, umu or wine on Linux and directly on Windows. Fully usable
-with a gamepad (D-pad/stick, A, B, Start for settings, Start+Select to quit). A legend of the buttons shows at the bottom while a controller is connected, with Xbox, PlayStation, Nintendo or Steam Deck glyphs depending on the pad (icons: Kenney Input Prompts, CC0). On a Steam Deck, text fields open Steam's own on-screen keyboard (tap a field, or press A on it; `MOG_OSK=0/1` forces it off/on).
+with a gamepad (D-pad/stick, A, B, Start for settings, Start+Select to quit). A legend of the buttons shows at the bottom while a controller is connected, with Xbox, PlayStation, Nintendo or Steam Deck glyphs depending on the pad (icons: Kenney Input Prompts, CC0). On a Steam Deck, text fields open an in-app on-screen keyboard (tap a field, or press A on it). `MOG_OSK=steam` uses Steam's own keyboard instead, `MOG_OSK=0` turns it off and `MOG_OSK=builtin` forces the in-app one on other devices.
 
 ## CLI
 
