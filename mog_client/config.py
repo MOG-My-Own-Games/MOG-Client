@@ -49,7 +49,7 @@ class Settings:
     launcher: str = "auto"
     # Look for a newer release at startup (only in builds that can self-update).
     check_updates: bool = True
-    # The library page's right-hand sidebar (toggled with L2).
+    # The library page's left-hand sidebar (toggled with L2).
     show_sidebar: bool = True
 
     @property

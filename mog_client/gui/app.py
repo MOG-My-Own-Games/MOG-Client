@@ -1345,7 +1345,7 @@ class LibraryPage(Page):
         self.library_filter: int | None = None
         self.libraries: list[dict] = []
 
-        # The sidebar sits beside the grid, not inside it, so scrolling the games leaves it where it is.
+        # The sidebar sits on the left, beside the grid, not inside it, so scrolling the games leaves it where it is.
         self.sidebar = QWidget()
         self.sidebar.setFixedWidth(SIDEBAR_WIDTH)
         self.libs = QListWidget()
@@ -1361,8 +1361,8 @@ class LibraryPage(Page):
         self.sidebar.setVisible(win.app.settings.show_sidebar)
 
         lay = QHBoxLayout(self)
-        lay.addWidget(self.grid, 1)
         lay.addWidget(self.sidebar)
+        lay.addWidget(self.grid, 1)
         self._fill_libraries()
 
     @staticmethod
