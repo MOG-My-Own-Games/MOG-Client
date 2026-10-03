@@ -37,11 +37,16 @@ def download_all_files(
     """
     stop_event = stop_event or threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
-    total = 0
     done_paths: set[str] = set()
-    progress: dict[str, int] = {}
+    # Bytes of each file on disk; the total is always their sum, so it cannot drift
+    # (a file that restarts from zero just lowers its own entry).
+    on_disk: dict[str, int] = {}
     last_logged: int | None = None
     failures = 0
+
+    def total() -> int:
+        return sum(on_disk.values())
+
     while not stop_event.is_set():
         # Sampled before the manifest fetch: a manifest read after this
         # moment can't be missing files the finished install produced.
@@ -59,21 +64,24 @@ def download_all_files(
         failed = False
         for f in files:
             if stop_event.is_set():
-                return total, False
+                return total(), False
             path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
             if path in done_paths:
                 continue
             local_path = out_dir / path
-            if complete and local_path.is_file() and local_path.stat().st_size >= size:
-                total += size - progress.get(path, 0)
-                progress[path] = size
+            local_size = local_path.stat().st_size if local_path.is_file() else 0
+            on_disk.setdefault(path, min(local_size, size) if size else local_size)
+            if complete and local_size >= size:
+                on_disk[path] = size
                 done_paths.add(path)
                 if on_bytes:
-                    on_bytes(total, known_total)
+                    on_bytes(total(), known_total)
                 continue
-            def in_flight(written_now: int, path: str = path, base: int = total, known: int = known_total) -> None:
+
+            def in_flight(written_now: int, path: str = path, known: int = known_total) -> None:
+                on_disk[path] = written_now
                 if on_bytes:
-                    on_bytes(base + written_now - progress.get(path, 0), known)
+                    on_bytes(total(), known)
 
             try:
                 written = client.stream_file(
@@ -83,25 +91,23 @@ def download_all_files(
                 warn(str(e))
                 failed = True
                 break
-            delta = written - progress.get(path, 0)
-            if delta > 0:
-                log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
-            total += delta
-            progress[path] = written
-            if on_bytes and delta > 0:
-                on_bytes(total, known_total)
+            if written != on_disk.get(path):
+                on_disk[path] = written
+            log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
+            if on_bytes:
+                on_bytes(total(), known_total)
             if complete and written >= size:
                 done_paths.add(path)
             elif complete:
                 warn(f"  {path}: only got {fmt_bytes(written)} of {fmt_bytes(size)}")
         if not failed and server_was_done and files and all(f["path"] in done_paths for f in files):
             log("all files downloaded")
-            return total, True
+            return total(), True
         failures = failures + 1 if failed else 0
         # A flaky link retries soon at first, then backs off to at most 30s.
         if stop_event.wait(min(MANIFEST_INTERVAL * 2**failures, 30) if failed else MANIFEST_INTERVAL):
             break
-    return total, False
+    return total(), False
 
 
 def _sha1_of(path: Path) -> str:

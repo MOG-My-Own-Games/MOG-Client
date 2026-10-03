@@ -7,6 +7,7 @@ import hashlib
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -49,6 +50,7 @@ from PySide6.QtWidgets import (
 from mog_client import manager, steam, updater
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.grouping import Group, group_games
+from mog_client.progress import RateMeter, format_eta
 from mog_client.config import (
     InstalledGame,
     Settings,
@@ -318,9 +320,17 @@ class App:
         bridge = self.bridge
 
         server_state = {"label": ""}
+        meter = RateMeter()
 
         def report(written: int, total: int) -> None:
+            meter.add(time.monotonic(), written)
             label = f"Downloading {fmt_bytes(written)} / {fmt_bytes(total)}"
+            speed, eta = meter.speed(), meter.eta(written, total)
+            if speed:
+                label += f"  {fmt_bytes(speed)}/s"
+            if eta is not None:
+                # The total grows while the server is still producing files, so this is a floor.
+                label += f"  ETA {format_eta(eta)}"
             if server_state["label"]:
                 label += f"  (server: {server_state['label']})"
             self.progress[gid] = (written, total, label)
@@ -1117,9 +1127,10 @@ class GamePage(Page):
         if gid != self.game["id"]:
             return
         if total:
+            pct = max(0.0, min(1.0, written / total))
             self.bar.setRange(0, 1000)
-            self.bar.setValue(int(1000 * written / total))
-            self.bar.setFormat(f"{fmt_bytes(written)} / {fmt_bytes(total)}")
+            self.bar.setValue(int(1000 * pct))
+            self.bar.setFormat(f"{pct * 100:.1f}%")
         else:
             self.bar.setRange(0, 0)
         self.status.setText(label)
