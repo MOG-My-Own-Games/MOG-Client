@@ -55,7 +55,7 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.gui import gamepad
+from mog_client.gui import gamepad, osk
 from mog_client.launcher import available_launchers, detect_launcher, launch, launcher_label, list_executables
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
 from mog_client.version import __version__
@@ -86,6 +86,24 @@ QProgressBar::chunk { background: #2f6fed; border-radius: 6px; }
 """
 
 COVER_SIZE = QSize(200, 270)
+PAD_ICON_HEIGHT = 28
+
+
+def pad_legend(family: str) -> str:
+    def icon(role: str) -> str:
+        path = (ASSETS / "pad" / family / f"{role}.png").as_posix()
+        return f'<img src="{path}" height="{PAD_ICON_HEIGHT}" style="vertical-align: middle;">'
+
+    gap = "&nbsp;&nbsp;&nbsp;&nbsp;"
+    items = (
+        (icon("dpad"), "Move"),
+        (icon("accept"), "Select"),
+        (icon("back"), "Back"),
+        (icon("prev") + icon("next"), "Switch focus"),
+        (icon("start"), "Settings"),
+        (f"{icon('start')}+{icon('select')}", "Quit"),
+    )
+    return gap.join(f"{glyphs} {label}" for glyphs, label in items)
 _KEYS = {
     gamepad.UP: Qt.Key_Up,
     gamepad.DOWN: Qt.Key_Down,
@@ -109,6 +127,7 @@ class Bridge(QObject):
     log = Signal(int, str)
     finished = Signal(int, str)  # game, error text ("" on success)
     pad = Signal(str)
+    pad_connected = Signal(bool, str)  # connected, controller family
     update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
     update_progress = Signal(int, int)  # written, total
     update_ready = Signal(str)  # path of the replaced build, to relaunch
@@ -999,11 +1018,16 @@ class MainWindow(QMainWindow):
         self.game_pages: dict[int, GamePage] = {}
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.legend = QLabel()
+        self.legend.setAlignment(Qt.AlignCenter)
+        self.legend.setStyleSheet("color: #9aa3b0; font-size: 15px;")
+        self.legend.setVisible(False)
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addLayout(top)
         lay.addWidget(self.stack, 1)
         lay.addWidget(self.status)
+        lay.addWidget(self.legend)
         self.setCentralWidget(central)
         self.covers: dict[int, QPixmap] = {}
         b = app.bridge
@@ -1013,8 +1037,10 @@ class MainWindow(QMainWindow):
         b.finished.connect(lambda *_: self.refresh_items())
         b.progress.connect(lambda gid, *_: self.library.update_label(gid))
         b.pad.connect(self.on_pad)
+        b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
-        self.pad_stop = gamepad.start(b.pad.emit)
+        self.osk = osk.SteamKeyboard()
+        self.pad_stop = gamepad.start(b.pad.emit, b.pad_connected.emit)
         self._show(self.library)
 
     def closeEvent(self, e):
@@ -1078,7 +1104,33 @@ class MainWindow(QMainWindow):
             lambda: self.push(UpdatePage(self, info)),
         )
 
+    def set_pad(self, connected: bool, family: str) -> None:
+        if connected:
+            self.legend.setText(pad_legend(family))
+        self.legend.setVisible(connected)
+
+    def quit_app(self) -> None:
+        if self.app.installs:
+            self.ask(
+                "An install is still running. Quit anyway? Downloaded files are kept for a later resume.",
+                self.close,
+                danger=True,
+            )
+        else:
+            self.close()
+
     def on_pad(self, name: str) -> None:
+        if self.osk.visible:
+            # Steam's keyboard owns the controller while it is up; B dismisses it.
+            if name == gamepad.BACK:
+                self.osk.hide()
+            return
+        if name == gamepad.ACCEPT and self.osk.enabled and osk.is_text_input(QApplication.focusWidget()):
+            self.osk.show()
+            return
+        if name == gamepad.QUIT:
+            self.quit_app()
+            return
         if name == gamepad.MENU:
             if self.current_page() is self.library:
                 self.open_settings()
@@ -1125,6 +1177,7 @@ def run_gui() -> int:
     updater.cleanup_old()
     app = App()
     win = MainWindow(app)
+    win.osk.install(qapp)
     if is_deck():
         win.showFullScreen()
     else:
