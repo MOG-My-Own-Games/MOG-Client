@@ -57,6 +57,7 @@ from mog_client.config import (
 from mog_client.gui import gamepad
 from mog_client.launcher import available_launchers, detect_launcher, launch, launcher_label, list_executables
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
+from mog_client.version import __version__
 
 STYLE = """
 * { font-size: 18px; }
@@ -305,6 +306,7 @@ class SettingsPage(Page):
         form.addRow("Password", self.password)
         form.addRow("Games folder", self.games_dir)
         form.addRow("Launcher", self.launcher)
+        form.addRow("Version", QLabel(__version__))
         save = QPushButton("Save")
         save.setDefault(True)
         save.clicked.connect(self.save)

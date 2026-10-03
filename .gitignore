@@ -10,4 +10,4 @@ dist/
 *.spec
 
 *.AppImage
-*.exe
+*.exe_version.py

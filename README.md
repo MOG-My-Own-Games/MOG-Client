@@ -38,17 +38,12 @@ finish before files start arriving. Run `mog --help` for every option
 
 ## Releases
 
-Pushing a tag like `v0.2.0` runs `.github/workflows/release.yml`, which builds
+Every push to `main` runs `.github/workflows/release.yml`. It computes the
+version with GitVersion (from conventional commits and the branch name), builds
 a Linux AppImage and a Windows exe and attaches them (plus `SHA256SUMS.txt`)
-to a **draft** release. Nothing goes public until you open the draft on
-GitHub, check it and click "Publish release".
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-The workflow can also be started by hand from the Actions tab
-(`Run workflow`, giving the tag name).
+to a **draft** release tagged `v<version>`. The version is embedded in the
+build (shown in Settings) but not in the file names. Nothing goes public until
+you open the draft on GitHub, check it and click "Publish release".
 
 ## Build it yourself
 
@@ -59,7 +54,7 @@ The same scripts the workflow uses. Output goes to `dist/`, scratch files to
 **Linux (AppImage)**, needs `python3` with `venv` and `curl`:
 
 ```bash
-scripts/build-appimage.sh            # dist/MOG-Client-<version>-x86_64.AppImage
+scripts/build-appimage.sh            # dist/MOG-Client-x86_64.AppImage
 scripts/build-appimage.sh 1.2.3
 ```
 
@@ -74,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1 -Version 1.2.3
 ```
 
-This produces `dist\MOG-Client-<version>.exe`, a windowed single file: the GUI
+This produces `dist\MOG-Client.exe`, a windowed single file: the GUI
 opens on double click. Its CLI flags work too, but output is not shown in a
 console; use `pip install -e .` and `mog` when you need the CLI's output.
 
