@@ -33,3 +33,16 @@ def test_notification_endpoints():
         ("DELETE", "/api/notifications"),
         ("DELETE", "/api/notifications/4"),
     ]
+
+
+def test_game_size_reads_the_servers_figure_or_none():
+    class Ok:
+        def get_json(self, path, **kw):
+            return 200, {"size_bytes": 123456, "file_count": 3}
+
+    class Old:
+        def get_json(self, path, **kw):
+            return 404, {"detail": "Not Found"}
+
+    assert MogClient(Ok()).game_size(5) == 123456
+    assert MogClient(Old()).game_size(5) is None

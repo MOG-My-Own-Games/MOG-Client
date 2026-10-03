@@ -328,6 +328,15 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def game_size(self, game_id: int) -> int | None:
+        """Bytes the game's folder takes on the server, or None if it cannot say (an older server)."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/size")
+        except RuntimeError:
+            return None
+        size = data.get("size_bytes") if status == 200 and isinstance(data, dict) else None
+        return size if isinstance(size, int) else None
+
     def get_image(self, path: str) -> bytes | None:
         """An image served by the MOG-Server (cached there), or None if it has none."""
         try:

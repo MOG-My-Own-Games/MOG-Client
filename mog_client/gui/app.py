@@ -187,6 +187,7 @@ class Bridge(QObject):
     notifications = Signal(object)  # {"notifications": [...], "unread": n}
     libraries = Signal(list)
     installers = Signal(int, object, str)  # game id, candidates (None on error), error
+    game_size = Signal(int, int)  # game id, bytes on the server
     update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
     update_progress = Signal(int, int)  # written, total
     update_ready = Signal(str)  # path of the replaced build, to relaunch
@@ -323,6 +324,14 @@ class App:
             if member["id"] in local:
                 return member
         return group.game
+
+    def load_size(self, game_id: int) -> None:
+        def work():
+            size = self.client().game_size(game_id)
+            if size is not None:
+                self.bridge.game_size.emit(game_id, size)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def load_installers(self, game_id: int) -> None:
         def work():
@@ -1087,6 +1096,8 @@ class GamePage(Page):
             val = QLabel(value)
             val.setWordWrap(True)
             form.addRow(label, val)
+        self.size_label = QLabel("...")
+        form.addRow("Size on server", self.size_label)
         info_col.addLayout(form)
         text = game.get("summary") or (game.get("igdb_metadata") or {}).get("summary") or ""
         summary = QLabel(text if len(text) < 700 else text[:700].rsplit(" ", 1)[0] + "...")
@@ -1123,10 +1134,16 @@ class GamePage(Page):
         b.log.connect(self._on_log)
         b.finished.connect(self._on_finished)
         b.image.connect(self._on_image)
+        b.game_size.connect(self._on_size)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.covers.get(gid)))
         self.app.fetch_images(self.shot_urls, game["id"])
         self._update_version_label()
+        self.app.load_size(game["id"])
         self.rebuild()
+
+    def _on_size(self, gid: int, size: int) -> None:
+        if gid == self.game["id"]:
+            self.size_label.setText(fmt_bytes(size))
 
     def _set_cover(self, pix: QPixmap | None) -> None:
         if pix:
@@ -1150,6 +1167,8 @@ class GamePage(Page):
         self.title = game["name"]
         self._set_cover(self.win.covers.get(game["id"]))
         self._update_version_label()
+        self.size_label.setText("...")
+        self.app.load_size(game["id"])
         self.rebuild()
 
     def start_with(self, version: dict, installer: dict | None) -> None:
