@@ -21,7 +21,9 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QIcon,
+    QKeySequence,
     QPixmap,
+    QShortcut,
     QPolygonF,
 )
 from PySide6.QtWidgets import (
@@ -95,6 +97,27 @@ COVER_SIZE = QSize(200, 270)
 SIDEBAR_WIDTH = 280
 IMAGE_WORKERS = 6
 PAD_ICON_HEIGHT = 28
+
+
+def keyboard_legend(typing: bool = False, inbox: bool = False) -> str:
+    """The same guide as the controller's, for the keyboard."""
+    if typing:
+        items = (("Type", "Enter text"), ("Backspace", "Delete"), ("Esc", "Cancel"))
+    elif inbox:
+        items = (("\u2191\u2193", "Move"), ("Enter", "Open"), ("Del", "Delete"), ("Esc", "Back"))
+    else:
+        items = (
+            ("\u2191\u2193\u2190\u2192", "Move"),
+            ("Enter", "Select"),
+            ("Esc", "Back"),
+            ("F5", "Refresh"),
+            ("Ctrl+F", "Search"),
+            ("Ctrl+B", "Sidebar"),
+            ("Ctrl+N", "Notifications"),
+            ("Ctrl+,", "Settings"),
+            ("Ctrl+Q", "Quit"),
+        )
+    return "&nbsp;&nbsp;&nbsp;&nbsp;".join(f"<b>{keys}</b> {label}" for keys, label in items)
 
 
 def pad_legend(family: str, typing: bool = False, inbox: bool = False) -> str:
@@ -542,6 +565,12 @@ class NotificationsPage(Page):
         if n.get("game_id") in self.win.app.games:
             self.win.show_game(n["game_id"])
 
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() == Qt.Key_Delete:
+            self.delete_current()
+        else:
+            super().keyPressEvent(e)
+
     def delete_current(self) -> None:
         n = self._notification(self.list.currentItem())
         if n is not None:
@@ -954,6 +983,18 @@ class ExecutablePage(Page):
 SHOT_SIZE = QSize(224, 126)
 
 
+class EdgeList(QListWidget):
+    """A list that hands focus on past its first and last row, so a pad can walk through a stack of lists."""
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() == Qt.Key_Down and self.currentRow() >= self.count() - 1:
+            self.focusNextChild()
+        elif e.key() == Qt.Key_Up and self.currentRow() <= 0:
+            self.focusPreviousChild()
+        else:
+            super().keyPressEvent(e)
+
+
 class StripList(QListWidget):
     """One horizontal row of thumbnails. Up/Down leave the row, so a pad can reach the buttons."""
 
@@ -965,6 +1006,20 @@ class StripList(QListWidget):
         self.setMovement(QListView.Static)
         self.setIconSize(SHOT_SIZE)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._last_row = 0
+
+    def focusInEvent(self, e) -> None:
+        super().focusInEvent(e)
+        if self.count() and self.currentRow() < 0:
+            self.setCurrentRow(min(self._last_row, self.count() - 1))
+
+    def focusOutEvent(self, e) -> None:
+        # A thumbnail stays highlighted only while the strip has the focus.
+        if self.currentRow() >= 0:
+            self._last_row = self.currentRow()
+        self.clearSelection()
+        self.setCurrentRow(-1)
+        super().focusOutEvent(e)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Down:
@@ -1174,11 +1229,11 @@ class GamePage(Page):
             self.status.setText("Installing... you can go back, it keeps running")
             written, total, label = self.app.progress.get(gid, (0, 0, ""))
             self._on_progress(gid, written, total, label or self.status.text())
-            self.first = self._button("Back to library", self.win.back, True)
             if gid in self.app.vnc:
                 self._button("Open installer display", lambda: QDesktopServices.openUrl(QUrl(self.app.vnc[gid])))
-            pause = self._button("Pausing..." if gid in self.app.stopping else "Pause", self.pause)
+            pause = self._button("Pausing..." if gid in self.app.stopping else "Pause", self.pause, True)
             pause.setEnabled(gid not in self.app.stopping)
+            self.first = pause if pause.isEnabled() else None
             self._button("Cancel local install", self.cancel_local, danger=True)
             self._button("Cancel server install", self.cancel_server, danger=True)
             return
@@ -1200,7 +1255,6 @@ class GamePage(Page):
             self.first = self._button("Resume" if rec else "Install", self.install, True)
             if rec:
                 self._button("Discard", lambda: self.uninstall(rec), danger=True)
-        self._button("Back", self.win.back)
 
     def install(self) -> None:
         group = self._group()
@@ -1359,10 +1413,12 @@ class LibraryPage(Page):
         # The sidebar sits on the left, beside the grid, not inside it, so scrolling the games leaves it where it is.
         self.sidebar = QWidget()
         self.sidebar.setFixedWidth(SIDEBAR_WIDTH)
-        self.libs = QListWidget()
+        self.libs = EdgeList()
         self.libs.currentRowChanged.connect(self._library_chosen)
-        self.installs = QLabel()
-        self.installs.setWordWrap(True)
+        self.installs = EdgeList()
+        self.installs.setMaximumHeight(170)
+        self.installs.itemActivated.connect(self._open_install)
+        self.installs.itemClicked.connect(self._open_install)
         side = QVBoxLayout(self.sidebar)
         side.setContentsMargins(0, 0, 0, 0)
         side.addWidget(self._heading("Libraries"))
@@ -1398,6 +1454,11 @@ class LibraryPage(Page):
     def set_libraries(self, libraries: list[dict]) -> None:
         self.libraries = libraries
         self._fill_libraries()
+
+    def _open_install(self, item: QListWidgetItem) -> None:
+        gid = item.data(Qt.UserRole)
+        if gid is not None:
+            self.win.show_game(gid)
 
     def _library_chosen(self, row: int) -> None:
         self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
@@ -1453,8 +1514,18 @@ class LibraryPage(Page):
 
     def update_active(self) -> None:
         running = [gid for gid in self.win.app.installs if gid in self.win.app.games]
-        lines = [f"{self.win.app.games[g]['name']}: {(self._progress(g) or 0) // 10}%" for g in running]
-        self.installs.setText("\n".join(lines) or "None")
+        row = self.installs.currentRow()
+        self.installs.clear()
+        for gid in running:
+            item = QListWidgetItem(f"{self.win.app.games[gid]['name']}: {(self._progress(gid) or 0) // 10}%")
+            item.setData(Qt.UserRole, gid)
+            self.installs.addItem(item)
+        if not running:
+            none = QListWidgetItem("None")
+            none.setFlags(Qt.NoItemFlags)
+            self.installs.addItem(none)
+        elif row >= 0:
+            self.installs.setCurrentRow(min(row, len(running) - 1))
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
@@ -1471,7 +1542,17 @@ class LibraryPage(Page):
         for game in shown:
             group = self.win.app.group_of[game["id"]]
             groups[id(group)] = group  # a title shows once, with all its versions
-        for group in sorted(groups.values(), key=lambda grp: grp.game["name"].lower()):
+        def order(group: Group) -> tuple[int, str]:
+            """Installing first, then installed, then the rest; alphabetical within each."""
+            if any(m["id"] in self.win.app.installs for m in group.members):
+                rank = 0
+            elif any(lib.get(m["id"]) and lib[m["id"]].state in ("installed", "awaiting_executable") for m in group.members):
+                rank = 1
+            else:
+                rank = 2
+            return rank, group.game["name"].lower()
+
+        for group in sorted(groups.values(), key=order):
             item = QListWidgetItem()
             self._fill_item(item, group, lib)
             self.grid.addItem(item)
@@ -1531,7 +1612,6 @@ class MainWindow(QMainWindow):
         self.legend = QLabel()
         self.legend.setAlignment(Qt.AlignCenter)
         self.legend.setStyleSheet("color: #9aa3b0; font-size: 15px;")
-        self.legend.setVisible(False)
         self.pad_family: str | None = None
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -1556,6 +1636,7 @@ class MainWindow(QMainWindow):
         self.notif_timer.timeout.connect(app.poll_notifications)
         self.notif_timer.start(15000)
         self.osk = osk.OnScreenKeyboard(self.open_keyboard)
+        self._add_shortcuts()
         self.pad_stop = gamepad.start(b.pad.emit, b.pad_connected.emit)
         self._show(self.library)
 
@@ -1624,17 +1705,31 @@ class MainWindow(QMainWindow):
             lambda: self.push(UpdatePage(self, info)),
         )
 
+    def _add_shortcuts(self) -> None:
+        def on_library(action):
+            return lambda: action() if self.current_page() is self.library else None
+
+        for keys, action in (
+            ("F5", self.app.refresh),
+            ("Ctrl+F", self.search.setFocus),
+            ("Ctrl+B", self.library.toggle_sidebar),
+            ("Ctrl+N", self.open_notifications),
+            ("Ctrl+,", self.open_settings),
+        ):
+            QShortcut(QKeySequence(keys), self, on_library(action))
+        QShortcut(QKeySequence("Ctrl+Q"), self, self.quit_app)
+
     def set_pad(self, connected: bool, family: str) -> None:
         self.pad_family = family if connected else None
         self.refresh_legend()
 
     def refresh_legend(self) -> None:
+        """The controller's guide while one is connected, the keyboard's otherwise."""
+        page = self.current_page()
+        typing, inbox = isinstance(page, KeyboardPage), isinstance(page, NotificationsPage)
         family = self.pad_family
-        if family:
-            self.legend.setText(
-                pad_legend(family, isinstance(self.current_page(), KeyboardPage), isinstance(self.current_page(), NotificationsPage))
-            )
-        self.legend.setVisible(bool(family))
+        self.legend.setText(pad_legend(family, typing, inbox) if family else keyboard_legend(typing, inbox))
+        self.legend.setVisible(True)
 
     def open_keyboard(self, target: QWidget) -> None:
         if not isinstance(self.current_page(), KeyboardPage):
