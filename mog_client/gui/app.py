@@ -92,18 +92,23 @@ PAD_ICON_HEIGHT = 28
 
 
 def pad_legend(family: str) -> str:
-    def icon(role: str) -> str:
-        path = (ASSETS / "pad" / family / f"{role}.png").as_posix()
+    def icon(button: str) -> str:
+        path = (ASSETS / "pad" / family / f"{button}.png").as_posix()
         return f'<img src="{path}" height="{PAD_ICON_HEIGHT}" style="vertical-align: middle;">'
+
+    def glyph(function: str) -> str:
+        return icon(gamepad.BUTTON_FOR[function])
 
     gap = "&nbsp;&nbsp;&nbsp;&nbsp;"
     items = (
-        (icon("dpad"), "Move"),
-        (icon("accept"), "Select"),
-        (icon("back"), "Back"),
-        (icon("prev") + icon("next"), "Switch focus"),
-        (icon("start"), "Settings"),
-        (f"{icon('start')}+{icon('select')}", "Quit"),
+        (icon(gamepad.DPAD), "Move"),
+        (glyph(gamepad.ACCEPT), "Select"),
+        (glyph(gamepad.BACK), "Back"),
+        (glyph(gamepad.PAGE_PREV) + glyph(gamepad.PAGE_NEXT), "Switch focus"),
+        (glyph(gamepad.REFRESH), "Refresh"),
+        (glyph(gamepad.SEARCH), "Search"),
+        (glyph(gamepad.MENU), "Settings"),
+        (f"{glyph(gamepad.MENU)}+{icon(gamepad.SELECT)}", "Quit"),
     )
     return gap.join(f"{glyphs} {label}" for glyphs, label in items)
 _KEYS = {
@@ -1251,6 +1256,15 @@ class MainWindow(QMainWindow):
             return
         if name == gamepad.QUIT:
             self.quit_app()
+            return
+        if name in (gamepad.REFRESH, gamepad.SEARCH):
+            if self.current_page() is self.library:
+                if name == gamepad.REFRESH:
+                    self.app.refresh()
+                else:
+                    self.search.setFocus()
+                    if self.osk.enabled:
+                        self.osk.request(self.search)
             return
         if name == gamepad.MENU:
             if self.current_page() is self.library:

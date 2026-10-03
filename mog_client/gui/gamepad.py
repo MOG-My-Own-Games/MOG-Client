@@ -19,12 +19,30 @@ import time
 from typing import Callable
 
 # Logical buttons handed to the callback.
-UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT = (
-    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit"
+UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, SEARCH = (
+    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search"
 )
 
+# Physical buttons, named by position: pad/<family>/<name>.png is whatever that family
+# prints there (A, Cross, Nintendo's B...), whatever function the button has here.
+SOUTH, EAST, WEST, NORTH = "south", "east", "west", "north"
+SHOULDER_L, SHOULDER_R, START, SELECT, DPAD = "shoulder_l", "shoulder_r", "start", "select", "dpad"
+GLYPHS = (SOUTH, EAST, WEST, NORTH, SHOULDER_L, SHOULDER_R, START, SELECT, DPAD)
+
+# Which physical button triggers each function (the joydev/XInput tables below
+# implement the same assignment).
+BUTTON_FOR = {
+    ACCEPT: SOUTH,
+    BACK: EAST,
+    REFRESH: WEST,
+    SEARCH: NORTH,
+    PAGE_PREV: SHOULDER_L,
+    PAGE_NEXT: SHOULDER_R,
+    MENU: START,
+}
+
 # Start (7) and Select (6) are handled by _Combo.
-_JS_BUTTONS = {0: ACCEPT, 1: BACK, 3: MENU, 4: PAGE_PREV, 5: PAGE_NEXT}
+_JS_BUTTONS = {0: ACCEPT, 1: BACK, 2: REFRESH, 3: SEARCH, 4: PAGE_PREV, 5: PAGE_NEXT}
 _JS_SELECT, _JS_START = 6, 7
 XBOX, PLAYSTATION, NINTENDO, STEAM = "xbox", "playstation", "nintendo", "steam"
 _FAMILY_PATTERNS = (
@@ -198,7 +216,7 @@ class _XInputState(ctypes.Structure):
 
 _XI_BUTTONS = {
     0x0001: UP, 0x0002: DOWN, 0x0004: LEFT, 0x0008: RIGHT,
-    0x0100: PAGE_PREV, 0x0200: PAGE_NEXT, 0x1000: ACCEPT, 0x2000: BACK,
+    0x0100: PAGE_PREV, 0x0200: PAGE_NEXT, 0x1000: ACCEPT, 0x2000: BACK, 0x4000: REFRESH, 0x8000: SEARCH,
 }
 
 

@@ -55,5 +55,9 @@ def test_every_family_has_every_glyph():
 
     assets = Path(gamepad.__file__).parent / "assets" / "pad"
     for family in (gamepad.XBOX, gamepad.PLAYSTATION, gamepad.NINTENDO, gamepad.STEAM):
-        for role in ("dpad", "accept", "back", "prev", "next", "start", "select"):
-            assert (assets / family / f"{role}.png").is_file(), (family, role)
+        for button in gamepad.GLYPHS:
+            assert (assets / family / f"{button}.png").is_file(), (family, button)
+
+
+def test_every_function_has_a_glyph():
+    assert set(gamepad.BUTTON_FOR.values()) <= set(gamepad.GLYPHS)
