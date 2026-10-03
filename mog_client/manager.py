@@ -29,6 +29,9 @@ def _update(rec: InstalledGame, **changes) -> None:
     save_library(lib)
 
 
+ARCHIVE_SOURCE_KINDS = ("disc image", "archive")
+
+
 def run_install(
     client: MogClient,
     game: dict,
@@ -37,8 +40,12 @@ def run_install(
     log: Log,
     on_session: Callable[[dict], None],
     on_bytes: Callable[[int, int], None],
+    installer: dict | None = None,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
+
+    `installer` is one of the server's candidates (path and kind) to run instead of
+    the one it would pick itself.
 
     Blocks until done, failed, stopped or the server needs a manual pick
     (raises RuntimeError with a message in the last two cases)."""
@@ -53,7 +60,14 @@ def run_install(
     existing = client.get_session(gid)
     session_id = existing.get("id") if existing and existing.get("state") == "done" else None
     if session_id is None:
-        session = client.start_session(gid, None, None, None)
+        archive = installer is not None and installer.get("kind") in ARCHIVE_SOURCE_KINDS
+        session = client.start_session(
+            gid,
+            None if archive or installer is None else installer["path"],
+            None,
+            None,
+            source_path=installer["path"] if archive else None,
+        )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":
             raise RuntimeError(f"needs a manual installer pick, open {client.c.base}{session.get('vnc_url') or ''}")

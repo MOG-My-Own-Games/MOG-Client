@@ -7,6 +7,7 @@ import hashlib
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, Signal
@@ -14,7 +15,6 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QKeyEvent,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from mog_client import manager, steam, updater
 from mog_client.api import fetch_url, fmt_bytes
+from mog_client.grouping import Group, group_games
 from mog_client.config import (
     InstalledGame,
     Settings,
@@ -88,6 +89,8 @@ QProgressBar::chunk { background: {accent}; border-radius: 6px; }
 """.replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss())
 
 COVER_SIZE = QSize(200, 270)
+SIDEBAR_WIDTH = 280
+IMAGE_WORKERS = 6
 PAD_ICON_HEIGHT = 28
 
 
@@ -126,6 +129,7 @@ def pad_legend(family: str, typing: bool = False, inbox: bool = False) -> str:
         (glyph(gamepad.PAGE_PREV) + glyph(gamepad.PAGE_NEXT), "Switch focus"),
         (glyph(gamepad.REFRESH), "Refresh"),
         (glyph(gamepad.SEARCH), "Search"),
+        (glyph(gamepad.TRIGGER_L), "Sidebar"),
         (glyph(gamepad.MENU), "Settings"),
         (f"{glyph(gamepad.MENU)}+{icon(gamepad.SELECT)}", "Quit"),
     )
@@ -155,6 +159,8 @@ class Bridge(QObject):
     pad = Signal(str)
     pad_connected = Signal(bool, str)  # connected, controller family
     notifications = Signal(object)  # {"notifications": [...], "unread": n}
+    libraries = Signal(list)
+    installers = Signal(int, object, str)  # game id, candidates (None on error), error
     update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
     update_progress = Signal(int, int)  # written, total
     update_ready = Signal(str)  # path of the replaced build, to relaunch
@@ -175,6 +181,7 @@ class App:
         self.installs: dict[int, threading.Event] = {}
         self.progress: dict[int, tuple[int, int, str]] = {}
         self.vnc: dict[int, str] = {}
+        self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
 
     def client(self):
         return manager.make_client(self.settings)
@@ -215,50 +222,91 @@ class App:
         def work():
             try:
                 self.bridge.notifications.emit(self.client().notifications())
-            except Exception:  # noqa: BLE001 - the inbox is best effort, a failed poll just retries
+            except Exception:  # noqa: BLE001, S110 - the inbox is best effort, a failed poll just retries
                 pass
 
         threading.Thread(target=work, daemon=True).start()
 
     def refresh(self) -> None:
         def work():
-            games = self.client().list_games()
+            client = self.client()
+            try:
+                self.bridge.libraries.emit(client.list_libraries())
+            except RuntimeError:
+                pass  # an older server without the endpoint just has no library filter
+            games = client.list_games()
             self.bridge.games.emit(games)
-            for g in games:
-                self._load_cover(g)
+            with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
+                list(pool.map(lambda g: self._load_cover(g, client), games))
 
         self.run_bg(work)
 
-    def _load_cover(self, game: dict) -> None:
-        cache = data_dir() / "covers" / f"{game['id']}.img"
+    def _image(self, cache: Path, server_path: str, url: str, client) -> bytes | None:
+        """Cached image: from the MOG-Server first (it caches and shrinks them, so a
+        remote client does not depend on the provider CDN), else straight from `url`."""
         if not cache.is_file():
-            url = artwork_urls(game).get("portrait")
-            if not url:
-                return
-            try:
-                blob = fetch_url(url)
-            except RuntimeError:
-                return
+            blob = client.get_image(server_path)
+            if blob is None:
+                try:
+                    blob = fetch_url(url)
+                except RuntimeError:
+                    return None
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_bytes(blob)
-        self.bridge.cover.emit(game["id"], cache.read_bytes())
+        return cache.read_bytes()
 
-    def fetch_images(self, urls: list[str]) -> None:
+    def _load_cover(self, game: dict, client) -> None:
+        url = artwork_urls(game).get("portrait")
+        if not url:
+            return
+        # The URL is part of the name, so a re-scraped cover is not shadowed by the old file.
+        cache = data_dir() / "covers" / f"{game['id']}-{hashlib.sha1(url.encode()).hexdigest()[:10]}.img"
+        blob = self._image(cache, f"/api/games/{game['id']}/cover", url, client)
+        if blob is not None:
+            self.bridge.cover.emit(game["id"], blob)
+
+    def fetch_images(self, urls: list[str], game_id: int) -> None:
         def work():
-            for url in urls:
+            client = self.client()
+
+            def one(item: tuple[int, str]) -> None:
+                index, url = item
                 cache = data_dir() / "shots" / hashlib.sha1(url.encode()).hexdigest()
-                if not cache.is_file():
-                    try:
-                        blob = fetch_url(url)
-                    except RuntimeError:
-                        continue
-                    cache.parent.mkdir(parents=True, exist_ok=True)
-                    cache.write_bytes(blob)
-                self.bridge.image.emit(url, cache.read_bytes())
+                blob = self._image(cache, f"/api/games/{game_id}/screenshots/{index}", url, client)
+                if blob is not None:
+                    self.bridge.image.emit(url, blob)
+
+            with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
+                list(pool.map(one, enumerate(urls)))
 
         self.run_bg(work, on_error=lambda _m: None)
 
-    def start_install(self, game: dict) -> None:
+    def set_games(self, games: list[dict]) -> None:
+        self.games = {g["id"]: g for g in games}
+        self.group_of = {g["id"]: group for group in group_games(games) for g in group.members}
+
+    def active_version(self, group: Group) -> dict:
+        """The version to show for a title: one being installed, else one with local files, else the first."""
+        local = load_library()
+        for member in group.members:
+            if member["id"] in self.installs:
+                return member
+        for member in group.members:
+            if member["id"] in local:
+                return member
+        return group.game
+
+    def load_installers(self, game_id: int) -> None:
+        def work():
+            try:
+                data = self.client().candidates(game_id)
+                self.bridge.installers.emit(game_id, data.get("candidates", []), "")
+            except Exception as e:  # noqa: BLE001 - shown in the picker
+                self.bridge.installers.emit(game_id, None, str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def start_install(self, game: dict, installer: dict | None = None) -> None:
         gid = game["id"]
         if gid in self.installs:
             return
@@ -295,7 +343,7 @@ class App:
                 manager.run_install(
                     self.client(), game, self.settings, stop,
                     lambda m: bridge.log.emit(gid, m), on_session,
-                    report,
+                    report, installer,
                 )
             except Exception as e:  # noqa: BLE001
                 err = str(e)
@@ -570,6 +618,88 @@ class KeyboardPage(Page):
             super().keyPressEvent(e)
 
 
+def version_label(game: dict, libraries: list[dict]) -> str:
+    """A version is told apart by its folder or file name (and library, when there are several)."""
+    name = game["fs_name"]
+    if len(libraries) > 1:
+        lib = next((lib["name"] for lib in libraries if lib["id"] == game.get("library_id")), "")
+        if lib:
+            name += f" [{lib}]"
+    return name
+
+
+class InstallerPickerPage(Page):
+    """The installers of every version of a title, each under its version, to pick which one to run."""
+
+    title = "Choose an installer"
+
+    def __init__(self, win: "MainWindow", page: "GamePage", group: Group):
+        super().__init__()
+        self.win, self.page, self.group = win, page, group
+        self.found: dict[int, list[dict] | str] = {}
+        self.list = QListWidget()
+        self.list.itemActivated.connect(self.choose)
+        self.status = QLabel("Looking for installers...")
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.status)
+        lay.addWidget(self.list, 1)
+        win.app.bridge.installers.connect(self.on_installers)
+        for version in group.versions:
+            win.app.load_installers(version["id"])
+        self.render()
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def on_installers(self, game_id: int, candidates, error: str) -> None:
+        if game_id in {v["id"] for v in self.group.versions}:
+            self.found[game_id] = candidates if candidates is not None else error
+            self.render()
+
+    def render(self) -> None:
+        self.list.clear()
+        for version in self.group.versions:
+            header = QListWidgetItem(version_label(version, self.win.library.libraries))
+            header.setFlags(Qt.NoItemFlags)
+            font = header.font()
+            font.setBold(True)
+            header.setFont(font)
+            self.list.addItem(header)
+            entry = QListWidgetItem("    Let the server choose")
+            entry.setData(Qt.UserRole, (version, None))
+            self.list.addItem(entry)
+            found = self.found.get(version["id"])
+            if found is None:
+                self.list.addItem(self._note("    Looking..."))
+            elif isinstance(found, str):
+                self.list.addItem(self._note(f"    Could not list installers: {found}"))
+            for cand in found if isinstance(found, list) else []:
+                tag = "" if cand.get("category", "game") == "game" else f"[{cand['category'].upper()}] "
+                row = QListWidgetItem(f"    {tag}{cand['path']}  ({fmt_bytes(cand['file_size_bytes'])}, {cand['kind']})")
+                row.setData(Qt.UserRole, (version, cand))
+                self.list.addItem(row)
+        done = len(self.found) == len(self.group.versions)
+        self.status.setText("Pick the installer to run:" if done else "Looking for installers...")
+        for i in range(self.list.count()):
+            if self.list.item(i).data(Qt.UserRole):
+                self.list.setCurrentRow(i)
+                break
+
+    @staticmethod
+    def _note(text: str) -> QListWidgetItem:
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.NoItemFlags)
+        return item
+
+    def choose(self, item: QListWidgetItem) -> None:
+        picked = item.data(Qt.UserRole)
+        if not picked:
+            return
+        version, installer = picked
+        self.win.back()
+        self.page.start_with(version, installer)
+
+
 class SettingsPage(Page):
     title = "Settings"
 
@@ -659,6 +789,7 @@ class SettingsPage(Page):
             # "auto" keeps following the preference order (Faugus first) as launchers come and go.
             launcher="auto" if self.launcher.currentData() == detect_launcher() else self.launcher.currentData() or "auto",
             check_updates=self.check_updates_box.isChecked(),
+            show_sidebar=self.win.app.settings.show_sidebar,
         )
         save_settings(self.win.app.settings)
         self.win.back()
@@ -858,6 +989,9 @@ class GamePage(Page):
         self.cover.setAlignment(Qt.AlignCenter)
         self._set_cover(win.covers.get(game["id"]))
         info_col = QVBoxLayout()
+        self.version_label = QLabel()
+        self.version_label.setWordWrap(True)
+        info_col.addWidget(self.version_label)
         form = QFormLayout()
         for label, value in metadata_lines(game):
             val = QLabel(value)
@@ -899,13 +1033,41 @@ class GamePage(Page):
         b.log.connect(self._on_log)
         b.finished.connect(self._on_finished)
         b.image.connect(self._on_image)
-        b.cover.connect(lambda gid, _blob: gid == game["id"] and self._set_cover(win.covers.get(gid)))
-        self.app.fetch_images(self.shot_urls)
+        b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.covers.get(gid)))
+        self.app.fetch_images(self.shot_urls, game["id"])
+        self._update_version_label()
         self.rebuild()
 
     def _set_cover(self, pix: QPixmap | None) -> None:
         if pix:
             self.cover.setPixmap(pix)
+
+    def _group(self) -> Group | None:
+        return self.app.group_of.get(self.game["id"])
+
+    def _update_version_label(self) -> None:
+        group = self._group()
+        many = group is not None and len(group.versions) > 1
+        self.version_label.setVisible(many)
+        if many:
+            self.version_label.setText(
+                f"Version: {version_label(self.game, self.win.library.libraries)}  ({len(group.versions)} versions available)"
+            )
+
+    def switch_version(self, game: dict) -> None:
+        """Show another version of the same title (its install state, cover and files)."""
+        self.game = game
+        self.title = game["name"]
+        self._set_cover(self.win.covers.get(game["id"]))
+        self._update_version_label()
+        self.rebuild()
+
+    def start_with(self, version: dict, installer: dict | None) -> None:
+        self.switch_version(version)
+        self.app.start_install(version, installer)
+        self.rebuild()
+        if self.first:
+            self.first.setFocus()
 
     def _on_image(self, url: str, blob: bytes) -> None:
         pix = QPixmap()
@@ -999,12 +1161,18 @@ class GamePage(Page):
             self.status.setText("Partially downloaded, can resume" if rec else "Not installed")
             self.bar.setRange(0, 1)
             self.bar.setValue(0)
-            self.first = self._button("Resume install" if rec else "Install", self.install, True)
+            self.first = self._button("Resume" if rec else "Install", self.install, True)
             if rec:
                 self._button("Discard", lambda: self.uninstall(rec), danger=True)
         self._button("Back", self.win.back)
 
     def install(self) -> None:
+        group = self._group()
+        local = load_library()
+        fresh = group is not None and not any(m["id"] in local for m in group.members)
+        if group is not None and len(group.versions) > 1 and fresh:
+            self.win.push(InstallerPickerPage(self.win, self, group))
+            return
         self.app.start_install(self.game)
         self.rebuild()
         if self.first:
@@ -1130,8 +1298,6 @@ class LibraryPage(Page):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
-        self.active = QLabel()
-        self.active.setVisible(False)
         self.grid = QListWidget()
         self.grid.setViewMode(QListView.IconMode)
         self.grid.setResizeMode(QListView.Adjust)
@@ -1140,9 +1306,63 @@ class LibraryPage(Page):
         self.grid.setGridSize(QSize(COVER_SIZE.width() + 40, COVER_SIZE.height() + 80))
         self.grid.itemActivated.connect(win.open_game)
         self.items: dict[int, QListWidgetItem] = {}
-        lay = QVBoxLayout(self)
-        lay.addWidget(self.active)
+        self.library_filter: int | None = None
+        self.libraries: list[dict] = []
+
+        # The sidebar sits beside the grid, not inside it, so scrolling the games leaves it where it is.
+        self.sidebar = QWidget()
+        self.sidebar.setFixedWidth(SIDEBAR_WIDTH)
+        self.libs = QListWidget()
+        self.libs.currentRowChanged.connect(self._library_chosen)
+        self.installs = QLabel()
+        self.installs.setWordWrap(True)
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.addWidget(self._heading("Libraries"))
+        side.addWidget(self.libs, 1)
+        side.addWidget(self._heading("Active installs"))
+        side.addWidget(self.installs)
+        self.sidebar.setVisible(win.app.settings.show_sidebar)
+
+        lay = QHBoxLayout(self)
         lay.addWidget(self.grid, 1)
+        lay.addWidget(self.sidebar)
+        self._fill_libraries()
+
+    @staticmethod
+    def _heading(text: str) -> QLabel:
+        label = QLabel(text.upper())
+        label.setStyleSheet("color: #9aa3b0; font-size: 14px; font-weight: bold; padding-top: 8px;")
+        return label
+
+    def _fill_libraries(self) -> None:
+        self.libs.blockSignals(True)
+        self.libs.clear()
+        self.libs.addItem("All games")
+        for lib in self.libraries:
+            self.libs.addItem(lib["name"])
+        row = 0
+        if self.library_filter is not None:
+            row = next((i + 1 for i, lib in enumerate(self.libraries) if lib["id"] == self.library_filter), 0)
+            self.library_filter = self.libraries[row - 1]["id"] if row else None
+        self.libs.setCurrentRow(row)
+        self.libs.blockSignals(False)
+
+    def set_libraries(self, libraries: list[dict]) -> None:
+        self.libraries = libraries
+        self._fill_libraries()
+
+    def _library_chosen(self, row: int) -> None:
+        self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
+        self.populate(self.win.search.text().lower())
+
+    def toggle_sidebar(self) -> None:
+        shown = not self.sidebar.isVisible()
+        self.sidebar.setVisible(shown)
+        settings = self.win.app.settings
+        settings.show_sidebar = shown
+        save_settings(settings)
+        (self.libs if shown else self.grid).setFocus()
 
     def focus_default(self) -> None:
         self.grid.setFocus()
@@ -1154,50 +1374,63 @@ class LibraryPage(Page):
         written, total, _ = self.win.app.progress.get(gid, (0, 0, ""))
         return 1000 * written // total if total else 0
 
-    def label(self, gid: int, rec: InstalledGame | None) -> str:
+    def label(self, gid: int, rec: InstalledGame | None, versions: int = 1) -> str:
         name = self.win.app.games[gid]["name"]
+        badges = []
+        if versions > 1:
+            badges.append(f"{versions} versions")
         badge = {"awaiting_executable": "Setup needed", "installing": "Partial"}.get(
             rec.state if rec else "", ""
         )
         progress = self._progress(gid)
         if progress is not None:
             badge = f"Installing {progress // 10}%"
-        return name + (f"\n[{badge}]" if badge else "")
+        if badge:
+            badges.append(badge)
+        return name + (f"\n[{' | '.join(badges)}]" if badges else "")
+
+    def _fill_item(self, item: QListWidgetItem, group: Group, lib: dict) -> None:
+        gid = self.win.app.active_version(group)["id"]
+        item.setText(self.label(gid, lib.get(gid), len(group.versions)))
+        item.setData(Qt.UserRole, gid)
+        item.setData(ROLE_COVER, self.win.covers.get(gid))
+        item.setData(ROLE_PROGRESS, self._progress(gid))
+        item.setData(ROLE_INSTALLED, any(lib.get(g["id"]) and lib[g["id"]].state == "installed" for g in group.members))
 
     def update_label(self, gid: int) -> None:
         item = self.items.get(gid)
-        if item is not None:
-            rec = load_library().get(gid)
-            item.setText(self.label(gid, rec))
-            item.setData(ROLE_PROGRESS, self._progress(gid))
-            item.setData(ROLE_INSTALLED, bool(rec and rec.state == "installed"))
+        group = self.win.app.group_of.get(gid)
+        if item is not None and group is not None:
+            self._fill_item(item, group, load_library())
         self.update_active()
 
     def update_active(self) -> None:
         running = [gid for gid in self.win.app.installs if gid in self.win.app.games]
-        if not running:
-            self.active.setVisible(False)
-            return
-        parts = [f"{self.win.app.games[g]['name']} {(self._progress(g) or 0) // 10}%" for g in running]
-        self.active.setText(f"{len(running)} install{'s' if len(running) > 1 else ''} in progress: " + ", ".join(parts))
-        self.active.setVisible(True)
+        lines = [f"{self.win.app.games[g]['name']}: {(self._progress(g) or 0) // 10}%" for g in running]
+        self.installs.setText("\n".join(lines) or "None")
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
         lib = load_library()
         self.grid.clear()
         self.items = {}
-        for gid, g in sorted(self.win.app.games.items(), key=lambda kv: kv[1]["name"].lower()):
-            if needle and needle not in g["name"].lower():
-                continue
-            item = QListWidgetItem(self.label(gid, lib.get(gid)))
-            item.setData(Qt.UserRole, gid)
-            item.setData(ROLE_COVER, self.win.covers.get(gid))
-            item.setData(ROLE_PROGRESS, self._progress(gid))
-            item.setData(ROLE_INSTALLED, bool(lib.get(gid) and lib[gid].state == "installed"))
+        shown = [
+            g
+            for g in self.win.app.games.values()
+            if (not needle or needle in g["name"].lower())
+            and (self.library_filter is None or g.get("library_id") == self.library_filter)
+        ]
+        groups: dict[int, Group] = {}
+        for game in shown:
+            group = self.win.app.group_of[game["id"]]
+            groups[id(group)] = group  # a title shows once, with all its versions
+        for group in sorted(groups.values(), key=lambda grp: grp.game["name"].lower()):
+            item = QListWidgetItem()
+            self._fill_item(item, group, lib)
             self.grid.addItem(item)
-            self.items[gid] = item
-            if gid == current:
+            for member in group.members:
+                self.items[member["id"]] = item
+            if item.data(Qt.UserRole) == current or any(m["id"] == current for m in group.members):
                 self.grid.setCurrentItem(item)
         if not self.grid.currentItem() and self.grid.count():
             self.grid.setCurrentRow(0)
@@ -1271,6 +1504,7 @@ class MainWindow(QMainWindow):
         b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
         b.notifications.connect(self.on_notifications)
+        b.libraries.connect(self.library.set_libraries)
         self.notif_timer = QTimer(self)
         self.notif_timer.timeout.connect(app.poll_notifications)
         self.notif_timer.start(15000)
@@ -1399,6 +1633,10 @@ class MainWindow(QMainWindow):
         if isinstance(page, NotificationsPage) and name == gamepad.REFRESH:
             page.delete_current()
             return
+        if name == gamepad.TRIGGER_L:
+            if page is self.library:
+                self.library.toggle_sidebar()
+            return
         if name == gamepad.TRIGGER_R:
             return
         if name in (gamepad.REFRESH, gamepad.SEARCH):
@@ -1441,7 +1679,7 @@ class MainWindow(QMainWindow):
         self.push(SettingsPage(self))
 
     def set_games(self, games: list) -> None:
-        self.app.games = {g["id"]: g for g in games}
+        self.app.set_games(games)
         self.app.poll_notifications()
         self.notify(f"{len(games)} games")
         self.refresh_items()
@@ -1464,9 +1702,11 @@ class MainWindow(QMainWindow):
     def show_game(self, gid: int) -> None:
         game = self.app.games.get(gid)
         if game:
-            if gid not in self.game_pages:
-                self.game_pages[gid] = GamePage(self, game)
-            self.push(self.game_pages[gid])
+            # A page can have switched to another version of its title, so match on what it shows now.
+            page = next((p for p in self.game_pages.values() if p.game["id"] == gid), None)
+            if page is None:
+                page = self.game_pages[gid] = GamePage(self, game)
+            self.push(page)
 
     def open_notifications(self) -> None:
         self.push(NotificationsPage(self))

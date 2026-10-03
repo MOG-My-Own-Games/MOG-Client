@@ -61,3 +61,11 @@ def test_every_family_has_every_glyph():
 
 def test_every_function_has_a_glyph():
     assert set(gamepad.BUTTON_FOR.values()) <= set(gamepad.GLYPHS)
+
+
+def test_trigger_fires_once_per_pull():
+    events: list[str] = []
+    trigger = gamepad._Trigger(events.append, gamepad.TRIGGER_L)
+    for down in (False, True, True, False, True):
+        trigger.set(down)
+    assert events == [gamepad.TRIGGER_L, gamepad.TRIGGER_L]

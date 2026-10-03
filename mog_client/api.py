@@ -244,12 +244,24 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
-    def stream_file(self, game_id: int, path: str, out_dir: Path, session_id: int | None = None) -> int:
+    def stream_file(
+        self,
+        game_id: int,
+        path: str,
+        out_dir: Path,
+        session_id: int | None = None,
+        on_chunk: Callable[[int], None] | None = None,
+        stop: threading.Event | None = None,
+    ) -> int:
         """Range-stream whatever is currently available for one file,
         resuming from wherever the local copy left off. Returns the file's
         total size on disk after this call. Never blocks waiting for more:
         drains what's already sealed, then returns - the caller's own
-        manifest-repoll loop retries a file that isn't ready yet."""
+        manifest-repoll loop retries a file that isn't ready yet.
+
+        The body goes to disk in chunks as it arrives, so a dropped connection
+        keeps everything received so far: the error is raised and the caller's
+        retry resumes from the file's size on disk."""
         encoded = urllib.parse.quote(path, safe="/")
         params = {"device_id": DEVICE_ID}
         if session_id is not None:
@@ -311,6 +323,14 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def get_image(self, path: str) -> bytes | None:
+        """An image served by the MOG-Server (cached there), or None if it has none."""
+        try:
+            status, content, _ = self.c.request("GET", path, timeout=30.0)
+        except RuntimeError:
+            return None
+        return content if status == 200 and content else None
+
     def notifications(self) -> dict:
         status, data = self.c.get_json("/api/notifications")
         if status != 200:
@@ -323,6 +343,12 @@ class MogClient:
 
     def delete_notifications(self, notification_id: int | None = None) -> None:
         self.c.delete_json("/api/notifications" if notification_id is None else f"/api/notifications/{notification_id}")
+
+    def list_libraries(self) -> list[dict]:
+        status, data = self.c.get_json("/api/libraries")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
 
     def list_games(self) -> list[dict]:
         status, data = self.c.get_json("/api/games")

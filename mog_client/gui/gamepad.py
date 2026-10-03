@@ -19,17 +19,17 @@ import time
 from typing import Callable
 
 # Logical buttons handed to the callback.
-UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, SEARCH, TRIGGER_R = (
-    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search", "trigger_r"
+UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, SEARCH, TRIGGER_R, TRIGGER_L = (
+    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search", "trigger_r", "trigger_l"
 )
 
 # Physical buttons, named by position: pad/<family>/<name>.png is whatever that family
 # prints there (A, Cross, Nintendo's B...), whatever function the button has here.
 SOUTH, EAST, WEST, NORTH = "south", "east", "west", "north"
-SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, START, SELECT, DPAD = (
-    "shoulder_l", "shoulder_r", "trigger_r", "start", "select", "dpad"
+SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, TRIGGER_L_GLYPH, START, SELECT, DPAD = (
+    "shoulder_l", "shoulder_r", "trigger_r", "trigger_l", "start", "select", "dpad"
 )
-GLYPHS = (SOUTH, EAST, WEST, NORTH, SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, START, SELECT, DPAD)
+GLYPHS = (SOUTH, EAST, WEST, NORTH, SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, TRIGGER_L_GLYPH, START, SELECT, DPAD)
 
 # Which physical button triggers each function (the joydev/XInput tables below
 # implement the same assignment).
@@ -42,6 +42,7 @@ BUTTON_FOR = {
     PAGE_NEXT: SHOULDER_R,
     MENU: START,
     TRIGGER_R: TRIGGER_R_GLYPH,
+    TRIGGER_L: TRIGGER_L_GLYPH,
 }
 
 # Start (7) and Select (6) are handled by _Combo.
@@ -77,7 +78,7 @@ def _joydev_name(path: str) -> str:
 
 _DEADZONE = 16000
 _TRIGGER_ON = 8000
-_JS_TRIGGER_R_AXIS = 5
+_JS_TRIGGER_L_AXIS, _JS_TRIGGER_R_AXIS = 2, 5
 _REPEAT_DELAY, _REPEAT_RATE = 0.4, 0.09
 
 
@@ -129,6 +130,18 @@ class _Combo:
             self.emit(QUIT)
 
 
+class _Trigger:
+    """An analog trigger as a button: fires once per pull."""
+
+    def __init__(self, emit: Callable[[str], None], name: str):
+        self.emit, self.name, self.down = emit, name, False
+
+    def set(self, down: bool) -> None:
+        if down and not self.down:
+            self.emit(self.name)
+        self.down = down
+
+
 class _Axes:
     """Turns raw axis values into directional presses/releases."""
 
@@ -157,7 +170,7 @@ def _run_joydev(
     rep = _Repeater(emit)
     combo = _Combo(emit)
     rest: dict[int, int] = {}  # axis rest values; analog triggers rest at their minimum
-    r2_down = False
+    triggers = {_JS_TRIGGER_L_AXIS: _Trigger(emit, TRIGGER_L), _JS_TRIGGER_R_AXIS: _Trigger(emit, TRIGGER_R)}
     connected = False
     sticks, hats = _Axes(rep), _Axes(rep)
     fds: dict[int, str] = {}
@@ -207,11 +220,8 @@ def _run_joydev(
                         hats.set("x", value, LEFT, RIGHT)
                     elif number == 7:
                         hats.set("y", value, UP, DOWN)
-                    elif number == _JS_TRIGGER_R_AXIS and rest.get(number, 0) < -_DEADZONE:
-                        down = value > _TRIGGER_ON
-                        if down and not r2_down:
-                            emit(TRIGGER_R)
-                        r2_down = down
+                    elif number in triggers and rest.get(number, 0) < -_DEADZONE:
+                        triggers[number].set(value > _TRIGGER_ON)
         rep.tick()
 
 
@@ -253,7 +263,7 @@ def _run_xinput(
     sticks = _Axes(rep)
     combo = _Combo(emit)
     previous = 0
-    r2_down = False
+    trigger_l, trigger_r = _Trigger(emit, TRIGGER_L), _Trigger(emit, TRIGGER_R)
     connected = False
     state = _XInputState()
     while not stop.is_set():
@@ -283,10 +293,8 @@ def _run_xinput(
             previous = state.buttons
             sticks.set("x", state.lx, LEFT, RIGHT)
             sticks.set("y", -state.ly, UP, DOWN)
-            down = state.rt > 128
-            if down and not r2_down:
-                emit(TRIGGER_R)
-            r2_down = down
+            trigger_l.set(state.lt > 128)
+            trigger_r.set(state.rt > 128)
         rep.tick()
         stop.wait(0.016)
 
