@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build MOG-Client-<version>-x86_64.AppImage into ./dist.
+# Build MOG-Client-x86_64.AppImage into ./dist (version is embedded, not in the filename).
 #
 #   scripts/build-appimage.sh [version]      (default: version from pyproject.toml)
 #
@@ -16,6 +16,7 @@ APPIMAGETOOL_URL=${APPIMAGETOOL_URL:-https://github.com/AppImage/appimagetool/re
 
 rm -rf build/appimage dist/MOG-Client-*.AppImage
 mkdir -p build dist
+printf '__version__ = "%s"\n' "$VERSION" >mog_client/_version.py
 
 python3 -m venv build/venv
 build/venv/bin/pip install --quiet --upgrade pip
@@ -53,7 +54,7 @@ if [ ! -x "$TOOL" ]; then
   chmod +x "$TOOL"
 fi
 
-OUT="dist/MOG-Client-$VERSION-$ARCH.AppImage"
+OUT="dist/MOG-Client-$ARCH.AppImage"
 # --appimage-extract-and-run: works where FUSE is unavailable (CI, containers).
 ARCH=$ARCH "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT"
 echo "Built $OUT"

@@ -1,25 +1,34 @@
 name: Release
 
-# A pushed tag like v0.2.0 builds the AppImage and the Windows exe and
-# attaches them to a DRAFT release. Nothing is published until someone
-# reviews the draft on GitHub and clicks "Publish release".
+# Every push to main computes the version with GitVersion, builds the AppImage
+# and the Windows exe and attaches them to a DRAFT release tagged v<version>.
+# Nothing is published until someone reviews the draft on GitHub and clicks
+# "Publish release" (which is also what creates the tag).
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Tag the draft release is created for (must be a v* name, created if missing)
-        required: true
 
 permissions:
   contents: read
 
-env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
-
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.gv.outputs.semVer }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GitVersion needs the full history
+      - uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: 6.x
+      - uses: gittools/actions/gitversion/execute@v3
+        id: gv
+
   appimage:
+    needs: version
     # Oldest runner image on purpose: the AppImage uses the host's glibc.
     runs-on: ubuntu-22.04
     steps:
@@ -28,7 +37,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build AppImage
-        run: scripts/build-appimage.sh "${TAG#v}"
+        run: scripts/build-appimage.sh "${{ needs.version.outputs.semver }}"
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
@@ -36,6 +45,7 @@ jobs:
           if-no-files-found: error
 
   windows-exe:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +54,7 @@ jobs:
           python-version: "3.12"
       - name: Build exe
         shell: pwsh
-        run: scripts\build-exe.ps1 -Version "$($env:TAG.TrimStart('v'))"
+        run: scripts\build-exe.ps1 -Version "${{ needs.version.outputs.semver }}"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-exe
@@ -52,7 +62,7 @@ jobs:
           if-no-files-found: error
 
   draft-release:
-    needs: [appimage, windows-exe]
+    needs: [version, appimage, windows-exe]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,8 +75,9 @@ jobs:
         run: cd artifacts && sha256sum * > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }}
-          name: MOG Client ${{ env.TAG }}
+          tag_name: v${{ needs.version.outputs.semver }}
+          target_commitish: ${{ github.sha }}
+          name: MOG Client v${{ needs.version.outputs.semver }}
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
