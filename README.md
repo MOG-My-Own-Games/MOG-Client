@@ -47,6 +47,13 @@ to a **draft** release tagged `v<version>`. The version is embedded in the
 build (shown in Settings) but not in the file names. Nothing goes public until
 you open the draft on GitHub, check it and click "Publish release".
 
+## Notifications
+
+The server tells you when something needs attention, for now an auto mode install
+that got stuck or failed. The client shows them under "Notifications" (bell button
+next to Settings, with the unread count) and in the status line when a new one
+arrives; open one to jump to its game, delete it from the list or with X.
+
 ## Updates
 
 AppImage and exe builds check the latest published release at startup and

@@ -266,6 +266,19 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def notifications(self) -> dict:
+        status, data = self.c.get_json("/api/notifications")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def mark_notifications_read(self, notification_id: int | None = None) -> None:
+        path = "/api/notifications/read" if notification_id is None else f"/api/notifications/{notification_id}/read"
+        self.c.post_json(path, {})
+
+    def delete_notifications(self, notification_id: int | None = None) -> None:
+        self.c.delete_json("/api/notifications" if notification_id is None else f"/api/notifications/{notification_id}")
+
     def list_games(self) -> list[dict]:
         status, data = self.c.get_json("/api/games")
         if status != 200:

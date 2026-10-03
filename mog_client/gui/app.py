@@ -9,7 +9,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -56,7 +56,7 @@ from mog_client.config import (
     save_settings,
 )
 from mog_client.gui import gamepad, keyboard, osk
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss, bell_icon
 from mog_client.launcher import available_launchers, detect_launcher, launch, launcher_label, list_executables
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
 from mog_client.version import __version__
@@ -91,7 +91,7 @@ COVER_SIZE = QSize(200, 270)
 PAD_ICON_HEIGHT = 28
 
 
-def pad_legend(family: str) -> str:
+def pad_legend(family: str, typing: bool = False, inbox: bool = False) -> str:
     def icon(button: str) -> str:
         path = (ASSETS / "pad" / family / f"{button}.png").as_posix()
         return f'<img src="{path}" height="{PAD_ICON_HEIGHT}" style="vertical-align: middle;">'
@@ -100,6 +100,25 @@ def pad_legend(family: str) -> str:
         return icon(gamepad.BUTTON_FOR[function])
 
     gap = "&nbsp;&nbsp;&nbsp;&nbsp;"
+    if typing:
+        items = (
+            (icon(gamepad.DPAD), "Move"),
+            (glyph(gamepad.ACCEPT), "Type"),
+            (glyph(gamepad.REFRESH), "Delete"),
+            (glyph(gamepad.SEARCH), "Space"),
+            (glyph(gamepad.PAGE_PREV) + glyph(gamepad.PAGE_NEXT), "Cursor"),
+            (glyph(gamepad.TRIGGER_R), "Done"),
+            (glyph(gamepad.BACK), "Cancel"),
+        )
+        return gap.join(f"{glyphs} {label}" for glyphs, label in items)
+    if inbox:
+        items = (
+            (icon(gamepad.DPAD), "Move"),
+            (glyph(gamepad.ACCEPT), "Open"),
+            (glyph(gamepad.REFRESH), "Delete"),
+            (glyph(gamepad.BACK), "Back"),
+        )
+        return gap.join(f"{glyphs} {label}" for glyphs, label in items)
     items = (
         (icon(gamepad.DPAD), "Move"),
         (glyph(gamepad.ACCEPT), "Select"),
@@ -135,6 +154,7 @@ class Bridge(QObject):
     finished = Signal(int, str)  # game, error text ("" on success)
     pad = Signal(str)
     pad_connected = Signal(bool, str)  # connected, controller family
+    notifications = Signal(object)  # {"notifications": [...], "unread": n}
     update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
     update_progress = Signal(int, int)  # written, total
     update_ready = Signal(str)  # path of the replaced build, to relaunch
@@ -185,6 +205,18 @@ class App:
                 self.bridge.update_failed.emit(str(e))
                 return
             self.bridge.update_ready.emit(str(target))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def poll_notifications(self) -> None:
+        if not self.settings.configured:
+            return
+
+        def work():
+            try:
+                self.bridge.notifications.emit(self.client().notifications())
+            except Exception:  # noqa: BLE001 - the inbox is best effort, a failed poll just retries
+                pass
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -371,6 +403,74 @@ class UpdatePage(Page):
     def on_failed(self, error: str) -> None:
         self.bar.setRange(0, 1)
         self.label.setText(f"Update failed: {error}")
+
+
+class NotificationsPage(Page):
+    """The server's notifications for this user (e.g. an auto mode install that got stuck)."""
+
+    title = "Notifications"
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.win = win
+        self.list = QListWidget()
+        self.list.itemActivated.connect(self.open_item)
+        self.empty = QLabel("No notifications.")
+        self.empty.setAlignment(Qt.AlignCenter)
+        mark_all = QPushButton("Mark all read")
+        mark_all.clicked.connect(self.mark_all_read)
+        clear = QPushButton("Clear all")
+        clear.setProperty("danger", True)
+        clear.clicked.connect(
+            lambda: win.ask("Delete every notification?", self.clear_all, danger=True)
+        )
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.list, 1)
+        lay.addWidget(self.empty)
+        lay.addLayout(_row(mark_all, clear))
+        self.populate()
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def populate(self) -> None:
+        row = self.list.currentRow()
+        self.list.clear()
+        for n in self.win.notifications:
+            text = ("" if n["read"] else "\u25cf ") + n["title"]
+            if n.get("body"):
+                text += "\n    " + n["body"]
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, n["id"])
+            self.list.addItem(item)
+        self.empty.setVisible(self.list.count() == 0)
+        if self.list.count():
+            self.list.setCurrentRow(min(max(row, 0), self.list.count() - 1))
+
+    def _notification(self, item: QListWidgetItem | None) -> dict | None:
+        if item is None:
+            return None
+        return next((n for n in self.win.notifications if n["id"] == item.data(Qt.UserRole)), None)
+
+    def open_item(self, item: QListWidgetItem) -> None:
+        n = self._notification(item)
+        if n is None:
+            return
+        if not n["read"]:
+            self.win.mark_read(n["id"])
+        if n.get("game_id") in self.win.app.games:
+            self.win.show_game(n["game_id"])
+
+    def delete_current(self) -> None:
+        n = self._notification(self.list.currentItem())
+        if n is not None:
+            self.win.delete_notification(n["id"])
+
+    def mark_all_read(self) -> None:
+        self.win.mark_read(None)
+
+    def clear_all(self) -> None:
+        self.win.delete_notification(None)
 
 
 class KeyButton(QPushButton):
@@ -1124,6 +1224,12 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText("Search")
         self.search.textChanged.connect(self.refresh_items)
         self.reload_btn, self.settings_btn = QPushButton("Refresh"), QPushButton("Settings")
+        self.notif_btn = QPushButton(" Notifications")
+        self.notif_btn.setIcon(bell_icon(26))
+        self.notif_btn.setIconSize(QSize(26, 26))
+        self.notif_btn.clicked.connect(self.open_notifications)
+        self.notifications: list[dict] = []
+        self.seen_notification_id: int | None = None
         self.reload_btn.clicked.connect(app.refresh)
         self.settings_btn.clicked.connect(self.open_settings)
         top = QHBoxLayout()
@@ -1133,6 +1239,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.search, 1)
         top.addStretch(1)
         top.addWidget(self.reload_btn)
+        top.addWidget(self.notif_btn)
         top.addWidget(self.settings_btn)
         self.stack = QStackedWidget()
         self.library = LibraryPage(self)
@@ -1145,6 +1252,7 @@ class MainWindow(QMainWindow):
         self.legend.setAlignment(Qt.AlignCenter)
         self.legend.setStyleSheet("color: #9aa3b0; font-size: 15px;")
         self.legend.setVisible(False)
+        self.pad_family: str | None = None
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addLayout(top)
@@ -1162,6 +1270,10 @@ class MainWindow(QMainWindow):
         b.pad.connect(self.on_pad)
         b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
+        b.notifications.connect(self.on_notifications)
+        self.notif_timer = QTimer(self)
+        self.notif_timer.timeout.connect(app.poll_notifications)
+        self.notif_timer.start(15000)
         self.osk = osk.OnScreenKeyboard(self.open_keyboard)
         self.pad_stop = gamepad.start(b.pad.emit, b.pad_connected.emit)
         self._show(self.library)
@@ -1180,9 +1292,11 @@ class MainWindow(QMainWindow):
         self.search.setVisible(page.searchable)
         self.reload_btn.setVisible(on_library)
         self.settings_btn.setVisible(on_library)
+        self.notif_btn.setVisible(on_library)
         self.logo.setVisible(on_library)
         self.title.setVisible(not on_library)
         self.title.setText(page.title)
+        self.refresh_legend()
         page.focus_default()
 
     def push(self, page: Page) -> None:
@@ -1230,9 +1344,16 @@ class MainWindow(QMainWindow):
         )
 
     def set_pad(self, connected: bool, family: str) -> None:
-        if connected:
-            self.legend.setText(pad_legend(family))
-        self.legend.setVisible(connected)
+        self.pad_family = family if connected else None
+        self.refresh_legend()
+
+    def refresh_legend(self) -> None:
+        family = self.pad_family
+        if family:
+            self.legend.setText(
+                pad_legend(family, isinstance(self.current_page(), KeyboardPage), isinstance(self.current_page(), NotificationsPage))
+            )
+        self.legend.setVisible(bool(family))
 
     def open_keyboard(self, target: QWidget) -> None:
         if not isinstance(self.current_page(), KeyboardPage):
@@ -1274,6 +1395,12 @@ class MainWindow(QMainWindow):
                 page.press(keyboard.SPACE)
             else:
                 self._post_key(name)
+            return
+        if isinstance(page, NotificationsPage) and name == gamepad.REFRESH:
+            page.delete_current()
+            return
+        if name == gamepad.TRIGGER_R:
+            return
         if name in (gamepad.REFRESH, gamepad.SEARCH):
             if self.current_page() is self.library:
                 if name == gamepad.REFRESH:
@@ -1315,6 +1442,7 @@ class MainWindow(QMainWindow):
 
     def set_games(self, games: list) -> None:
         self.app.games = {g["id"]: g for g in games}
+        self.app.poll_notifications()
         self.notify(f"{len(games)} games")
         self.refresh_items()
 
@@ -1331,12 +1459,46 @@ class MainWindow(QMainWindow):
         self.library.populate(self.search.text().lower())
 
     def open_game(self, item: QListWidgetItem) -> None:
-        gid = item.data(Qt.UserRole)
+        self.show_game(item.data(Qt.UserRole))
+
+    def show_game(self, gid: int) -> None:
         game = self.app.games.get(gid)
         if game:
             if gid not in self.game_pages:
                 self.game_pages[gid] = GamePage(self, game)
             self.push(self.game_pages[gid])
+
+    def open_notifications(self) -> None:
+        self.push(NotificationsPage(self))
+
+    def on_notifications(self, data: dict) -> None:
+        items = data["notifications"]
+        newest = max((n["id"] for n in items), default=0)
+        if self.seen_notification_id is not None:
+            for n in items:
+                if n["id"] > self.seen_notification_id and not n["read"]:
+                    self.notify(f"Notification: {n['title']}")
+        self.seen_notification_id = newest
+        self.notifications = items
+        unread = data["unread"]
+        self.notif_btn.setText(f" Notifications ({unread})" if unread else " Notifications")
+        page = self.current_page()
+        if isinstance(page, NotificationsPage):
+            page.populate()
+
+    def mark_read(self, notification_id: int | None) -> None:
+        for n in self.notifications:
+            if notification_id is None or n["id"] == notification_id:
+                n["read"] = True
+        self.app.run_bg(lambda: self.app.client().mark_notifications_read(notification_id))
+        self.on_notifications({"notifications": self.notifications, "unread": sum(not n["read"] for n in self.notifications)})
+        QTimer.singleShot(1000, self.app.poll_notifications)
+
+    def delete_notification(self, notification_id: int | None) -> None:
+        self.notifications = [n for n in self.notifications if notification_id is not None and n["id"] != notification_id]
+        self.app.run_bg(lambda: self.app.client().delete_notifications(notification_id))
+        self.on_notifications({"notifications": self.notifications, "unread": sum(not n["read"] for n in self.notifications)})
+        QTimer.singleShot(1000, self.app.poll_notifications)
 
 
 def run_gui() -> int:

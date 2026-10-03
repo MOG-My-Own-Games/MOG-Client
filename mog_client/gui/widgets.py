@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QCheckBox
 
 ACCENT_STOPS = ((0.0, "#7fa8ff"), (0.55, "#5b8def"), (1.0, "#3c64c4"))
@@ -58,3 +58,28 @@ class Toggle(QCheckBox):
             painter.setPen(QColor("#e8eaed") if self.isEnabled() else QColor("#6b7380"))
             text_rect = QRectF(track.right() + self.GAP, 0, self.width() - track.right() - self.GAP, self.height())
             painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
+
+
+def bell_icon(size: int = 24) -> QIcon:
+    """A white notification bell, same shape as MOG-Server's."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    s = size / 24
+    bell = QPainterPath()
+    bell.moveTo(12 * s, 3 * s)
+    bell.cubicTo(8.7 * s, 3 * s, 6 * s, 5.7 * s, 6 * s, 9 * s)
+    bell.lineTo(6 * s, 12.5 * s)
+    bell.lineTo(4.5 * s, 16 * s)
+    bell.lineTo(19.5 * s, 16 * s)
+    bell.lineTo(18 * s, 12.5 * s)
+    bell.lineTo(18 * s, 9 * s)
+    bell.cubicTo(18 * s, 5.7 * s, 15.3 * s, 3 * s, 12 * s, 3 * s)
+    bell.closeSubpath()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("white"))
+    painter.drawPath(bell)
+    painter.drawEllipse(QRectF(10 * s, 17.5 * s, 4 * s, 3 * s))
+    painter.end()
+    return QIcon(pix)
