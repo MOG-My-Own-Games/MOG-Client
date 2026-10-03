@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QIcon,
     QPixmap,
     QPolygonF,
 )
@@ -59,14 +60,23 @@ from mog_client.launcher import available_launchers, detect_launcher, launch, la
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
 from mog_client.version import __version__
 
+ASSETS = Path(__file__).parent / "assets"
+
+
+def asset_pixmap(name: str, height: int) -> QPixmap:
+    return QPixmap(str(ASSETS / name)).scaledToHeight(height, Qt.SmoothTransformation)
+
+
 STYLE = """
 * { font-size: 18px; }
 QMainWindow { background: #14171c; color: #e8eaed; }
 QLabel, QCheckBox { color: #e8eaed; }
 QLineEdit, QComboBox, QPlainTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
-QPushButton { background: #2c333d; color: #e8eaed; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
-QPushButton:hover { background: #38414d; }
-QPushButton:default { background: #2f6fed; }
+QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7fa8ff, stop:0.55 #5b8def, stop:1 #3c64c4); color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
+QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #94b7ff, stop:0.55 #709cf2, stop:1 #4d75d4); }
+QPushButton:focus { border-color: white; }
+QPushButton[danger="true"] { background: #e2574c; }
+QPushButton[danger="true"]:hover { background: #c94439; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius: 10px; padding: 6px; }
 QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
@@ -281,12 +291,13 @@ def _row(*widgets, stretch_first: bool = True) -> QHBoxLayout:
 class ConfirmPage(Page):
     """Inline yes/no question; "No" holds the initial focus so a stray A press is safe."""
 
-    def __init__(self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?"):
+    def __init__(self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False):
         super().__init__()
         self.title = title
         label = QLabel(text)
         label.setWordWrap(True)
         self.no, yes = QPushButton("No"), QPushButton("Yes")
+        yes.setProperty("danger", danger)
         self.no.clicked.connect(win.back)
         yes.clicked.connect(lambda: (win.back(), on_yes()))
         lay = QVBoxLayout(self)
@@ -361,6 +372,9 @@ class SettingsPage(Page):
         hint = "Faugus is the default when installed; otherwise pick among the system's umu, Proton or Wine."
         if not available:
             hint = "No launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine."
+        mascotte = QLabel()
+        mascotte.setPixmap(asset_pixmap("mascotte.png", 160))
+        mascotte.setAlignment(Qt.AlignCenter)
         form = QFormLayout()
         form.addRow("Server URL", self.base)
         form.addRow("User", self.user)
@@ -380,6 +394,7 @@ class SettingsPage(Page):
         save.setDefault(True)
         save.clicked.connect(self.save)
         lay = QVBoxLayout(self)
+        lay.addWidget(mascotte)
         lay.addLayout(form)
         note = QLabel(hint)
         note.setWordWrap(True)
@@ -697,8 +712,9 @@ class GamePage(Page):
             else:
                 self.win.notify(f"{self.game['name']} finished installing: open it to choose the executable")
 
-    def _button(self, text: str, fn, default: bool = False) -> QPushButton:
+    def _button(self, text: str, fn, default: bool = False, danger: bool = False) -> QPushButton:
         btn = QPushButton(text)
+        btn.setProperty("danger", danger)
         btn.clicked.connect(fn)
         if default:
             btn.setDefault(True)
@@ -721,7 +737,7 @@ class GamePage(Page):
             if gid in self.app.vnc:
                 self._button("Open installer display", lambda: QDesktopServices.openUrl(QUrl(self.app.vnc[gid])))
             self._button("Pause", lambda: self.app.pause_install(gid))
-            self._button("Cancel install", self.cancel)
+            self._button("Cancel install", self.cancel, danger=True)
             return
         if rec and rec.state == "installed":
             self.status.setText("Installed")
@@ -729,18 +745,18 @@ class GamePage(Page):
             self.bar.setValue(1)
             self.first = self._button("Play", self.play, True)
             self._button("Shortcuts / executable", lambda: self.choose_executable(rec))
-            self._button("Uninstall", lambda: self.uninstall(rec))
+            self._button("Uninstall", lambda: self.uninstall(rec), danger=True)
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
-            self._button("Uninstall", lambda: self.uninstall(rec))
+            self._button("Uninstall", lambda: self.uninstall(rec), danger=True)
         else:
             self.status.setText("Partially downloaded, can resume" if rec else "Not installed")
             self.bar.setRange(0, 1)
             self.bar.setValue(0)
             self.first = self._button("Resume install" if rec else "Install", self.install, True)
             if rec:
-                self._button("Discard", lambda: self.uninstall(rec))
+                self._button("Discard", lambda: self.uninstall(rec), danger=True)
         self._button("Back", self.win.back)
 
     def install(self) -> None:
@@ -753,6 +769,7 @@ class GamePage(Page):
         self.win.ask(
             "Cancel the install on the server? Downloaded files are kept for a later resume.",
             lambda: self.app.cancel_install(self.game["id"]),
+            danger=True,
         )
 
     def play(self) -> None:
@@ -794,11 +811,12 @@ class GamePage(Page):
                     "Also delete the local Wine prefix?\nIt may contain your save files. This cannot be undone.",
                     lambda: remove(True),
                     on_no=lambda: remove(False),
+                    danger=True,
                 )
             else:
                 remove(False)
 
-        self.win.ask(f"Delete the game files of {rec.name} and its shortcuts?", after_files)
+        self.win.ask(f"Delete the game files of {rec.name} and its shortcuts?", after_files, danger=True)
 
 
 ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED = Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3
@@ -952,11 +970,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app = app
         self.setWindowTitle("MOG")
+        self.setWindowIcon(QIcon(str(ASSETS / "icon.png")))
         self.resize(1280, 800)
         self.back_btn = QPushButton("< Back")
         self.back_btn.clicked.connect(self.back)
         self.title = QLabel()
         self.title.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.logo = QLabel()
+        self.logo.setPixmap(asset_pixmap("title.png", 44))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search")
         self.search.textChanged.connect(self.refresh_items)
@@ -965,6 +986,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         top = QHBoxLayout()
         top.addWidget(self.back_btn)
+        top.addWidget(self.logo)
         top.addWidget(self.title)
         top.addWidget(self.search, 1)
         top.addStretch(1)
@@ -1009,7 +1031,9 @@ class MainWindow(QMainWindow):
         self.search.setVisible(page.searchable)
         self.reload_btn.setVisible(on_library)
         self.settings_btn.setVisible(on_library)
-        self.title.setText("MOG" if on_library else page.title)
+        self.logo.setVisible(on_library)
+        self.title.setVisible(not on_library)
+        self.title.setText(page.title)
         page.focus_default()
 
     def push(self, page: Page) -> None:
@@ -1037,12 +1061,12 @@ class MainWindow(QMainWindow):
     def notify(self, text: str) -> None:
         self.status.setText(text)
 
-    def ask(self, text: str, on_yes, on_no=None) -> None:
+    def ask(self, text: str, on_yes, on_no=None, danger: bool = False) -> None:
         def no():
             if on_no:
                 on_no()
 
-        page = ConfirmPage(self, text, on_yes)
+        page = ConfirmPage(self, text, on_yes, danger=danger)
         page.no.clicked.connect(no)
         self.push(page)
 

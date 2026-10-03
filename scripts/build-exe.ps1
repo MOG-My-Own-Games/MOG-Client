@@ -35,6 +35,7 @@ $entry = Join-Path $root "packaging\entry.py"
 
 & $py -m PyInstaller --noconfirm --clean --onefile --windowed --name "MOG-Client" `
   --icon $icon `
+  --add-data "$root\mog_client\gui\assets;mog_client\gui\assets" `
   --distpath (Join-Path $root "dist") --workpath (Join-Path $root "build\exe\work") `
   --specpath (Join-Path $root "build\exe") `
   --paths $root $entry

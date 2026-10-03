@@ -25,6 +25,7 @@ build/venv/bin/pip install --quiet ".[gui,build]" patchelf
 
 build/venv/bin/pyinstaller --noconfirm --clean --onedir --name mog-client \
   --distpath build/appimage/pyi --workpath build/appimage/work --specpath build/appimage \
+  --add-data "$ROOT/mog_client/gui/assets:mog_client/gui/assets" \
   --paths "$ROOT" packaging/entry.py
 
 APPDIR=build/appimage/MOG-Client.AppDir

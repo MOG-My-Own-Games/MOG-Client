@@ -1,3 +1,5 @@
+<p align="center"><img src="mog_client/gui/assets/mascotte.png" width="200" alt="MOG" /></p>
+
 # MOG Client
 
 CLI client for [MOG-Server](https://github.com/MOG-My-Own-Games/MOG-Server).
