@@ -1140,7 +1140,20 @@ class MainWindow(QMainWindow):
             if self.current_page() is self.library:
                 self.open_settings()
             return
-        target = QApplication.focusWidget() or self.current_page()
+        popup = QApplication.activePopupWidget()
+        focus = QApplication.focusWidget()
+        if popup is None and focus is not None:
+            if name in (gamepad.UP, gamepad.DOWN) and isinstance(focus, (QLineEdit, QComboBox, QPlainTextEdit)):
+                # These widgets swallow Up/Down, so the pad would be stuck on them.
+                focus.focusNextPrevChild(name == gamepad.DOWN)
+                return
+            if name == gamepad.ACCEPT and isinstance(focus, QComboBox):
+                focus.showPopup()
+                return
+            if name == gamepad.ACCEPT and isinstance(focus, QLineEdit):
+                focus.focusNextPrevChild(True)
+                return
+        target = popup or focus or self.current_page()
         key = _KEYS[name]
         for kind in (QEvent.KeyPress, QEvent.KeyRelease):
             QApplication.postEvent(target, QKeyEvent(kind, key, Qt.NoModifier))
