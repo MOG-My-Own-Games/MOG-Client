@@ -17,7 +17,8 @@ if (-not $Version) {
   $Version = python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
 }
 
-Set-Content -Path mog_client\_version.py -Value "__version__ = `"$Version`"" -Encoding ascii
+$updateMethod = if ($env:MOG_UPDATE_METHOD) { $env:MOG_UPDATE_METHOD } else { "exe" }
+Set-Content -Path mog_client\_version.py -Value "__version__ = `"$Version`"`nUPDATE_METHOD = `"$updateMethod`"" -Encoding ascii
 
 if (Test-Path build\exe) { Remove-Item -Recurse -Force build\exe }
 New-Item -ItemType Directory -Force build, dist | Out-Null

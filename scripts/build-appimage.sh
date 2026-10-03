@@ -16,7 +16,8 @@ APPIMAGETOOL_URL=${APPIMAGETOOL_URL:-https://github.com/AppImage/appimagetool/re
 
 rm -rf build/appimage dist/MOG-Client-*.AppImage
 mkdir -p build dist
-printf '__version__ = "%s"\n' "$VERSION" >mog_client/_version.py
+# MOG_UPDATE_METHOD=none builds without self-update (e.g. for a Flatpak).
+printf '__version__ = "%s"\nUPDATE_METHOD = "%s"\n' "$VERSION" "${MOG_UPDATE_METHOD:-appimage}" >mog_client/_version.py
 
 python3 -m venv build/venv
 build/venv/bin/pip install --quiet --upgrade pip

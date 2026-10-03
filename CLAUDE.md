@@ -23,6 +23,8 @@ mog_client/
   api.py        HTTP client (Client, MogClient), shared by CLI and GUI
   transfer.py   Stream-install loops (download, verify, poll) with log callbacks
   cli.py        argparse entry point (console script `mog`); no action = GUI
+  updater.py    Self-update from the latest GitHub release (AppImage/exe; UPDATE_METHOD build flag)
+  version.py    __version__ + UPDATE_METHOD, written into _version.py at build time
   config.py     Settings + installed-games record (JSON under XDG dirs)
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
   launcher.py   Executable discovery (redists excluded), launch, .desktop entry

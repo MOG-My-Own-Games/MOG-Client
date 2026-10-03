@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mog_client import manager, steam
+from mog_client import manager, steam, updater
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.config import (
     InstalledGame,
@@ -99,6 +99,10 @@ class Bridge(QObject):
     log = Signal(int, str)
     finished = Signal(int, str)  # game, error text ("" on success)
     pad = Signal(str)
+    update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
+    update_progress = Signal(int, int)  # written, total
+    update_ready = Signal(str)  # path of the replaced build, to relaunch
+    update_failed = Signal(str)
 
 
 def is_deck() -> bool:
@@ -127,6 +131,26 @@ class App:
                 (on_error or self.bridge.error.emit)(str(e))
 
         threading.Thread(target=wrapper, daemon=True).start()
+
+    def check_update(self, manual: bool = False) -> None:
+        def work():
+            try:
+                self.bridge.update_checked.emit(updater.check_for_update(), "", manual)
+            except Exception as e:  # noqa: BLE001 - a failed check must never block startup
+                self.bridge.update_checked.emit(None, str(e), manual)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def install_update(self, info) -> None:
+        def work():
+            try:
+                target = updater.apply_update(info, self.bridge.update_progress.emit)
+            except Exception as e:  # noqa: BLE001 - surfaced in the UI
+                self.bridge.update_failed.emit(str(e))
+                return
+            self.bridge.update_ready.emit(str(target))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def refresh(self) -> None:
         def work():
@@ -275,6 +299,43 @@ class ConfirmPage(Page):
         self.no.setFocus()
 
 
+class UpdatePage(Page):
+    """Downloads and installs a new build, then restarts into it."""
+
+    title = "Updating"
+
+    def __init__(self, win: "MainWindow", info):
+        super().__init__()
+        self.win = win
+        self.label = QLabel(f"Downloading MOG {info.version}...")
+        self.label.setWordWrap(True)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)
+        lay = QVBoxLayout(self)
+        lay.addStretch()
+        lay.addWidget(self.label)
+        lay.addWidget(self.bar)
+        lay.addStretch()
+        b = win.app.bridge
+        b.update_progress.connect(self.on_progress)
+        b.update_ready.connect(self.on_ready)
+        b.update_failed.connect(self.on_failed)
+        win.app.install_update(info)
+
+    def on_progress(self, written: int, total: int) -> None:
+        if total:
+            self.bar.setRange(0, total)
+            self.bar.setValue(written)
+
+    def on_ready(self, target: str) -> None:
+        self.label.setText("Restarting...")
+        updater.relaunch(Path(target))
+
+    def on_failed(self, error: str) -> None:
+        self.bar.setRange(0, 1)
+        self.label.setText(f"Update failed: {error}")
+
+
 class SettingsPage(Page):
     title = "Settings"
 
@@ -307,6 +368,14 @@ class SettingsPage(Page):
         form.addRow("Games folder", self.games_dir)
         form.addRow("Launcher", self.launcher)
         form.addRow("Version", QLabel(__version__))
+        self.update_status = QLabel()
+        self.update_status.setWordWrap(True)
+        if updater.enabled():
+            check = QPushButton("Check for updates")
+            check.clicked.connect(self.check_updates)
+            form.addRow("", check)
+            form.addRow("", self.update_status)
+            win.app.bridge.update_checked.connect(self.on_checked)
         save = QPushButton("Save")
         save.setDefault(True)
         save.clicked.connect(self.save)
@@ -317,6 +386,18 @@ class SettingsPage(Page):
         lay.addWidget(note)
         lay.addStretch()
         lay.addLayout(_row(save))
+
+    def check_updates(self) -> None:
+        self.update_status.setText("Checking...")
+        self.win.app.check_update(manual=True)
+
+    def on_checked(self, info, error: str, manual: bool) -> None:
+        if not manual:
+            return
+        if error:
+            self.update_status.setText(f"Could not check: {error}")
+        elif info is None:
+            self.update_status.setText("You are up to date.")
 
     def focus_default(self) -> None:
         (self.base if not self.base.text() else self.launcher).setFocus()
@@ -910,6 +991,7 @@ class MainWindow(QMainWindow):
         b.finished.connect(lambda *_: self.refresh_items())
         b.progress.connect(lambda gid, *_: self.library.update_label(gid))
         b.pad.connect(self.on_pad)
+        b.update_checked.connect(self.on_update_checked)
         self.pad_stop = gamepad.start(b.pad.emit)
         self._show(self.library)
 
@@ -964,6 +1046,14 @@ class MainWindow(QMainWindow):
         page.no.clicked.connect(no)
         self.push(page)
 
+    def on_update_checked(self, info, error: str, manual: bool) -> None:
+        if info is None:
+            return
+        self.ask(
+            f"MOG {info.version} is available (you have {__version__}). Update now? The app restarts when done.",
+            lambda: self.push(UpdatePage(self, info)),
+        )
+
     def on_pad(self, name: str) -> None:
         if name == gamepad.MENU:
             if self.current_page() is self.library:
@@ -1008,12 +1098,15 @@ def run_gui() -> int:
     qapp.setStyleSheet(STYLE)
     enter_filter = ActivateOnEnter()
     qapp.installEventFilter(enter_filter)
+    updater.cleanup_old()
     app = App()
     win = MainWindow(app)
     if is_deck():
         win.showFullScreen()
     else:
         win.show()
+    if updater.enabled():
+        app.check_update()
     if app.settings.configured:
         app.refresh()
     else:
