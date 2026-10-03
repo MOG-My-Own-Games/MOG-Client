@@ -7,6 +7,7 @@ import hashlib
 import os
 import sys
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -182,6 +183,8 @@ class App:
         self.progress: dict[int, tuple[int, int, str]] = {}
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
+        self.stopping: set[int] = set()  # installs asked to stop, still winding down
+        self.after_stop: dict[int, Callable[[], None]] = {}  # runs once that install has stopped
 
     def client(self):
         return manager.make_client(self.settings)
@@ -349,15 +352,35 @@ class App:
                 err = str(e)
             self.installs.pop(gid, None)
             self.progress.pop(gid, None)
+            self.stopping.discard(gid)
+            follow_up = self.after_stop.pop(gid, None)
+            if follow_up:
+                try:
+                    follow_up()
+                except Exception as e:  # noqa: BLE001
+                    err = err or str(e)
             bridge.finished.emit(gid, err)
 
         threading.Thread(target=work, daemon=True).start()
 
     def pause_install(self, gid: int) -> None:
         if gid in self.installs:
+            self.stopping.add(gid)
             self.installs[gid].set()
 
-    def cancel_install(self, gid: int) -> None:
+    def cancel_local_install(self, gid: int) -> None:
+        """Stop downloading and delete what was downloaded; the server's install carries on."""
+
+        def discard() -> None:
+            rec = load_library().get(gid)
+            if rec:
+                manager.uninstall(rec)
+
+        self.after_stop[gid] = discard
+        self.pause_install(gid)
+
+    def cancel_server_install(self, gid: int) -> None:
+        """Stop the installer on the server; what was downloaded here is kept for a later resume."""
         self.pause_install(gid)
         self.run_bg(lambda: self.client().cancel_session(gid))
 
@@ -1143,8 +1166,10 @@ class GamePage(Page):
             self.first = self._button("Back to library", self.win.back, True)
             if gid in self.app.vnc:
                 self._button("Open installer display", lambda: QDesktopServices.openUrl(QUrl(self.app.vnc[gid])))
-            self._button("Pause", lambda: self.app.pause_install(gid))
-            self._button("Cancel install", self.cancel, danger=True)
+            pause = self._button("Pausing..." if gid in self.app.stopping else "Pause", self.pause)
+            pause.setEnabled(gid not in self.app.stopping)
+            self._button("Cancel local install", self.cancel_local, danger=True)
+            self._button("Cancel server install", self.cancel_server, danger=True)
             return
         if rec and rec.state == "installed":
             self.status.setText("Installed")
@@ -1178,10 +1203,21 @@ class GamePage(Page):
         if self.first:
             self.first.setFocus()
 
-    def cancel(self) -> None:
+    def pause(self) -> None:
+        self.app.pause_install(self.game["id"])
+        self.rebuild()
+
+    def cancel_local(self) -> None:
         self.win.ask(
-            "Cancel the install on the server? Downloaded files are kept for a later resume.",
-            lambda: self.app.cancel_install(self.game["id"]),
+            "Stop downloading and delete the files downloaded so far? The install keeps running on the server.",
+            lambda: self.app.cancel_local_install(self.game["id"]),
+            danger=True,
+        )
+
+    def cancel_server(self) -> None:
+        self.win.ask(
+            "Stop the installer on the server? What was already downloaded here is kept for a later resume.",
+            lambda: self.app.cancel_server_install(self.game["id"]),
             danger=True,
         )
 
