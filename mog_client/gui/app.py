@@ -76,6 +76,7 @@ QLineEdit, QComboBox, QPlainTextEdit { background: #1e232b; color: #e8eaed; bord
 QPushButton { background: {accent}; color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
 QPushButton:hover { background: {accent_hover}; }
 QPushButton:focus { border-color: white; }
+QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; }
 QPushButton[danger="true"] { background: #e2574c; }
 QPushButton[danger="true"]:hover { background: #c94439; }
 QListWidget { background: transparent; border: none; outline: none; }
@@ -373,8 +374,9 @@ class KeyButton(QPushButton):
     def __init__(self, page: "KeyboardPage", key: str, row: int, col: int):
         super().__init__(keyboard.LABELS.get(key, key))
         self.page, self.key, self.pos_in_grid = page, key, (row, col)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumHeight(64)
+        self.setObjectName("key")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(46)
         self.clicked.connect(lambda: page.press(key))
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
@@ -397,20 +399,28 @@ class KeyboardPage(Page):
         text = target.text() if isinstance(target, QLineEdit) else target.toPlainText()
         self.buffer = keyboard.TextBuffer(text)
         self.display = QLabel()
-        self.display.setStyleSheet("font-size: 28px; padding: 12px; background: #1e232b; border-radius: 8px;")
+        self.display.setStyleSheet("font-size: 22px; padding: 10px; background: #1e232b; border-radius: 8px;")
         self.display.setWordWrap(True)
-        lay = QVBoxLayout(self)
-        lay.addWidget(self.display)
+        board = QWidget()
+        board.setMaximumWidth(960)
+        rows = QVBoxLayout(board)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(6)
         self.keys: list[list[KeyButton]] = []
         for r, row in enumerate(keyboard.ROWS):
             line = QHBoxLayout()
+            line.setSpacing(6)
             buttons = []
             for c, key in enumerate(row):
                 btn = KeyButton(self, key, r, c)
                 line.addWidget(btn, keyboard.WIDE.get(key, 1))
                 buttons.append(btn)
             self.keys.append(buttons)
-            lay.addLayout(line, 1)
+            rows.addLayout(line)
+        lay = QVBoxLayout(self)
+        lay.addStretch()
+        lay.addWidget(self.display)
+        lay.addWidget(board, 0, Qt.AlignHCenter)
         self._refresh()
 
     def focus_default(self) -> None:
