@@ -57,6 +57,36 @@ def download_all_files(
     running: dict[str, Future] = {}
     connections_reset = False
     failed_at: dict[str, tuple[float, int]] = {}  # path -> (when it may be tried again, failures so far)
+    fetched: set[str] = set()  # files this download started writing, the only ones it may delete
+
+    def drop_vanished(files_by_path: dict[str, dict], final: bool) -> None:
+        """The manifest is a snapshot while the installer runs, and its paths can change by the time
+        the install ends. Queued transfers for paths it no longer lists would only collect 404s while
+        holding up the real ones, so they are cancelled; once the final list is in, the partial files
+        written under the old paths go too."""
+        for path, future in list(running.items()):
+            if path not in files_by_path and future.cancel():
+                del running[path]
+        if not final:
+            return
+        gone = [p for p in on_disk if p not in files_by_path]
+        for path in gone:
+            on_disk.pop(path, None)
+            done_paths.discard(path)
+            failed_at.pop(path, None)
+            if path in fetched:
+                local = out_dir / path
+                local.unlink(missing_ok=True)
+                for parent in local.parents:  # empty folders the old layout left behind
+                    if parent == out_dir or not parent.is_relative_to(out_dir):
+                        break
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+        if gone:
+            trace.event(f"final manifest: dropped {len(gone)} path(s) that are not in it")
+            log(f"the install ended with a different file layout: {len(gone)} early file(s) dropped")
 
     def total() -> int:
         return sum(on_disk.values())
@@ -71,6 +101,7 @@ def download_all_files(
                 on_bytes(total(), known["total"])
 
         began = time.monotonic()
+        fetched.add(path)
         trace.event(f"start {path} from {on_disk.get(path, 0)}")
         try:
             written = client.stream_file(game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event)
@@ -144,8 +175,18 @@ def download_all_files(
             known["total"] = sum(f.get("size_bytes", 0) for f in files)
 
             moved = reap(files_by_path)
+            # The final list has every file complete; until it shows up after the server finished,
+            # what the endpoint returns is the stale snapshot from the install itself.
+            manifest_final = bool(files) and all(f.get("complete") for f in files)
+            if files:
+                drop_vanished(files_by_path, final=server_was_done and manifest_final)
+                known["total"] = sum(f.get("size_bytes", 0) for f in files)
+                if on_bytes:
+                    on_bytes(total(), known["total"])
             now = time.monotonic()
             for f in files:
+                if server_was_done and not manifest_final:
+                    break
                 path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
                 if path in done_paths or path in running or failed_at.get(path, (0.0, 0))[0] > now:
                     continue

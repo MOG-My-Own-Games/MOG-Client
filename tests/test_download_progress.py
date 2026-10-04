@@ -249,3 +249,50 @@ def test_a_stall_is_reported_and_traced(tmp_path, monkeypatch):
     text = trace.trace_path().read_text()
     assert "start slow.bin" in text and "stalled" in text and "end slow.bin" in text
     assert "server finished: replacing the connections one by one" in lines
+
+
+def test_files_under_paths_the_final_manifest_does_not_list_neither_stall_nor_linger(tmp_path, monkeypatch):
+    """The install ended with a different layout (live paths lacked a folder the final ones have)."""
+    monkeypatch.setattr(transfer, "MANIFEST_INTERVAL", 0.02)
+    done = threading.Event()
+    fetched = []
+
+    class Client:
+        polls = 0
+
+        def download_workers(self):
+            return 1  # one worker: queued ghost transfers would delay every real one
+
+        def stream_manifest(self, game_id, session_id=None):
+            Client.polls += 1
+            if Client.polls < 3:  # the install is running: paths as the live scan sees them
+                return {"files": [
+                    {"path": f"Game/f{i}.bin", "size_bytes": 10, "sealed_bytes": 5, "complete": False} for i in range(30)
+                ]}
+            done.set()
+            return {"files": [  # the install ended: the same files, one folder deeper
+                {"path": f"Vendor/Game/f{i}.bin", "size_bytes": 10, "sealed_bytes": 10, "complete": True} for i in range(30)
+            ]}
+
+        def stream_file(self, game_id, path, out_dir, session_id=None, on_chunk=None, stop=None):
+            import time as _t
+
+            fetched.append(path)
+            _t.sleep(0.01)
+            if not path.startswith("Vendor/"):
+                if on_chunk:
+                    on_chunk(5)
+                (out_dir / path).parent.mkdir(parents=True, exist_ok=True)
+                (out_dir / path).write_bytes(b"x" * 5)
+                return 5
+            (out_dir / path).parent.mkdir(parents=True, exist_ok=True)
+            (out_dir / path).write_bytes(b"x" * 10)
+            return 10
+
+    lines = []
+    total, finished = download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lines.append, warn=lambda m: None, server_done=done)
+
+    assert finished and total == 300  # only the final files count
+    assert not (tmp_path / "Game").exists()  # the early partial files and their folder are gone
+    assert len(list((tmp_path / "Vendor" / "Game").glob("*.bin"))) == 30
+    assert any("different file layout" in m for m in lines)
