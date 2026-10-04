@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shlex
@@ -39,6 +40,7 @@ def list_executables(install_dir: Path) -> list[Path]:
 
 FAUGUS_FLATPAK = "io.github.Faugus.faugus-launcher"
 LAUNCHER_LABELS = {
+    "system": "System default (as a double click)",
     "faugus": "Faugus Launcher",  # see launcher_label for the Flatpak variant
     "umu": "umu-launcher",
     "proton": "Proton (system)",
@@ -103,11 +105,35 @@ def find_proton() -> Path | None:
     return max(found, key=lambda p: p.parent.name, default=None)
 
 
+_EXE_MIME_TYPES = (
+    "application/vnd.microsoft.portable-executable",
+    "application/x-ms-dos-executable",
+    "application/x-msdownload",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def exe_handler_registered() -> bool:
+    """Whether the desktop has a default application for .exe files, i.e. something a double click runs."""
+    gio = shutil.which("gio")
+    if not gio:
+        return False
+    env = {**host_environ(), "LC_ALL": "C"}
+    for mime in _EXE_MIME_TYPES:
+        out = subprocess.run([gio, "mime", mime], capture_output=True, text=True, env=env).stdout
+        if out.strip() and "No default" not in out:
+            return True
+    return False
+
+
 def available_launchers() -> list[str]:
     """Launchers usable on this machine, in default-preference order."""
     if sys.platform == "win32":
         return ["native"]
     found = []
+    # The user's own .exe handler is the engine that leaves the prefix choice to them.
+    if exe_handler_registered():
+        found.append("system")
     if faugus_command():
         found.append("faugus")
     if shutil.which("umu-run"):
@@ -134,7 +160,14 @@ def effective_launcher(game: InstalledGame, preference: str = "auto") -> str:
 
 
 def prefix_for(game: InstalledGame) -> Path:
+    """Where MOG keeps a prefix for a game whose engine cannot run without one (system Proton)."""
     return data_dir() / "prefixes" / str(game.game_id)
+
+
+def open_command() -> list[str]:
+    """The command that opens a file with the user's default application, without waiting for it."""
+    gio = shutil.which("gio")
+    return [gio, "open"] if gio else [shutil.which("xdg-open") or "xdg-open"]
 
 
 def launch_command(
@@ -148,12 +181,17 @@ def launch_command(
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
         return [game.executable], {}
-    prefix = game.prefix or str(prefix_for(game))
-    Path(prefix).mkdir(parents=True, exist_ok=True)
-    env = {"WINEPREFIX": prefix, "GAMEID": f"umu-mog-{game.game_id}", "PROTONPATH": "GE-Proton"}
+    if launcher == "system":
+        # Returns once the handler has started, so a Steam shortcut cannot follow the game's lifetime.
+        return [*open_command(), game.executable], {}
+    # The prefix is the user's: only a path they chose for this game (game.prefix) is passed on,
+    # otherwise each engine uses its own default, as when the exe is opened by hand.
+    env = {"WINEPREFIX": game.prefix} if game.prefix else {}
     if launcher == "wine":
-        return ["wine", game.executable], {"WINEPREFIX": prefix}
+        return ["wine", game.executable], env
     if launcher == "proton":
+        # Proton has no default prefix: it cannot run without STEAM_COMPAT_DATA_PATH.
+        prefix = game.prefix or str(prefix_for(game))
         proton = find_proton()
         compat = Path(prefix) / "pfx-data"
         compat.mkdir(parents=True, exist_ok=True)
@@ -169,9 +207,9 @@ def launch_command(
         if require_umu and not Path(umu_path).is_file() and not shutil.which("umu-run"):
             raise RuntimeError("open Faugus once so it can download umu-run, then try again")
         # No PROTONPATH: Faugus picks the Proton build itself.
-        inline = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items() if k != "PROTONPATH")
-        return [*runner, f"{inline} {shlex.quote(umu_path)} {shlex.quote(game.executable)}"], {}
-    return ["umu-run", game.executable], env
+        inline = "".join(f"{k}={shlex.quote(v)} " for k, v in env.items())
+        return [*runner, f"{inline}{shlex.quote(umu_path)} {shlex.quote(game.executable)}"], {}
+    return ["umu-run", game.executable], {**env, "PROTONPATH": "GE-Proton"}
 
 
 # What a bundled build (PyInstaller, AppImage) puts in the environment for its own libraries and

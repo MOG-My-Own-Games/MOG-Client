@@ -31,8 +31,87 @@ def test_flatpak_faugus_runs_the_game_through_the_launchers_run_flag(monkeypatch
 
     assert cmd[:-1] == runner and extra == {}
     command = cmd[-1]
-    assert command.startswith("WINEPREFIX=") and "GAMEID=umu-mog-7" in command
+    assert command.startswith(f"WINEPREFIX={tmp_path / 'pfx'} ") and "GAMEID" not in command
     assert command.endswith(f"{umu} {tmp_path / 'Game' / 'game.exe'}")
+
+
+@pytest.mark.parametrize("engine", ["faugus", "umu", "wine"])
+def test_no_prefix_is_imposed_unless_the_user_chose_one(monkeypatch, tmp_path, engine):
+    umu = tmp_path / "umu-run"
+    umu.write_text("")
+    runner = ["faugus-launcher", "--run"]
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (runner, str(umu), False))
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": engine)
+    game = _game(tmp_path)
+    game.prefix = None
+
+    cmd, extra = launcher.launch_command(game)
+
+    assert "WINEPREFIX" not in extra and "GAMEID" not in extra
+    assert "WINEPREFIX" not in " ".join(cmd) and "GAMEID" not in " ".join(cmd)
+    assert not (tmp_path / "data" / "prefixes").exists()
+    assert game.prefix is None
+
+
+def test_a_prefix_the_user_chose_is_passed_to_wine_and_umu(monkeypatch, tmp_path):
+    game = _game(tmp_path)
+    for engine in ("wine", "umu"):
+        monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto", engine=engine: engine)
+        _, extra = launcher.launch_command(game)
+        assert extra["WINEPREFIX"] == str(tmp_path / "pfx") and "GAMEID" not in extra
+
+
+def test_proton_needs_a_prefix_so_it_gets_one_of_mogs_when_the_user_has_none(monkeypatch, tmp_path):
+    proton = tmp_path / "steamapps" / "common" / "Proton 9" / "proton"
+    proton.parent.mkdir(parents=True)
+    proton.write_text("")
+    monkeypatch.setattr(launcher, "find_proton", lambda: proton)
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "proton")
+    game = _game(tmp_path)
+    game.prefix = None
+
+    _, extra = launcher.launch_command(game)
+
+    assert extra["STEAM_COMPAT_DATA_PATH"] == str(tmp_path / "data" / "prefixes" / "7" / "pfx-data")
+
+
+def test_system_engine_opens_the_exe_like_a_double_click(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/gio" if name == "gio" else None)
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "system")
+    game = _game(tmp_path)
+
+    cmd, extra = launcher.launch_command(game)
+
+    assert cmd == ["/usr/bin/gio", "open", game.executable] and extra == {}
+
+
+def test_system_engine_is_the_default_only_when_an_exe_handler_exists(monkeypatch):
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+    monkeypatch.setattr(launcher, "faugus_command", lambda: ["faugus-run"])
+    monkeypatch.setattr(launcher, "find_proton", lambda: None)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launcher, "exe_handler_registered", lambda: True)
+    assert launcher.detect_launcher("auto") == "system"
+    monkeypatch.setattr(launcher, "exe_handler_registered", lambda: False)
+    assert launcher.detect_launcher("auto") == "faugus"
+
+
+def test_exe_handler_is_read_from_gio_in_the_c_locale(monkeypatch):
+    launcher.exe_handler_registered.cache_clear()
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/gio")
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        out = "Default application for 'x': wine.desktop\n" if cmd[-1].endswith("x-msdownload") else "No default applications for 'x'\n"
+        return type("R", (), {"stdout": out})()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    try:
+        assert launcher.exe_handler_registered() is True
+        assert seen["env"]["LC_ALL"] == "C"
+    finally:
+        launcher.exe_handler_registered.cache_clear()
 
 
 def test_native_faugus_2x_has_no_faugus_run_so_launcher_run_is_used(monkeypatch):
@@ -133,3 +212,4 @@ def test_steam_shortcut_runs_the_launch_script_which_execs_the_launcher(monkeypa
     assert seen["dir"] == str(Path(game.executable).parent)
     body = script.read_text()
     assert "exec /usr/bin/flatpak run" in body and "--run" in body and "mog-client" not in body.lower()
+
