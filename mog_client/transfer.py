@@ -232,9 +232,11 @@ def verify_and_repair(
     session_id: int | None = None,
     log: Callable[[str], None] = log,
     warn: Callable[[str], None] = warn,
+    on_manifest: Callable[[list[dict]], None] | None = None,
 ) -> None:
     """Verify every downloaded file's sha1 against the server's own finished,
-    hash-verified manifest and re-fetch whatever doesn't match."""
+    hash-verified manifest and re-fetch whatever doesn't match. `on_manifest` gets that
+    manifest's files ({path, size_bytes, sha1}) once it is known."""
     try:
         manifest = client.list_files(game_id, session_id=session_id)
     except RuntimeError as e:
@@ -242,6 +244,8 @@ def verify_and_repair(
         return
 
     files = manifest.get("files", [])
+    if on_manifest:
+        on_manifest(files)
     log(f"verifying {len(files)} file(s) against the server's hashes...")
     mismatches = 0
     for entry in files:

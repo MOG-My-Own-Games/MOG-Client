@@ -12,6 +12,7 @@ from mog_client import steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, save_library
 from mog_client.launcher import create_desktop_entry, entry_command, launch_script_path
+from mog_client.saves.state import forget_game, save_install_manifest
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
@@ -106,7 +107,15 @@ def run_install(
         if state == "failed":
             raise RuntimeError(f"install failed: {server_final.get('error')}")
         return rec  # paused or cancelled: not a failure, the buttons already say so
-    verify_and_repair(client, gid, out_dir, session_id=session_id, log=log, warn=log)
+    verify_and_repair(
+        client,
+        gid,
+        out_dir,
+        session_id=session_id,
+        log=log,
+        warn=log,
+        on_manifest=lambda files: save_install_manifest(gid, files),
+    )
     _update(rec, state="awaiting_executable")
     return rec
 
@@ -237,4 +246,5 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
         lib = load_library()
         lib.pop(rec.game_id, None)
         save_library(lib)
+        forget_game(rec.game_id)
     return leftovers
