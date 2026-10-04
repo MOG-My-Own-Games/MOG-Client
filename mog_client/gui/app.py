@@ -49,10 +49,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mog_client import manager, steam, updater
+from mog_client import manager, steam, trace, updater
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.grouping import Group, group_games
 from mog_client.progress import RateMeter, format_eta
+from mog_client.stopactions import StopActions
 from mog_client.config import (
     InstalledGame,
     Settings,
@@ -217,7 +218,7 @@ class App:
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
-        self.after_stop: dict[int, Callable[[], None]] = {}  # runs once that install has stopped
+        self.after_stop = StopActions()  # runs once that install has stopped
 
     def client(self):
         return manager.make_client(self.settings)
@@ -355,6 +356,7 @@ class App:
         if gid in self.installs:
             return
         stop = threading.Event()
+        self.after_stop.forget(gid)
         self.installs[gid] = stop
         bridge = self.bridge
 
@@ -404,12 +406,13 @@ class App:
             self.installs.pop(gid, None)
             self.progress.pop(gid, None)
             self.stopping.discard(gid)
-            follow_up = self.after_stop.pop(gid, None)
+            follow_up = self.after_stop.take(gid)
             if follow_up:
                 try:
                     follow_up()
                 except Exception as e:  # noqa: BLE001
                     err = err or str(e)
+            trace.event(f"install of game {gid} ended: error={err!r}, state={getattr(load_library().get(gid), 'state', None)}")
             bridge.finished.emit(gid, err)
 
         threading.Thread(target=work, daemon=True).start()
@@ -424,11 +427,16 @@ class App:
 
         def discard() -> None:
             rec = load_library().get(gid)
-            if rec:
+            # Only a partial download is thrown away: an install that finished before the stop
+            # reached it is the user's now, and is removed from Options if they still want that.
+            if rec and rec.state == "installing":
                 manager.uninstall(rec)
+                trace.event(f"cancel local: discarded the partial download of game {gid}")
+            elif rec:
+                self.bridge.error.emit(f"{rec.name} had already finished installing, so it was kept")
 
-        self.after_stop[gid] = discard
-        self.pause_install(gid)
+        if self.after_stop.register(gid, discard, running=gid in self.installs):
+            self.pause_install(gid)
 
     def cancel_server_install(self, gid: int) -> None:
         """Stop the installer on the server; what was downloaded here is kept for a later resume."""
