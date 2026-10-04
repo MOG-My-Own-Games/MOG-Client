@@ -9,11 +9,15 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
+from mog_client import net, trace
 from mog_client.api import ACTIVE_STATES, MANIFEST_INTERVAL, POLL_INTERVAL, MogClient, bar, fmt_bytes, log, warn
+
+
+STALL_SECONDS = 15.0
 
 
 def download_all_files(
@@ -42,97 +46,133 @@ def download_all_files(
     stop_event = stop_event or threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
     workers = client.download_workers() or 1
+    trace.start(f"download of game {game_id} (session {session_id}) into {out_dir}, {workers} worker(s)")
+    last_data = {"at": time.monotonic(), "warned": 0.0}
     done_paths: set[str] = set()
     # Bytes of each file on disk; the total is always their sum, so it cannot drift
     # (a file that restarts from zero just lowers its own entry).
     on_disk: dict[str, int] = {}
+    known = {"total": 0}  # what the manifest lists so far; grows while the server still works
     last_logged: int | None = None
-    failures = 0
+    running: dict[str, Future] = {}
+    connections_reset = False
+    failed_at: dict[str, tuple[float, int]] = {}  # path -> (when it may be tried again, failures so far)
 
     def total() -> int:
         return sum(on_disk.values())
 
-    while not stop_event.is_set():
-        # Sampled before the manifest fetch: a manifest read after this
-        # moment can't be missing files the finished install produced.
-        server_was_done = server_done is None or server_done.is_set()
-        try:
-            manifest = client.stream_manifest(game_id, session_id=session_id)
-        except RuntimeError as e:
-            warn(str(e))
-            manifest = None
-        files = manifest.get("files", []) if manifest else []
-        if len(files) != last_logged:
-            last_logged = len(files)
-            log(f"manifest: {len(files)} file(s)")
-        known_total = sum(f.get("size_bytes", 0) for f in files)
-        failed = False
-        todo: list[dict] = []
-        for f in files:
-            path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
-            if path in done_paths:
-                continue
-            local_path = out_dir / path
-            local_size = local_path.stat().st_size if local_path.is_file() else 0
-            on_disk.setdefault(path, min(local_size, size) if size else local_size)
-            if complete and local_size >= size:
-                on_disk[path] = size
-                done_paths.add(path)
-                if on_bytes:
-                    on_bytes(total(), known_total)
-            elif complete or on_disk[path] < f.get("sealed_bytes", 0):
-                todo.append(f)  # nothing new to ask for on a growing file that is already caught up
+    def fetch(f: dict) -> int:
+        path = f["path"]
 
-        def fetch(f: dict, known: int = known_total) -> tuple[str, int | None, str | None]:
-            path = f["path"]
-
-            def in_flight(written_now: int) -> None:
-                on_disk[path] = written_now
-                if on_bytes:
-                    on_bytes(total(), known)
-
-            try:
-                written = client.stream_file(
-                    game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event
-                )
-            except RuntimeError as e:
-                return path, None, str(e)
-            return path, written, None
-
-        progressed = False
-        before = total()
-        if todo:
-            # Several files at once: one connection per worker, so a link with latency stays full
-            # and many small files do not queue behind each other.
-            with ThreadPoolExecutor(max_workers=max(1, min(workers, len(todo)))) as pool:
-                results = list(pool.map(fetch, todo))
-            by_path = {f["path"]: f for f in todo}
-            for path, written, error in results:
-                f = by_path[path]
-                size, complete = f.get("size_bytes", 0), f.get("complete", False)
-                if error is not None:
-                    warn(error)
-                    failed = True
-                    continue
-                on_disk[path] = written
-                log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
-                if complete and written >= size:
-                    done_paths.add(path)
-                elif complete:
-                    warn(f"  {path}: only got {fmt_bytes(written)} of {fmt_bytes(size)}")
+        def in_flight(written_now: int) -> None:
+            on_disk[path] = written_now
+            last_data["at"] = time.monotonic()
             if on_bytes:
-                on_bytes(total(), known_total)
-            progressed = total() > before
-        if stop_event.is_set():
-            return total(), False
-        if not failed and server_was_done and files and all(f["path"] in done_paths for f in files):
-            log("all files downloaded")
-            return total(), True
-        failures = failures + 1 if failed else 0
-        # Poll again soon while data is flowing; a flaky link retries soon at first, then backs off to 30s.
-        pause = min(MANIFEST_INTERVAL * 2**failures, 30) if failed else (0.5 if progressed else MANIFEST_INTERVAL)
-        if stop_event.wait(pause):
-            break
+                on_bytes(total(), known["total"])
+
+        began = time.monotonic()
+        trace.event(f"start {path} from {on_disk.get(path, 0)}")
+        try:
+            written = client.stream_file(game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event)
+        except Exception as e:  # noqa: BLE001 - recorded, then handled by the caller
+            trace.event(f"fail {path} after {time.monotonic() - began:.1f}s: {e}")
+            raise
+        trace.event(f"end {path} at {written} bytes after {time.monotonic() - began:.1f}s")
+        return written
+
+    def reap(files_by_path: dict[str, dict]) -> bool:
+        """Collect finished transfers; True if any of them moved data."""
+        moved = False
+        for path, future in list(running.items()):
+            if not future.done():
+                continue
+            del running[path]
+            f = files_by_path.get(path, {})
+            try:
+                written = future.result()
+            except RuntimeError as e:
+                warn(str(e))
+                count = failed_at.get(path, (0.0, 0))[1] + 1
+                failed_at[path] = (time.monotonic() + min(MANIFEST_INTERVAL * 2**count, 30), count)
+                continue
+            failed_at.pop(path, None)
+            moved = moved or written != on_disk.get(path)
+            on_disk[path] = written
+            size, complete = f.get("size_bytes", 0), f.get("complete", False)
+            log(f"  streaming {path} ({fmt_bytes(written)} / {fmt_bytes(size)}" + (" DONE" if complete and written >= size else ")"))
+            if complete and written >= size:
+                done_paths.add(path)
+            elif complete:
+                # Asked while the install still ran, finished since: the next pass fetches the rest.
+                trace.event(f"{path}: {written} of {size} bytes so far, asking again")
+            if on_bytes:
+                on_bytes(total(), known["total"])
+        return moved
+
+    # One pool for the whole download, fed as files turn up: the manifest is polled every few
+    # seconds however long a transfer takes, so a finished install is noticed at once and its files
+    # start flowing without waiting for the slowest transfer of an earlier pass.
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        files_by_path: dict[str, dict] = {}
+        while not stop_event.is_set():
+            # Sampled before the manifest fetch: a manifest read after this
+            # moment can't be missing files the finished install produced.
+            server_was_done = server_done is None or server_done.is_set()
+            if server_was_done and not connections_reset:
+                # The server has finished: whatever connections the download held while it worked
+                # may have gone stale, so replace them one by one rather than trust them.
+                connections_reset = True
+                log("server finished: replacing the connections one by one")
+                trace.event(f"server done, resetting connections ({len(running)} transfer(s) running)")
+                net.reset_connections()
+            asked = time.monotonic()
+            try:
+                manifest = client.stream_manifest(game_id, session_id=session_id)
+            except RuntimeError as e:
+                warn(str(e))
+                trace.event(f"manifest failed after {time.monotonic() - asked:.1f}s: {e}")
+                manifest = None
+            else:
+                took = time.monotonic() - asked
+                if took > 2:
+                    trace.event(f"manifest took {took:.1f}s")
+            files = manifest.get("files", []) if manifest else []
+            files_by_path = {f["path"]: f for f in files}
+            if len(files) != last_logged:
+                last_logged = len(files)
+                log(f"manifest: {len(files)} file(s)")
+            known["total"] = sum(f.get("size_bytes", 0) for f in files)
+
+            moved = reap(files_by_path)
+            now = time.monotonic()
+            for f in files:
+                path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
+                if path in done_paths or path in running or failed_at.get(path, (0.0, 0))[0] > now:
+                    continue
+                local_path = out_dir / path
+                local_size = local_path.stat().st_size if local_path.is_file() else 0
+                on_disk.setdefault(path, min(local_size, size) if size else local_size)
+                if complete and local_size >= size:
+                    on_disk[path] = size
+                    done_paths.add(path)
+                    if on_bytes:
+                        on_bytes(total(), known["total"])
+                elif complete or on_disk[path] < f.get("sealed_bytes", 0):
+                    running[path] = pool.submit(fetch, f)  # nothing new to ask for on a growing file that is caught up
+
+            quiet = time.monotonic() - last_data["at"]
+            if running and quiet > STALL_SECONDS and time.monotonic() - last_data["warned"] > STALL_SECONDS:
+                last_data["warned"] = time.monotonic()
+                waiting = ", ".join(sorted(running)[:3]) + ("..." if len(running) > 3 else "")
+                warn(f"no data for {quiet:.0f}s, {len(running)} transfer(s) waiting ({waiting}); trace: {trace.trace_path()}")
+                trace.event(f"stalled {quiet:.0f}s; running: {sorted(running)}")
+            if not running and server_was_done and files and all(f["path"] in done_paths for f in files):
+                log("all files downloaded")
+                trace.event("all files downloaded")
+                return total(), True
+            # Look again soon while data is flowing; otherwise at the usual pace.
+            if stop_event.wait(0.5 if running or moved else MANIFEST_INTERVAL):
+                break
     return total(), False
 
 

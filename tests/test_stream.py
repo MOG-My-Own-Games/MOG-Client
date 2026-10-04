@@ -117,3 +117,90 @@ def test_files_are_fetched_over_one_persistent_connection(tmp_path):
         assert client.stream_file(1, f"f{i}.bin", tmp_path) == 4000
     assert len(connections) == 1
     httpd.shutdown()
+
+
+def test_a_connection_left_idle_is_not_reused(tmp_path, monkeypatch):
+    from mog_client import net
+
+    connections = []
+
+    class Keepalive(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def setup(self):
+            connections.append(1)
+            super().setup()
+
+        def do_GET(self):
+            body = b"data" * 1000
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = _serve(Keepalive)
+    client = MogClient(Client(f"http://127.0.0.1:{httpd.server_port}", "u", "p"))
+    now = {"t": 1000.0}
+    monkeypatch.setattr(net.time, "monotonic", lambda: now["t"])
+
+    client.stream_file(1, "a.bin", tmp_path)
+    now["t"] += 1  # a second later: the same connection is fine
+    client.stream_file(1, "b.bin", tmp_path)
+    assert len(connections) == 1
+    now["t"] += net.MAX_IDLE_SECONDS + 1  # left alone long enough that a proxy may have dropped it
+    client.stream_file(1, "c.bin", tmp_path)
+    assert len(connections) == 2
+    httpd.shutdown()
+
+
+def test_resetting_connections_frees_a_transfer_stuck_on_a_dead_one(tmp_path):
+    import time as _t
+
+    from mog_client import net
+
+    payload = bytes(range(256)) * 16  # 4096 bytes
+    state = {"requests": 0}
+
+    class Stalls(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            state["requests"] += 1
+            start = 0
+            if self.headers.get("Range"):
+                start = int(self.headers["Range"].split("=")[1].split("-")[0])
+            body = payload[start:]
+            self.send_response(206 if start else 200)
+            if start:
+                self.send_header("Content-Range", f"bytes {start}-{len(payload) - 1}/{len(payload)}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if state["requests"] == 1:
+                self.wfile.write(body[:1000])
+                self.wfile.flush()
+                _t.sleep(20)  # the peer goes quiet mid-body, as a dropped connection does
+                return
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = _serve(Stalls)
+    client = MogClient(Client(f"http://127.0.0.1:{httpd.server_port}", "u", "p"))
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(size=client.stream_file(1, "big.bin", tmp_path)), daemon=True)
+    started = _t.monotonic()
+    worker.start()
+    _t.sleep(0.5)  # it is now waiting for the rest of the body
+    assert worker.is_alive()
+
+    net.reset_connections(interval=0.05)
+    worker.join(timeout=5)
+
+    assert not worker.is_alive() and _t.monotonic() - started < 8
+    assert result["size"] == len(payload) and (tmp_path / "big.bin").read_bytes() == payload
+    assert state["requests"] == 2  # resumed with a Range request on a new connection
+    httpd.shutdown()

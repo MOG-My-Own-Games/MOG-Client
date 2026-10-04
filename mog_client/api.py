@@ -17,10 +17,10 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import net
+from mog_client import net, trace
 
 POLL_INTERVAL = 3
-STREAM_TIMEOUT = 60.0  # per socket read, not for the whole transfer
+STREAM_TIMEOUT = 30.0  # per socket read, not for the whole transfer
 STREAM_CHUNK = 1024 * 1024
 REQUEST_RETRIES = 3
 MANIFEST_INTERVAL = 3
@@ -275,13 +275,26 @@ class MogClient:
         url = self.c.base + endpoint
         while not (stop and stop.is_set()):
             headers = self.c._headers({"Range": f"bytes={written}-"} if written > 0 else {})
+            asked = time.monotonic()
             try:
                 resp = net.pooled_request("GET", url, headers, STREAM_TIMEOUT)
+            except net.ConnectionReset:
+                trace.event(f"{path}: connection dropped on purpose while waiting, retrying from {written}")
+                continue  # dropped on purpose: carry on over a new connection
             except (OSError, http.client.HTTPException) as e:
                 raise RuntimeError(f"connection error ({self.c.base}): {getattr(e, 'reason', e)}") from e
             status = resp.status
+            waited = time.monotonic() - asked
+            if waited > 2:
+                trace.event(f"{path}: the server took {waited:.1f}s to answer (status {status})")
             if status >= 300:
-                body = resp.read()  # reading it out keeps the connection usable
+                try:
+                    body = resp.read()  # reading it out keeps the connection usable
+                except (OSError, http.client.HTTPException) as e:
+                    if net.failed(url):
+                        continue
+                    raise RuntimeError(f"connection error ({self.c.base}): {e}") from e
+                net.touch(url)
                 if status == 416:
                     return written
                 if status < 400:
@@ -303,13 +316,17 @@ class MogClient:
                             net.discard(url)  # the rest of the body is still on the wire
                             return written
             except (OSError, http.client.HTTPException) as e:
-                net.discard(url)
+                if net.failed(url):
+                    trace.event(f"{path}: connection dropped on purpose mid-body, resuming from {written}")
+                    continue  # our own reset: resume from what is on disk over a new connection
                 raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: {e}") from e
             expected = resp.headers.get("Content-Length")
             if expected and expected.isdigit() and got < int(expected):
                 # http.client reports a body cut short as a clean end of stream.
-                net.discard(url)
+                if net.failed(url):
+                    continue
                 raise RuntimeError(f"connection lost after {fmt_bytes(written)} of {path}: body cut short")
+            net.touch(url)
             content_range = resp.headers.get("Content-Range")
             if status == 200:
                 return written

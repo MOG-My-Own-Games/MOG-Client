@@ -129,3 +129,123 @@ def test_a_server_that_does_not_say_gets_one_file_at_a_time(tmp_path, monkeypatc
     done.set()
     download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lambda m: None, warn=lambda m: None, server_done=done)
     assert live["peak"] == 1
+
+
+def test_a_slow_transfer_does_not_hold_back_files_that_turn_up_meanwhile(tmp_path, monkeypatch):
+    import time as _t
+
+    monkeypatch.setattr(transfer, "MANIFEST_INTERVAL", 0.05)
+    started = {}
+
+    class Client:
+        polls = 0
+
+        def download_workers(self):
+            return 2
+
+        def stream_manifest(self, game_id, session_id=None):
+            Client.polls += 1
+            files = [{"path": "big.bin", "size_bytes": 10, "sealed_bytes": 10, "complete": True}]
+            if Client.polls >= 2:  # the server produced another file while big.bin is still downloading
+                files.append({"path": "late.bin", "size_bytes": 10, "sealed_bytes": 10, "complete": True})
+            return {"files": files}
+
+        def stream_file(self, game_id, path, out_dir, session_id=None, on_chunk=None, stop=None):
+            started[path] = _t.monotonic()
+            _t.sleep(1.5 if path == "big.bin" else 0.01)
+            (out_dir / path).write_bytes(b"x" * 10)
+            return 10
+
+    done = threading.Event()
+    done.set()
+    total, finished = download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lambda m: None, warn=lambda m: None, server_done=done)
+
+    assert finished and total == 20
+    assert started["late.bin"] - started["big.bin"] < 1.0  # it did not wait for big.bin to end
+
+
+def test_a_failing_file_is_retried_later_without_stopping_the_others(tmp_path, monkeypatch):
+    monkeypatch.setattr(transfer, "MANIFEST_INTERVAL", 0.02)
+    warnings = []
+
+    class Client:
+        attempts = {"bad.bin": 0}
+
+        def download_workers(self):
+            return 2
+
+        def stream_manifest(self, game_id, session_id=None):
+            return {"files": [{"path": p, "size_bytes": 10, "sealed_bytes": 10, "complete": True} for p in ("bad.bin", "good.bin")]}
+
+        def stream_file(self, game_id, path, out_dir, session_id=None, on_chunk=None, stop=None):
+            if path == "bad.bin":
+                Client.attempts["bad.bin"] += 1
+                if Client.attempts["bad.bin"] == 1:
+                    raise RuntimeError("connection lost")
+            (out_dir / path).write_bytes(b"x" * 10)
+            return 10
+
+    done = threading.Event()
+    done.set()
+    total, finished = download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lambda m: None, warn=warnings.append, server_done=done)
+    assert finished and total == 20 and warnings == ["connection lost"]
+
+
+def test_connections_are_replaced_once_when_the_server_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(transfer, "MANIFEST_INTERVAL", 0.02)
+    calls = []
+    monkeypatch.setattr(transfer.net, "reset_connections", lambda *a, **k: calls.append(1))
+    done = threading.Event()
+
+    class Client:
+        rounds = 0
+
+        def download_workers(self):
+            return 1
+
+        def stream_manifest(self, game_id, session_id=None):
+            Client.rounds += 1
+            if Client.rounds == 3:
+                done.set()  # the server's install ends while the download is under way
+            return {"files": [{"path": "a.bin", "size_bytes": 10, "sealed_bytes": 10, "complete": True}]}
+
+        def stream_file(self, game_id, path, out_dir, session_id=None, on_chunk=None, stop=None):
+            import time as _t
+
+            _t.sleep(0.15)
+            (out_dir / path).write_bytes(b"x" * 10)
+            return 10
+
+    download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lambda m: None, warn=lambda m: None, server_done=done)
+    assert calls == [1]
+
+
+def test_a_stall_is_reported_and_traced(tmp_path, monkeypatch):
+    import time as _t
+
+    from mog_client import trace
+
+    monkeypatch.setattr(transfer, "MANIFEST_INTERVAL", 0.02)
+    monkeypatch.setattr(transfer, "STALL_SECONDS", 0.1)
+    warnings, lines = [], []
+
+    class Client:
+        def download_workers(self):
+            return 1
+
+        def stream_manifest(self, game_id, session_id=None):
+            return {"files": [{"path": "slow.bin", "size_bytes": 10, "sealed_bytes": 10, "complete": True}]}
+
+        def stream_file(self, game_id, path, out_dir, session_id=None, on_chunk=None, stop=None):
+            _t.sleep(0.6)  # no byte arrives for a while
+            (out_dir / path).write_bytes(b"x" * 10)
+            return 10
+
+    done = threading.Event()
+    done.set()
+    download_all_files(Client(), 1, tmp_path, threading.Event(), None, log=lines.append, warn=warnings.append, server_done=done)
+
+    assert any("no data for" in w and "slow.bin" in w for w in warnings)
+    text = trace.trace_path().read_text()
+    assert "start slow.bin" in text and "stalled" in text and "end slow.bin" in text
+    assert "server finished: replacing the connections one by one" in lines

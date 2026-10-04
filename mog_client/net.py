@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import http.client
 import os
+import socket
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,7 +65,43 @@ def urlopen(request: urllib.request.Request | str, timeout: float | None = None)
 # One persistent connection per thread and host: a download of many small files
 # otherwise pays a TCP (and TLS) handshake for every file, which dominates on a
 # link with any latency.
+#
+# A connection left idle is not trusted: servers and the proxies and NATs in front of them
+# drop idle ones, often without telling the client, and the next request on such a connection
+# then waits out the whole read timeout before failing.
+MAX_IDLE_SECONDS = 4.0  # below uvicorn's 5s keep-alive, far below any proxy's
+RESET_INTERVAL = 1.0  # seconds between one connection being dropped and the next
+
+
+class ConnectionReset(OSError):
+    """A connection this client dropped on purpose (see reset_connections); retry on a fresh one."""
+
+
+class _Pooled:
+    def __init__(self, conn: http.client.HTTPConnection):
+        self.conn = conn
+        self.last_used = time.monotonic()
+        self.killed = False
+
+    def interrupt(self) -> None:
+        """Cut the socket from another thread. Only the socket: closing the connection object under
+        a thread that is reading from it would break that thread in unpredictable ways, so the
+        owner closes it when it notices (the read wakes up with an error or end of stream)."""
+        sock = self.conn.sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.interrupt()
+        self.conn.close()
+
+
 _local = threading.local()
+_registry: set[_Pooled] = set()
+_registry_lock = threading.Lock()
 
 
 def _connection_key(url: str) -> tuple[str, str]:
@@ -71,40 +109,95 @@ def _connection_key(url: str) -> tuple[str, str]:
     return parts.scheme, parts.netloc
 
 
+def _conns() -> dict:
+    return _local.__dict__.setdefault("conns", {})
+
+
+def _forget(key: tuple[str, str]) -> _Pooled | None:
+    pooled = _conns().pop(key, None)
+    if pooled is not None:
+        with _registry_lock:
+            _registry.discard(pooled)
+        pooled.close()
+    return pooled
+
+
 def pooled_request(
     method: str, url: str, headers: dict[str, str], timeout: float
 ) -> http.client.HTTPResponse:
     """Send a request over this thread's persistent connection and return the
-    response, still to be read. Read it to the end to keep the connection for the
-    next request; after an early stop call `discard(url)`."""
+    response, still to be read. Read it to the end and call `touch(url)` to keep the
+    connection for the next request; after a failed or early-stopped read call `failed(url)`
+    or `discard(url)`. Raises ConnectionReset if the connection was dropped on purpose."""
     scheme, netloc = _connection_key(url)
+    key = (scheme, netloc)
     parts = urllib.parse.urlsplit(url)
     target = parts.path + (f"?{parts.query}" if parts.query else "")
-    conns: dict = _local.__dict__.setdefault("conns", {})
     for attempt in (1, 2):
-        conn = conns.get((scheme, netloc))
-        reused = conn is not None
-        if conn is None:
+        pooled = _conns().get(key)
+        if pooled is not None and (pooled.killed or time.monotonic() - pooled.last_used > MAX_IDLE_SECONDS):
+            _forget(key)
+            pooled = None
+        reused = pooled is not None
+        if pooled is None:
             if scheme == "https":
                 conn = http.client.HTTPSConnection(netloc, timeout=timeout, context=ssl_context())
             else:
                 conn = http.client.HTTPConnection(netloc, timeout=timeout)
-            conns[(scheme, netloc)] = conn
-        conn.timeout = timeout
+            pooled = _Pooled(conn)
+            _conns()[key] = pooled
+            with _registry_lock:
+                _registry.add(pooled)
+        pooled.last_used = time.monotonic()
+        pooled.conn.timeout = timeout
         try:
-            conn.request(method, target, headers=headers)
-            return conn.getresponse()
+            pooled.conn.request(method, target, headers=headers)
+            if pooled.conn.sock is not None:
+                pooled.conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            return pooled.conn.getresponse()
         except (http.client.HTTPException, OSError):
-            conn.close()
-            conns.pop((scheme, netloc), None)
+            killed = pooled.killed
+            _forget(key)
+            if killed:
+                raise ConnectionReset("connection dropped by the client") from None
             # A kept-alive connection the server already closed is expected once; anything else is real.
             if not reused or attempt == 2:
                 raise
     raise AssertionError("unreachable")
 
 
+def touch(url: str) -> None:
+    """The response on this thread's connection to the URL's host was read to the end: it is idle from now."""
+    pooled = _conns().get(_connection_key(url))
+    if pooled is not None:
+        pooled.last_used = time.monotonic()
+
+
+def failed(url: str) -> bool:
+    """A read on this thread's connection to the URL's host went wrong. Drops it and says whether
+    that was our own reset (retry at once) or a real failure."""
+    pooled = _forget(_connection_key(url))
+    return bool(pooled and pooled.killed)
+
+
 def discard(url: str) -> None:
     """Drop this thread's connection to the URL's host (after a read that did not finish)."""
-    conn = _local.__dict__.setdefault("conns", {}).pop(_connection_key(url), None)
-    if conn is not None:
-        conn.close()
+    _forget(_connection_key(url))
+
+
+def reset_connections(interval: float = RESET_INTERVAL) -> threading.Thread:
+    """Drop every pooled connection one after another, `interval` seconds apart, so that nothing
+    stays stuck on one that went bad. A transfer waiting on a dropped connection fails at once with
+    ConnectionReset and carries on over a new one; idle ones are simply replaced on next use."""
+
+    def run() -> None:
+        with _registry_lock:
+            snapshot = sorted(_registry, key=lambda p: p.last_used)
+        for pooled in snapshot:
+            pooled.killed = True
+            pooled.interrupt()
+            time.sleep(interval)
+
+    thread = threading.Thread(target=run, daemon=True, name="connection-reset")
+    thread.start()
+    return thread
