@@ -120,7 +120,7 @@ def test_steam_shortcut_runs_the_launch_script_which_execs_the_launcher(monkeypa
     monkeypatch.setattr(launcher, "faugus_invocation", lambda: (runner, str(tmp_path / "umu-run"), True))
     monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
     monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "flatpak" else None)
-    monkeypatch.setattr(manager, "fetch_artwork", lambda meta: {})
+    monkeypatch.setattr(manager, "fetch_artwork", lambda meta, client=None: {})
     monkeypatch.setattr(manager, "_update", lambda rec, **changes: None)
     seen = {}
     monkeypatch.setattr(manager.steam, "add_shortcut", lambda user, name, exe, start_dir, options, artwork=None: seen.update(exe=exe, dir=start_dir, options=options) or {})

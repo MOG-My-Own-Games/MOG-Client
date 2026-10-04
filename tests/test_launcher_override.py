@@ -92,7 +92,7 @@ def test_removing_the_entries_also_removes_the_launch_script(setup):
 
 
 def _art(monkeypatch, blob=b"\x89PNGnew"):
-    monkeypatch.setattr(manager, "fetch_artwork", lambda meta: {"portrait": blob})
+    monkeypatch.setattr(manager, "fetch_artwork", lambda meta, client=None: {"portrait": blob})
 
 
 def test_regenerating_edits_the_steam_entry_in_place_and_refreshes_its_artwork(setup, monkeypatch):
@@ -143,3 +143,34 @@ def test_update_shortcut_says_when_the_entry_is_gone(setup):
     game, record = setup
     steam.remove_shortcut(record)
     assert steam.update_shortcut(record, "/x", "/d", "") is None
+
+
+def test_the_entries_artwork_comes_from_the_server_kind_by_kind():
+    from mog_client import scrape
+
+    class Server:
+        def __init__(self):
+            self.asked = []
+
+        def get_image(self, path):
+            self.asked.append(path)
+            kind = path.rsplit("/", 1)[1]
+            return None if kind == "icon" else f"{kind}-bytes".encode()
+
+    server = Server()
+    art = scrape.fetch_artwork({"id": 7}, server)
+
+    assert art == {"portrait": b"cover-bytes", "wide": b"banner-bytes", "hero": b"hero-bytes", "logo": b"logo-bytes"}
+    assert server.asked == [f"/api/games/7/media/{k}" for k in ("cover", "banner", "hero", "logo", "icon")]
+
+
+def test_an_older_server_that_serves_no_artwork_still_gives_the_cover(monkeypatch):
+    from mog_client import scrape
+
+    class Old:
+        def get_image(self, path):
+            return None
+
+    monkeypatch.setattr(scrape, "fetch_url", lambda url: b"direct-cover")
+    art = scrape.fetch_artwork({"id": 7, "cover_path": "https://cdn2.steamgriddb.com/p.png"}, Old())
+    assert art == {"portrait": b"direct-cover"}

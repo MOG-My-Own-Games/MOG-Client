@@ -1432,7 +1432,7 @@ class GamePage(Page):
         def go() -> None:
             def work():
                 try:
-                    changed = manager.regenerate_entries(rec, self.game, self.app.settings.launcher)
+                    changed = manager.regenerate_entries(rec, self.game, self.app.settings.launcher, self.app.client())
                 except RuntimeError as e:
                     self.app.bridge.error.emit(str(e))
                     return
@@ -1489,7 +1489,9 @@ class GamePage(Page):
             self.logbox.appendPlainText("Updating entries and fetching artwork...")
 
             def work():
-                changed = manager.finish_setup(rec, self.game, exe, steam_user, desktop, self.app.settings.launcher)
+                changed = manager.finish_setup(
+                    rec, self.game, exe, steam_user, desktop, self.app.settings.launcher, self.app.client()
+                )
                 if changed and steam_user and steam.steam_running():
                     self.app.bridge.error.emit("Steam is running: restart it to see the updated shortcut.")
                 self.app.bridge.finished.emit(rec.game_id, "")

@@ -20,11 +20,26 @@ def artwork_urls(game: dict) -> dict[str, str]:
     return urls
 
 
-def fetch_artwork(game: dict) -> dict[str, bytes]:
+# Steam's names for the artwork of a shortcut, and the server's name for each kind.
+STEAM_KINDS = {"portrait": "cover", "wide": "banner", "hero": "hero", "logo": "logo", "icon": "icon"}
+
+
+def fetch_artwork(game: dict, client=None) -> dict[str, bytes]:
+    """The images for a Steam shortcut. The server chooses, caches and serves each kind (cover,
+    banner, hero, title logo, icon), so they come from it; only a server that does not serve
+    them yet falls back to the cover straight from its URL."""
     out: dict[str, bytes] = {}
-    for kind, url in artwork_urls(game).items():
+    if client is not None:
+        for steam_kind, kind in STEAM_KINDS.items():
+            blob = client.get_image(f"/api/games/{game['id']}/media/{kind}")
+            if blob:
+                out[steam_kind] = blob
+        if out:
+            return out
+    url = artwork_urls(game).get("portrait")
+    if url:
         try:
-            out[kind] = fetch_url(url)
+            out["portrait"] = fetch_url(url)
         except RuntimeError as e:
             warn(str(e))
     return out

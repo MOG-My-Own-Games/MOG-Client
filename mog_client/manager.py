@@ -118,6 +118,7 @@ def finish_setup(
     steam_user: Path | None,
     desktop: bool = True,
     launcher: str = "auto",
+    client: MogClient | None = None,
 ) -> bool:
     """Record the chosen executable and bring the game's entries in line with it. The entries run
     the game through its launch script on their own; MOG is not involved when they start.
@@ -128,13 +129,14 @@ def finish_setup(
     was added (Steam sees that after a restart)."""
     rec.executable = executable
     command = entry_command(rec, launcher)
-    art = fetch_artwork(game_meta)
+    art = fetch_artwork(game_meta, client)
 
     desktop_path = None
     if desktop:
         icon = Path(rec.install_dir) / ".mog-icon"
-        if "portrait" in art:
-            icon.write_bytes(art["portrait"])
+        picture = art.get("icon") or art.get("portrait")
+        if picture:
+            icon.write_bytes(picture)
         desktop_path = create_desktop_entry(rec, icon if icon.exists() else None, launcher)
     elif rec.desktop_entry:
         Path(rec.desktop_entry).unlink(missing_ok=True)
@@ -159,7 +161,9 @@ def finish_setup(
     return steam_changed
 
 
-def regenerate_entries(rec: InstalledGame, game_meta: dict, preference: str = "auto") -> bool:
+def regenerate_entries(
+    rec: InstalledGame, game_meta: dict, preference: str = "auto", client: MogClient | None = None
+) -> bool:
     """Rebuild the launch script, the desktop entry and the Steam shortcut (with fresh artwork)
     from the game's current settings. The Steam shortcut is edited in place; returns True when
     it changed and needs a Steam restart to show."""
@@ -167,7 +171,7 @@ def regenerate_entries(rec: InstalledGame, game_meta: dict, preference: str = "a
     if rec.steam_entries:
         steam_user = Path(rec.steam_entries[0]["shortcuts_path"]).parent.parent
     return finish_setup(
-        rec, game_meta, rec.executable, steam_user, desktop=bool(rec.desktop_entry), launcher=preference
+        rec, game_meta, rec.executable, steam_user, desktop=bool(rec.desktop_entry), launcher=preference, client=client
     )
 
 
