@@ -22,12 +22,16 @@ def make_client(s: Settings) -> MogClient:
     return MogClient(Client(s.base, s.user, s.password))
 
 
+_library_lock = threading.RLock()
+
+
 def _update(rec: InstalledGame, **changes) -> None:
-    for k, v in changes.items():
-        setattr(rec, k, v)
-    lib = load_library()
-    lib[rec.game_id] = rec
-    save_library(lib)
+    with _library_lock:  # installs run on several threads, and read-modify-write must not interleave
+        for k, v in changes.items():
+            setattr(rec, k, v)
+        lib = load_library()
+        lib[rec.game_id] = rec
+        save_library(lib)
 
 
 ARCHIVE_SOURCE_KINDS = ("disc image", "archive")
