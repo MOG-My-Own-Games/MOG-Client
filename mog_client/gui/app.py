@@ -87,10 +87,10 @@ STYLE = """
 QMainWindow { background: #14171c; color: #e8eaed; }
 QLabel { color: #e8eaed; }
 QLineEdit, QComboBox, QPlainTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
-QPushButton { background: {accent}; color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; }
+QPushButton { background: {accent}; color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; max-width: 460px; }
 QPushButton:hover { background: {accent_hover}; }
 QPushButton:focus { border-color: white; }
-QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; }
+QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; max-width: 16777215px; }
 QPushButton[danger="true"] { background: #e2574c; }
 QPushButton[danger="true"]:hover { background: #c94439; }
 QListWidget { background: transparent; border: none; outline: none; }
@@ -102,6 +102,7 @@ QProgressBar::chunk { background: {accent}; border-radius: 6px; }
 """.replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss())
 
 COVER_SIZE = QSize(200, 270)
+OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
 IMAGE_WORKERS = 6
 PAD_ICON_HEIGHT = 28
@@ -467,6 +468,15 @@ class Page(QWidget):
         self.setFocus()
 
 
+def _centered_row(*widgets) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.addStretch()
+    for w in widgets:
+        row.addWidget(w)
+    row.addStretch()
+    return row
+
+
 def _row(*widgets, stretch_first: bool = True) -> QHBoxLayout:
     row = QHBoxLayout()
     if stretch_first:
@@ -491,7 +501,7 @@ class ConfirmPage(Page):
         lay = QVBoxLayout(self)
         lay.addStretch()
         lay.addWidget(label)
-        lay.addLayout(_row(self.no, yes))
+        lay.addLayout(_centered_row(self.no, yes))
         lay.addStretch()
 
     def focus_default(self) -> None:
@@ -624,18 +634,25 @@ class OptionsPage(Page):
         def add(text: str, action, danger: bool = False) -> None:
             button = QPushButton(text)
             button.setProperty("danger", danger)
+            button.setFixedWidth(OPTIONS_BUTTON_WIDTH)  # one width for all, centered
             button.clicked.connect(lambda: (win.back(), action()))
-            lay.addWidget(button)
+            lay.addWidget(button, 0, Qt.AlignHCenter)
             self.first = self.first or button
 
         if rec and rec.state == "installed":
             if sys.platform != "win32":
                 engine = f"{launcher_label(rec.launcher)} (this game)" if rec.launcher != "auto" else "default"
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
+            add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Regenerate shortcuts", lambda: page.regenerate(rec))
         if rec:
             partial = rec.state not in ("installed", "awaiting_executable")
             add("Discard the partial download" if partial else "Uninstall from this device", lambda: page.uninstall(rec), True)
+            add(
+                "Discard it and delete the server cache" if partial else "Uninstall and delete the server cache",
+                lambda: page.uninstall(rec, and_server_cache=True),
+                True,
+            )
         add("Delete the install cache on the server", page.delete_server_cache, True)
         lay.addStretch()
 
@@ -1330,6 +1347,11 @@ class GamePage(Page):
             w = self.buttons.takeAt(0).widget()
             if w:
                 w.deleteLater()
+        self.buttons.addStretch()  # the buttons sit in the middle, none wider than the stylesheet allows
+        self._fill_buttons()
+        self.buttons.addStretch()
+
+    def _fill_buttons(self) -> None:
         gid = self.game["id"]
         rec = load_library().get(gid)
         self.first = None
@@ -1350,7 +1372,6 @@ class GamePage(Page):
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
             self.first = self._button("Play", self.play, True)
-            self._button("Shortcuts / executable", lambda: self.choose_executable(rec))
             self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
@@ -1477,13 +1498,18 @@ class GamePage(Page):
 
         self.win.push(ExecutablePage(self.win, rec, done))
 
-    def uninstall(self, rec: InstalledGame) -> None:
+    def uninstall(self, rec: InstalledGame, and_server_cache: bool = False) -> None:
         def remove(delete_prefix: bool) -> None:
             leftovers = manager.uninstall(rec, delete_prefix)
+            if and_server_cache:
+                self.app.run_bg(
+                    lambda: self.app.client().clear_cache(rec.game_id),
+                    on_error=lambda m: self.app.bridge.error.emit(f"Could not delete the server cache: {m}"),
+                )
             self.win.notify(
                 f"Could not remove everything, delete by hand: {', '.join(leftovers)}"
                 if leftovers
-                else f"{rec.name} uninstalled"
+                else f"{rec.name} uninstalled" + (" and its server cache deleted" if and_server_cache else "")
             )
             self.win.refresh_items()
             self.rebuild()
@@ -1499,7 +1525,8 @@ class GamePage(Page):
             else:
                 remove(False)
 
-        self.win.ask(f"Delete the game files of {rec.name} and its shortcuts?", after_files, danger=True)
+        what = "its shortcuts and the install cache on the server" if and_server_cache else "its shortcuts"
+        self.win.ask(f"Delete the game files of {rec.name}, {what}?", after_files, danger=True)
 
 
 ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED = Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3
