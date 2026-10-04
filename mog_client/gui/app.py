@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 
 from mog_client import manager, steam, trace, updater
 from mog_client.api import fetch_url, fmt_bytes
-from mog_client.grouping import Group, group_games
+from mog_client.grouping import ADDONS_ONLY, SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
 from mog_client.stopactions import StopActions
 from mog_client.config import (
@@ -63,6 +63,8 @@ from mog_client.config import (
     save_settings,
 )
 from mog_client.gui import gamepad, keyboard, osk
+from mog_client.gui.saves_ui import SaveSync
+from mog_client.saves.sync import enabled as sync_enabled
 from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss, bell_icon
 from mog_client.launcher import (
     available_launchers,
@@ -201,6 +203,7 @@ class Bridge(QObject):
     update_progress = Signal(int, int)  # written, total
     update_ready = Signal(str)  # path of the replaced build, to relaunch
     update_failed = Signal(str)
+    call = Signal(object)  # a callable to run on the GUI thread
 
 
 def is_deck() -> bool:
@@ -645,6 +648,13 @@ class OptionsPage(Page):
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Regenerate shortcuts", lambda: page.regenerate(rec))
+            on = sync_enabled(rec, win.app.settings)
+            add(f"Save sync: {'on' if on else 'off'} (this game)", lambda: page.toggle_save_sync(rec))
+            if on:
+                add("Back up saves now", lambda: win.saves.backup_now(rec))
+                add("Restore a saved version...", lambda: win.saves.restore_pick(rec))
+                if sys.platform != "win32":
+                    add("Where is this game's prefix?", lambda: win.saves.choose_prefix(rec))
         if rec:
             partial = rec.state not in ("installed", "awaiting_executable")
             add("Discard the partial download" if partial else "Uninstall from this device", lambda: page.uninstall(rec), True)
@@ -659,6 +669,76 @@ class OptionsPage(Page):
     def focus_default(self) -> None:
         if self.first:
             self.first.setFocus()
+
+
+class ChoicePage(Page):
+    """A list to pick one answer from; Esc or Back leaves without answering."""
+
+    def __init__(self, win: "MainWindow", title: str, text: str, options: list, on_choose):
+        super().__init__()
+        self.title, self.win, self.on_choose = title, win, on_choose
+        note = QLabel(text)
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        for label, value in options:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, value)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemActivated.connect(self.choose)
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list, 1)
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def choose(self, item: QListWidgetItem) -> None:
+        value = item.data(Qt.UserRole)
+        self.win.back()
+        self.on_choose(value)
+
+
+class ChecklistPage(Page):
+    """A list to tick any number of entries from, then Done."""
+
+    def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done):
+        super().__init__()
+        self.title, self.win, self.on_done = title, win, on_done
+        note = QLabel(text)
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        for label, value in items:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, value)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemActivated.connect(self.toggle)
+        done = QPushButton("Done")
+        done.clicked.connect(self.finish)
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list, 1)
+        lay.addLayout(_row(done))
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def toggle(self, item: QListWidgetItem) -> None:
+        item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+
+    def finish(self) -> None:
+        picked = [
+            self.list.item(i).data(Qt.UserRole)
+            for i in range(self.list.count())
+            if self.list.item(i).checkState() == Qt.Checked
+        ]
+        self.win.back()
+        self.on_done(picked)
 
 
 class LauncherPage(Page):
@@ -899,7 +979,10 @@ class SettingsPage(Page):
         if chosen:
             self.launcher.setCurrentIndex(available.index(chosen))
         self.launcher.setEnabled(len(available) > 1)
-        hint = "Faugus is the default when installed; otherwise pick among the system's umu, Proton or Wine."
+        hint = (
+            "Default is whatever opens .exe files on this system, else Faugus when installed, "
+            "else the system's umu, Proton or Wine. None of them is given a prefix by MOG."
+        )
         if not available:
             hint = "No launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine."
         mascotte = QLabel()
@@ -914,6 +997,9 @@ class SettingsPage(Page):
         form.addRow("Games folder", _row(self.games_dir, browse_games, stretch_first=False))
         form.addRow("Launcher", self.launcher)
         form.addRow("Version", QLabel(__version__))
+        self.sync_saves_box = Toggle("Back up game saves to the server")
+        self.sync_saves_box.setChecked(s.sync_saves)
+        form.addRow("Saves", self.sync_saves_box)
         self.check_updates_box = Toggle("Check for updates at startup")
         self.check_updates_box.setChecked(s.check_updates)
         self.update_status = QLabel()
@@ -967,6 +1053,7 @@ class SettingsPage(Page):
             launcher="auto" if self.launcher.currentData() == detect_launcher() else self.launcher.currentData() or "auto",
             check_updates=self.check_updates_box.isChecked(),
             show_sidebar=self.win.app.settings.show_sidebar,
+            sync_saves=self.sync_saves_box.isChecked(),
         )
         save_settings(self.win.app.settings)
         self.win.back()
@@ -1416,12 +1503,16 @@ class GamePage(Page):
 
     def play(self) -> None:
         rec = load_library()[self.game["id"]]
+        self.win.saves.before_launch(rec, lambda: self.start(rec))
+
+    def start(self, rec: InstalledGame) -> None:
         try:
             proc = launch(rec, self.app.settings.launcher)
         except (RuntimeError, OSError) as e:
             self.win.notify(str(e))
             return
         self.win.notify(f"Starting {rec.name}...")
+        self.win.saves.watch(rec, proc)
         # A launcher that dies within seconds never showed the game: say why.
         QTimer.singleShot(6000, lambda: (msg := launch_failure(proc)) and self.win.notify(msg))
 
@@ -1449,6 +1540,12 @@ class GamePage(Page):
             "The Steam shortcut is edited in place, so it keeps its artwork and play time.",
             go,
         )
+
+    def toggle_save_sync(self, rec: InstalledGame) -> None:
+        now = sync_enabled(rec, self.app.settings)
+        wanted = not now
+        manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
+        self.win.notify(f"Save sync for {rec.name} is {'on' if wanted else 'off'}")
 
     def delete_server_cache(self) -> None:
         gid = self.game["id"]
@@ -1495,6 +1592,7 @@ class GamePage(Page):
                 if changed and steam_user and steam.steam_running():
                     self.app.bridge.error.emit("Steam is running: restart it to see the updated shortcut.")
                 self.app.bridge.finished.emit(rec.game_id, "")
+                self.app.bridge.call.emit(lambda: self.win.saves.offer_after_install(rec))
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.finished.emit(rec.game_id, m))
 
@@ -1528,10 +1626,14 @@ class GamePage(Page):
                 remove(False)
 
         what = "its shortcuts and the install cache on the server" if and_server_cache else "its shortcuts"
-        self.win.ask(f"Delete the game files of {rec.name}, {what}?", after_files, danger=True)
+        self.win.ask(
+            f"Delete the game files of {rec.name}, {what}?",
+            lambda: self.win.saves.final_backup(rec, after_files),
+            danger=True,
+        )
 
 
-ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED = Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3
+ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER = Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3, Qt.UserRole + 4
 BADGE_SIZE = 56
 
 
@@ -1553,6 +1655,37 @@ def paint_installed_badge(painter: QPainter, cover: QRect) -> None:
     painter.setBrush(Qt.NoBrush)
     painter.drawPath(check)
 
+
+
+def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
+    """A colored corner on the left of the cover: amber with a floppy disk (only the saves are
+    left, top), violet with a puzzle piece (only add-ons, bottom)."""
+    left, top, bottom = cover.left(), cover.top(), cover.bottom() + 1
+    saves = state == SAVES_ONLY
+    if saves:
+        corner = QPolygonF([QPointF(left, top), QPointF(left + BADGE_SIZE, top), QPointF(left, top + BADGE_SIZE)])
+    else:
+        corner = QPolygonF([QPointF(left, bottom - BADGE_SIZE), QPointF(left + BADGE_SIZE, bottom), QPointF(left, bottom)])
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#d9962b" if saves else "#8b5cf6"))
+    painter.drawPolygon(corner)
+    white = QColor("white")
+    glyph = QPainterPath()
+    if saves:
+        x, y = left + 8, top + 8
+        glyph.addRoundedRect(QRectF(x, y, 17, 17), 2, 2)  # the disk
+        glyph.addRect(QRectF(x + 4, y, 8, 5))  # shutter
+        glyph.addRect(QRectF(x + 3, y + 10, 11, 7))  # label
+        painter.setPen(QPen(white, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+    else:
+        x, y = left + 7, bottom - 26
+        glyph.addRoundedRect(QRectF(x, y + 5, 14, 14), 2, 2)  # the piece
+        glyph.addEllipse(QRectF(x + 3.5, y, 7, 7))  # a knob on top
+        glyph.addEllipse(QRectF(x + 11, y + 8.5, 7, 7))  # and one on the right
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(white)
+    painter.drawPath(glyph)
 
 
 class CoverDelegate(QStyledItemDelegate):
@@ -1580,10 +1713,12 @@ class CoverDelegate(QStyledItemDelegate):
             painter.fillRect(bar, QColor(0, 0, 0, 170))
             filled = bar.adjusted(0, 0, int((progress - 1000) * bar.width() / 1000), 0)
             painter.fillRect(filled, accent_gradient(bar.left(), bar.top(), bar.right(), bar.bottom()))
+        painter.setClipRect(cover)
         if index.data(ROLE_INSTALLED):
-            painter.setClipRect(cover)
             paint_installed_badge(painter, cover)
-            painter.setClipping(False)
+        if state := index.data(ROLE_CORNER):
+            paint_state_badge(painter, cover, state)
+        painter.setClipping(False)
         painter.setPen(QColor("#e8eaed"))
         text = QRect(cell.left() + 4, cover.bottom() + 6, cell.width() - 8, cell.bottom() - cover.bottom() - 6)
         painter.drawText(text, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, index.data(Qt.DisplayRole))
@@ -1702,6 +1837,7 @@ class LibraryPage(Page):
         item.setData(ROLE_COVER, self.win.covers.get(gid))
         item.setData(ROLE_PROGRESS, self._progress(gid))
         item.setData(ROLE_INSTALLED, any(lib.get(g["id"]) and lib[g["id"]].state == "installed" for g in group.members))
+        item.setData(ROLE_CORNER, corner_state(self.win.app.active_version(group)))
 
     def update_label(self, gid: int) -> None:
         item = self.items.get(gid)
@@ -1820,6 +1956,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.covers: dict[int, QPixmap] = {}
         b = app.bridge
+        b.call.connect(lambda fn: fn())
+        self.saves = SaveSync(self)
         b.games.connect(self.set_games)
         b.error.connect(self.notify)
         b.cover.connect(self.set_cover)
@@ -1883,6 +2021,15 @@ class MainWindow(QMainWindow):
 
     def notify(self, text: str) -> None:
         self.status.setText(text)
+
+    def choose(self, title: str, text: str, options: list, on_choose) -> None:
+        self.push(ChoicePage(self, title, text, options, on_choose))
+
+    def checklist(self, title: str, text: str, items: list, on_done) -> None:
+        self.push(ChecklistPage(self, title, text, items, on_done))
+
+    def browse_folder(self, start: Path, on_pick) -> None:
+        self.push(BrowsePage(self, start, on_pick, folders=True))
 
     def ask(self, text: str, on_yes, on_no=None, danger: bool = False) -> None:
         def no():
@@ -2023,6 +2170,7 @@ class MainWindow(QMainWindow):
         self.app.poll_notifications()
         self.notify(f"{len(games)} games")
         self.refresh_items()
+        self.saves.check_all()
 
     def set_cover(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()

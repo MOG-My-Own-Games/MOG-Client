@@ -38,3 +38,14 @@ def test_start_session_sends_the_chosen_installer_or_archive():
     assert fake.body["installer_path"] == "setup.exe" and "source_path" not in fake.body
     MogClient(fake).start_session(5, None, None, None, source_path="game.iso")
     assert fake.body["source_path"] == "game.iso"
+
+
+def test_the_server_state_that_gets_a_corner_badge():
+    from mog_client.grouping import ADDONS_ONLY, SAVES_ONLY, corner_state
+
+    assert corner_state({"saves_only": True, "missing_from_fs": True}) == SAVES_ONLY
+    assert corner_state({"addons_only": True}) == ADDONS_ONLY
+    assert corner_state({"addons_only": True, "missing_from_fs": True}) is None  # gone: nothing to flag
+    assert corner_state({"missing_from_fs": True}) is None
+    assert corner_state({"saves_only": True, "addons_only": True}) == SAVES_ONLY
+    assert corner_state({}) is None
