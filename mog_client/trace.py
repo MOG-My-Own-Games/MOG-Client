@@ -1,4 +1,5 @@
-"""A timestamped trace of what a download is doing, for working out where one stalls."""
+"""A timestamped trace of what downloads do, for working out where one stalls. Each download appends
+a section, so the history of recent ones is there when something went wrong earlier."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from mog_client.config import data_dir
 
+MAX_BYTES = 1024 * 1024
 _lock = threading.Lock()
 _start = time.monotonic()
 
@@ -23,7 +25,11 @@ def start(title: str) -> None:
     path = trace_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
-        path.write_text(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {title}\n")
+        if path.is_file() and path.stat().st_size > MAX_BYTES:
+            keep = path.read_bytes()[-MAX_BYTES // 2 :]  # earlier downloads stay, the oldest go
+            path.write_bytes(keep[keep.find(b"\n") + 1 :])
+        with open(path, "a") as f:
+            f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {title}\n")
 
 
 def event(message: str) -> None:

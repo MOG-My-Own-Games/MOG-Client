@@ -23,3 +23,12 @@ def test_a_new_install_does_not_inherit_what_was_asked_of_an_earlier_one():
     actions.register(7, lambda: None, running=True)
     actions.forget(7)
     assert actions.take(7) is None
+
+
+def test_the_trace_keeps_the_earlier_downloads(tmp_path):
+    trace.start("first")
+    trace.event("a")
+    trace.start("second")
+    trace.event("b")
+    text = trace.trace_path().read_text()
+    assert text.index("first") < text.index("second") and "] a" in text and "] b" in text
