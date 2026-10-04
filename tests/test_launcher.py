@@ -211,5 +211,38 @@ def test_steam_shortcut_runs_the_launch_script_which_execs_the_launcher(monkeypa
     assert seen["exe"] == str(script) and seen["options"] == ""
     assert seen["dir"] == str(Path(game.executable).parent)
     body = script.read_text()
-    assert "exec /usr/bin/flatpak run" in body and "--run" in body and "mog-client" not in body.lower()
+    assert "exec /usr/bin/flatpak run" in body and "--run" in body
+    assert body.index("--save-pre") < body.index("exec ")
 
+
+def _run_script(monkeypatch, tmp_path, client: Path):
+    import subprocess
+
+    monkeypatch.setattr(launcher, "client_command", lambda: str(client))
+    monkeypatch.setattr(launcher, "standalone_command", lambda game, pref="auto": ["/bin/echo", "game started"])
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "wine")
+    game = _game(tmp_path)
+    script = launcher.write_launch_script(game)
+    return game, subprocess.run(["/bin/sh", script], capture_output=True, text=True, timeout=10)
+
+
+def test_the_launch_script_runs_the_save_hooks_then_execs_the_game(monkeypatch, tmp_path):
+    calls = tmp_path / "calls.log"
+    client = tmp_path / "mog"
+    client.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    client.chmod(0o755)
+
+    game, done = _run_script(monkeypatch, tmp_path, client)
+
+    assert done.returncode == 0 and done.stdout.strip() == "game started"
+    deadline = time.time() + 5
+    while time.time() < deadline and len(calls.read_text().splitlines() if calls.exists() else []) < 2:
+        time.sleep(0.05)
+    assert sorted(calls.read_text().splitlines()) == ["--save-pre 7", "--save-watch 7"]
+    body = launcher.launch_script_path(game).read_text().splitlines()
+    assert body[-1].startswith("exec ") and body[-3].endswith("&") and "--save-pre" in body[-4]
+
+
+def test_the_launch_script_still_starts_the_game_when_the_client_is_gone(monkeypatch, tmp_path):
+    _, done = _run_script(monkeypatch, tmp_path, tmp_path / "no-such-client")
+    assert done.returncode == 0 and done.stdout.strip() == "game started" and done.stderr == ""

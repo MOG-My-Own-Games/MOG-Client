@@ -317,11 +317,18 @@ def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
     path = launch_script_path(game)
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = detect_launcher(effective_launcher(game, preference)) or "?"
+    # The save-sync hooks run only when the client is still there, and decide for themselves whether
+    # this game syncs; the exec stays, so whatever started the script tracks the game.
     path.write_text(
         "#!/bin/sh\n"
         f"# {game.name.replace(chr(10), ' ')}: started through {engine}. Written by MOG and rewritten\n"
         "# when the game's launcher is changed there; it does not need MOG to run.\n"
         f"cd {shlex.quote(str(Path(game.executable).parent))} || exit 1\n"
+        f"MOG={shlex.quote(client_command())}\n"
+        'if [ -x "$MOG" ]; then\n'
+        f'  "$MOG" --save-pre {game.game_id} >/dev/null 2>&1\n'
+        f'  "$MOG" --save-watch {game.game_id} >/dev/null 2>&1 &\n'
+        "fi\n"
         f"exec {shlex.join(argv)}\n"
     )
     path.chmod(0o755)
