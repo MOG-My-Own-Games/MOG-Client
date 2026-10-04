@@ -15,10 +15,18 @@ dedicated MOG-Client. Not started - needs scoping first.
 
 ## Save-file sync
 
-Sync save files across devices/clients, possibly also with Heroic, GameNative or Playnite or RomM (which
-already has its own save-sync for ROM-based saves) for a shared library.
-Not started - needs a design for where saves live server-side and how
-conflicts are resolved.
+Done: per-machine backups to the server, last three versions kept per machine, restore with a backup
+of what it replaces, prefix discovery without choosing a prefix for the user (see README, "Save sync").
+
+Still open:
+
+- Windows: only the game's own folder is covered. The profile folders need the shell's known-folder
+  lookup (Documents can be redirected, e.g. to OneDrive) and must not be scanned without a session window.
+- Detecting when a game ends works from the process table on Linux and has only been exercised against
+  a fake `/proc`; it still needs checking against a real Faugus (Flatpak), umu and Proton run.
+- The registry (HKCU/HKLM) is not captured, and neither are saves outside the scanned folders;
+  a per-game list of extra folders would cover the latter.
+- Syncing with Heroic, GameNative, Playnite or RomM's own save sync, for a shared library.
 
 ## CLI polish
 
