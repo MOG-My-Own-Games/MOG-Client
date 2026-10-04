@@ -128,15 +128,22 @@ def detect_launcher(preference: str = "auto") -> str | None:
     return available[0] if available else None
 
 
+def effective_launcher(game: InstalledGame, preference: str = "auto") -> str:
+    """The game's own engine if it has one, else the one chosen in Settings."""
+    return game.launcher if game.launcher and game.launcher != "auto" else preference
+
+
 def prefix_for(game: InstalledGame) -> Path:
     return data_dir() / "prefixes" / str(game.game_id)
 
 
-def launch_command(game: InstalledGame, preference: str = "auto") -> tuple[list[str], dict[str, str]]:
+def launch_command(
+    game: InstalledGame, preference: str = "auto", require_umu: bool = True
+) -> tuple[list[str], dict[str, str]]:
     """Command + extra environment that runs the game's chosen executable."""
     if not game.executable:
         raise RuntimeError("no executable chosen for this game")
-    launcher = detect_launcher(preference)
+    launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
@@ -159,7 +166,7 @@ def launch_command(game: InstalledGame, preference: str = "auto") -> tuple[list[
         }
     if launcher == "faugus":
         runner, umu_path, _ = faugus_invocation()
-        if not Path(umu_path).is_file() and not shutil.which("umu-run"):
+        if require_umu and not Path(umu_path).is_file() and not shutil.which("umu-run"):
             raise RuntimeError("open Faugus once so it can download umu-run, then try again")
         # No PROTONPATH: Faugus picks the Proton build itself.
         inline = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items() if k != "PROTONPATH")
@@ -167,9 +174,73 @@ def launch_command(game: InstalledGame, preference: str = "auto") -> tuple[list[
     return ["umu-run", game.executable], env
 
 
+# What a bundled build (PyInstaller, AppImage) puts in the environment for its own libraries and
+# Python; a launcher started from here must not inherit it (flatpak and Faugus would load the
+# bundled libraries instead of the system's and fail without a word).
+_BUNDLE_ENV = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "QT_PLUGIN_PATH",
+    "QT_QPA_PLATFORM_PLUGIN_PATH",
+    "QML2_IMPORT_PATH",
+    "QML_IMPORT_PATH",
+    "_MEIPASS2",
+    "PYINSTALLER_RESET_ENVIRONMENT",
+)
+
+
+def host_environ() -> dict[str, str]:
+    """This process's environment as the host system's programs should see it."""
+    env = dict(os.environ)
+    original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    if original is not None:
+        env["LD_LIBRARY_PATH"] = original
+    elif getattr(sys, "frozen", False):
+        env.pop("LD_LIBRARY_PATH", None)
+    if not env.get("LD_LIBRARY_PATH"):
+        env.pop("LD_LIBRARY_PATH", None)
+    for key in _BUNDLE_ENV:
+        env.pop(key, None)
+    return env
+
+
+def launch_log_path(game: InstalledGame) -> Path:
+    return data_dir() / "logs" / f"launch-{game.game_id}.log"
+
+
 def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
+    """Start the game through its launcher, detached, with the launcher's output in a log file."""
     cmd, extra = launch_command(game, preference)
-    return subprocess.Popen(cmd, cwd=str(Path(game.executable).parent), env={**os.environ, **extra})
+    log_path = launch_log_path(game)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "w") as log:
+        log.write(f"$ {shlex.join(cmd)}\n")
+        log.flush()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(Path(game.executable).parent),
+            env={**host_environ(), **extra},
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    proc.log_path = log_path  # type: ignore[attr-defined]
+    return proc
+
+
+def launch_failure(proc: subprocess.Popen, lines: int = 3) -> str | None:
+    """Why a launcher that already exited with an error gave up, from the end of its log; None while it runs or on a clean exit."""
+    code = proc.poll()
+    if code is None or code == 0:
+        return None
+    log_path = getattr(proc, "log_path", None)
+    tail = ""
+    if log_path and Path(log_path).is_file():
+        text = [ln for ln in Path(log_path).read_text(errors="replace").splitlines() if ln.strip()]
+        tail = " | ".join(text[1:][-lines:])  # the first line is the command itself
+    where = f" (log: {log_path})" if log_path else ""
+    return f"The launcher exited with code {code}: {tail or 'no output'}{where}"
 
 
 def client_command() -> str:
@@ -184,15 +255,70 @@ def client_command() -> str:
     return shutil.which("mog") or str(Path(sys.argv[0]).resolve())
 
 
+def standalone_command(game: InstalledGame, preference: str = "auto") -> list[str]:
+    """The whole command that starts the game by itself, environment included (through `env`),
+    for shortcuts that must work without MOG. Faugus fetches its own umu-run on first use, so
+    that file need not exist yet."""
+    cmd, extra = launch_command(game, preference, require_umu=False)
+    resolved = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
+    if not extra:
+        return resolved
+    return [shutil.which("env") or "/usr/bin/env", *(f"{k}={v}" for k, v in extra.items()), *resolved]
+
+
+def launch_script_path(game: InstalledGame) -> Path:
+    return data_dir() / "launchers" / f"mog-{game.game_id}.sh"
+
+
+def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
+    """A small shell script holding the command that starts the game, and return its path.
+    The desktop entry and the Steam shortcut both run this script (it execs the launcher, so
+    Steam still tracks the game), so changing the game's engine means rewriting one file and
+    touching neither of them. It needs nothing from MOG to run."""
+    argv = standalone_command(game, preference)
+    path = launch_script_path(game)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    engine = detect_launcher(effective_launcher(game, preference)) or "?"
+    path.write_text(
+        "#!/bin/sh\n"
+        f"# {game.name.replace(chr(10), ' ')}: started through {engine}. Written by MOG and rewritten\n"
+        "# when the game's launcher is changed there; it does not need MOG to run.\n"
+        f"cd {shlex.quote(str(Path(game.executable).parent))} || exit 1\n"
+        f"exec {shlex.join(argv)}\n"
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def entry_command(game: InstalledGame, preference: str = "auto") -> list[str]:
+    """What a desktop or Steam entry runs: the game's launch script, or the exe itself on Windows."""
+    if sys.platform == "win32":
+        return [game.executable]
+    return [write_launch_script(game, preference)]
+
+
+def desktop_exec(argv: list[str]) -> str:
+    """argv as the Exec line of a desktop entry: arguments quoted per the Desktop Entry spec."""
+
+    def quote(arg: str) -> str:
+        arg = arg.replace("%", "%%")
+        if arg and not re.search(r'[\s"\'\\><~|&;$*?#()`]', arg):
+            return arg
+        escaped = re.sub(r'(["`$\\])', r"\\\1", arg)
+        return f'"{escaped}"'
+
+    return " ".join(quote(a) for a in argv)
+
+
 def desktop_entries_dir() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", Path.home())) / "Microsoft/Windows/Start Menu/Programs/MOG"
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "applications"
 
 
-def create_desktop_entry(game: InstalledGame, icon: Path | None = None) -> str | None:
-    """Freedesktop entry that launches through the client. Returns its path
-    (None on Windows, which has no .desktop files)."""
+def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preference: str = "auto") -> str | None:
+    """Freedesktop entry that starts the game through its launch script, not through MOG.
+    Returns its path (None on Windows, which has no .desktop files)."""
     if sys.platform == "win32":
         return None
     d = desktop_entries_dir()
@@ -203,7 +329,8 @@ def create_desktop_entry(game: InstalledGame, icon: Path | None = None) -> str |
         "[Desktop Entry]",
         "Type=Application",
         f"Name={name}",
-        f"Exec={shlex.quote(client_command())} --launch {game.game_id}",
+        f"Exec={desktop_exec(entry_command(game, preference))}",
+        f"Path={Path(game.executable).parent}",
         "Categories=Game;",
         "Terminal=false",
     ]

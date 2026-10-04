@@ -28,7 +28,7 @@ mog_client/
   version.py    __version__ + UPDATE_METHOD, written into _version.py at build time
   config.py     Settings + installed-games record (JSON under XDG dirs)
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
-  launcher.py   Executable discovery (redists excluded), launch, .desktop entry
+  launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
   steam.py      shortcuts.vdf read/write + grid artwork
   scrape.py     Artwork URLs from the server's already-scraped metadata
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)

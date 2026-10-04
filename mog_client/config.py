@@ -88,6 +88,8 @@ class InstalledGame:
     desktop_entry: str | None = None
     # {"shortcuts_path": str, "appid": int, "artwork": [str]} for each Steam entry created
     steam_entries: list[dict] = field(default_factory=list)
+    # This game's launch engine; "auto" follows the launcher chosen in Settings.
+    launcher: str = "auto"
 
 
 def library_path() -> Path:

@@ -49,17 +49,21 @@ from mog_client.config import load_library, load_settings
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
 def launch_installed(game_id: int) -> int:
-    from mog_client.launcher import launch
+    from mog_client.launcher import launch, launch_failure
 
     rec = load_library().get(game_id)
     if rec is None or rec.state != "installed":
         warn(f"game {game_id} is not installed")
         return 1
     try:
-        return launch(rec, load_settings().launcher).wait()
-    except RuntimeError as e:
+        proc = launch(rec, load_settings().launcher)
+    except (RuntimeError, OSError) as e:
         warn(str(e))
         return 1
+    code = proc.wait()
+    if failure := launch_failure(proc):
+        warn(failure)
+    return code
 
 
 def main() -> int:

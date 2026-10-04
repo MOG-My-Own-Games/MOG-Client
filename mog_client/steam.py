@@ -125,6 +125,19 @@ def _image_ext(blob: bytes) -> str:
     return "png" if blob[:4] == b"\x89PNG" else "jpg"
 
 
+def write_artwork(user_dir: Path, appid: int, artwork: dict[str, bytes] | None) -> list[str]:
+    """Write a shortcut's images into Steam's grid folder; returns the files written."""
+    grid = user_dir / "config" / "grid"
+    suffix = {"portrait": "p", "wide": "", "hero": "_hero", "logo": "_logo", "icon": "_icon"}
+    written = []
+    for kind, blob in (artwork or {}).items():
+        grid.mkdir(parents=True, exist_ok=True)
+        dest = grid / f"{appid}{suffix[kind]}.{_image_ext(blob)}"
+        dest.write_bytes(blob)
+        written.append(str(dest))
+    return written
+
+
 def add_shortcut(
     user_dir: Path,
     name: str,
@@ -164,15 +177,38 @@ def add_shortcut(
     data["shortcuts"] = {str(i): v for i, v in enumerate(entries.values())}
     save_shortcuts(path, data)
 
-    grid = user_dir / "config" / "grid"
-    suffix = {"portrait": "p", "wide": "", "hero": "_hero", "logo": "_logo", "icon": "_icon"}
-    written = []
-    for kind, blob in (artwork or {}).items():
-        grid.mkdir(parents=True, exist_ok=True)
-        dest = grid / f"{appid}{suffix[kind]}.{_image_ext(blob)}"
-        dest.write_bytes(blob)
-        written.append(str(dest))
-    return {"shortcuts_path": str(path), "appid": appid, "artwork": written}
+    return {"shortcuts_path": str(path), "appid": appid, "artwork": write_artwork(user_dir, appid, artwork)}
+
+
+def update_shortcut(
+    record: dict,
+    exe: str,
+    start_dir: str,
+    launch_options: str,
+    name: str | None = None,
+    artwork: dict[str, bytes] | None = None,
+) -> bool | None:
+    """Edit a shortcut made by add_shortcut where it stands. Its appid stays, so the artwork
+    and play time that belong to it stay too; `artwork` rewrites the images under that same
+    appid. Returns True if the shortcut changed (Steam sees that after a restart), False if it
+    already matched, None if it is no longer in the file."""
+    path = Path(record["shortcuts_path"])
+    if not path.is_file():
+        return None
+    data = load_shortcuts(path)
+    for entry in data["shortcuts"].values():
+        if entry.get("appid", 0) & 0xFFFFFFFF == record["appid"]:
+            wanted = {"Exe": f'"{exe}"', "StartDir": f'"{start_dir}"', "LaunchOptions": launch_options}
+            if name is not None:
+                wanted["AppName"] = name
+            if artwork:
+                record["artwork"] = write_artwork(path.parent.parent, record["appid"], artwork)
+            if all(entry.get(k) == v for k, v in wanted.items()):
+                return False
+            entry.update(wanted)
+            save_shortcuts(path, data)
+            return True
+    return None
 
 
 def remove_shortcut(record: dict) -> None:

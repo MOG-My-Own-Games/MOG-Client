@@ -1,7 +1,8 @@
-"""Install, finish-setup and uninstall workflows used by the GUI (and `--launch`)."""
+"""Install, finish-setup and uninstall workflows used by the GUI."""
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import threading
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Callable
 from mog_client import steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, save_library
-from mog_client.launcher import client_command, create_desktop_entry
+from mog_client.launcher import create_desktop_entry, entry_command, launch_script_path
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
@@ -107,30 +108,87 @@ def run_install(
 
 
 def finish_setup(
-    rec: InstalledGame, game_meta: dict, executable: str, steam_user: Path | None, desktop: bool = True
-) -> InstalledGame:
-    """Record the chosen executable, then create the desktop and Steam entries."""
+    rec: InstalledGame,
+    game_meta: dict,
+    executable: str,
+    steam_user: Path | None,
+    desktop: bool = True,
+    launcher: str = "auto",
+) -> bool:
+    """Record the chosen executable and bring the game's entries in line with it. The entries run
+    the game through its launch script on their own; MOG is not involved when they start.
+
+    Existing entries are edited, never deleted and recreated: a recreated Steam shortcut would
+    get a new id and show up as a new game. Only an entry the user no longer wants is removed,
+    and one is created only when there was none. Returns True when a Steam shortcut changed or
+    was added (Steam sees that after a restart)."""
+    rec.executable = executable
+    command = entry_command(rec, launcher)
     art = fetch_artwork(game_meta)
+
     desktop_path = None
     if desktop:
         icon = Path(rec.install_dir) / ".mog-icon"
         if "portrait" in art:
             icon.write_bytes(art["portrait"])
-        desktop_path = create_desktop_entry(rec, icon if icon.exists() else None)
-    entries = []
-    if steam_user is not None:
-        entries.append(
-            steam.add_shortcut(
-                steam_user,
-                rec.name,
-                client_command(),
-                str(Path(client_command()).parent),
-                f"--launch {rec.game_id}",
-                artwork=art,
-            )
+        desktop_path = create_desktop_entry(rec, icon if icon.exists() else None, launcher)
+    elif rec.desktop_entry:
+        Path(rec.desktop_entry).unlink(missing_ok=True)
+
+    wanted_file = str(steam.shortcuts_path(steam_user)) if steam_user is not None else None
+    start_dir, options = str(Path(executable).parent), shlex.join(command[1:])
+    kept: list[dict] = []
+    steam_changed = False
+    for entry in rec.steam_entries:
+        if entry["shortcuts_path"] != wanted_file:
+            steam.remove_shortcut(entry)  # the user no longer wants it there
+            continue
+        outcome = steam.update_shortcut(entry, command[0], start_dir, options, name=rec.name, artwork=art)
+        if outcome is None:  # deleted from Steam by hand: put it back
+            continue
+        kept.append(entry)
+        steam_changed |= outcome
+    if steam_user is not None and not kept:
+        kept.append(steam.add_shortcut(steam_user, rec.name, command[0], start_dir, options, artwork=art))
+        steam_changed = True
+    _update(rec, executable=executable, state="installed", desktop_entry=desktop_path, steam_entries=kept)
+    return steam_changed
+
+
+def regenerate_entries(rec: InstalledGame, game_meta: dict, preference: str = "auto") -> bool:
+    """Rebuild the launch script, the desktop entry and the Steam shortcut (with fresh artwork)
+    from the game's current settings. The Steam shortcut is edited in place; returns True when
+    it changed and needs a Steam restart to show."""
+    steam_user = None
+    if rec.steam_entries:
+        steam_user = Path(rec.steam_entries[0]["shortcuts_path"]).parent.parent
+    return finish_setup(
+        rec, game_meta, rec.executable, steam_user, desktop=bool(rec.desktop_entry), launcher=preference
+    )
+
+
+def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> bool:
+    """Switch the game to another launch engine, updating its entries in place: the launch
+    script is rewritten, the desktop entry keeps its file, and a Steam shortcut is edited (never
+    deleted and recreated, so its artwork and play time stay). Returns True when a Steam
+    shortcut had to change, which Steam only notices after a restart."""
+    previous = rec.launcher
+    rec.launcher = engine
+    try:
+        command = entry_command(rec, preference)
+    except RuntimeError:
+        rec.launcher = previous
+        raise
+    if rec.desktop_entry:
+        icon = Path(rec.install_dir) / ".mog-icon"
+        create_desktop_entry(rec, icon if icon.exists() else None, preference)
+    steam_changed = False
+    for entry in rec.steam_entries:
+        steam_changed |= bool(
+            steam.update_shortcut(entry, command[0], str(Path(rec.executable).parent), shlex.join(command[1:]))
         )
-    _update(rec, executable=executable, state="installed", desktop_entry=desktop_path, steam_entries=entries)
-    return rec
+    _update(rec, launcher=engine)
+    return steam_changed
 
 
 def remove_entries(rec: InstalledGame) -> None:
@@ -138,6 +196,7 @@ def remove_entries(rec: InstalledGame) -> None:
         Path(rec.desktop_entry).unlink(missing_ok=True)
     for entry in rec.steam_entries:
         steam.remove_shortcut(entry)
+    launch_script_path(rec).unlink(missing_ok=True)
     rec.desktop_entry = None
     rec.steam_entries = []
 

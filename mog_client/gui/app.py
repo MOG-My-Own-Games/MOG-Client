@@ -63,7 +63,14 @@ from mog_client.config import (
 )
 from mog_client.gui import gamepad, keyboard, osk
 from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss, bell_icon
-from mog_client.launcher import available_launchers, detect_launcher, launch, launcher_label, list_executables
+from mog_client.launcher import (
+    available_launchers,
+    detect_launcher,
+    launch,
+    launch_failure,
+    launcher_label,
+    list_executables,
+)
 from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
 from mog_client.version import __version__
 
@@ -592,6 +599,78 @@ class NotificationsPage(Page):
 
     def clear_all(self) -> None:
         self.win.delete_notification(None)
+
+
+class OptionsPage(Page):
+    """The less common actions of a game: launch engine, shortcuts, and deleting it here or on the server."""
+
+    title = "Options"
+
+    def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame | None):
+        super().__init__()
+        self.win = win
+        self.first: QPushButton | None = None
+        lay = QVBoxLayout(self)
+        lay.addStretch()
+
+        def add(text: str, action, danger: bool = False) -> None:
+            button = QPushButton(text)
+            button.setProperty("danger", danger)
+            button.clicked.connect(lambda: (win.back(), action()))
+            lay.addWidget(button)
+            self.first = self.first or button
+
+        if rec and rec.state == "installed":
+            if sys.platform != "win32":
+                engine = f"{launcher_label(rec.launcher)} (this game)" if rec.launcher != "auto" else "default"
+                add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
+            add("Regenerate shortcuts", lambda: page.regenerate(rec))
+        if rec:
+            partial = rec.state not in ("installed", "awaiting_executable")
+            add("Discard the partial download" if partial else "Uninstall from this device", lambda: page.uninstall(rec), True)
+        add("Delete the install cache on the server", page.delete_server_cache, True)
+        lay.addStretch()
+
+    def focus_default(self) -> None:
+        if self.first:
+            self.first.setFocus()
+
+
+class LauncherPage(Page):
+    """Pick the engine that starts one game; its desktop entry and Steam shortcut follow."""
+
+    title = "Launch engine"
+
+    def __init__(self, win: "MainWindow", rec: InstalledGame, on_done):
+        super().__init__()
+        self.on_done = on_done
+        self.win = win
+        self.list = QListWidget()
+        default = detect_launcher(win.app.settings.launcher)
+        default_label = launcher_label(default) if default else "none found"
+        entries = [("auto", f"Default (the launcher in Settings: {default_label})")]
+        entries += [(name, launcher_label(name)) for name in available_launchers()]
+        for key, text in entries:
+            item = QListWidgetItem(text + ("   \u2713" if key == rec.launcher else ""))
+            item.setData(Qt.UserRole, key)
+            self.list.addItem(item)
+            if key == rec.launcher:
+                self.list.setCurrentItem(item)
+        if not self.list.currentItem():
+            self.list.setCurrentRow(0)
+        self.list.itemActivated.connect(self.choose)
+        note = QLabel("The game's desktop entry and Steam shortcut are updated to use it; Steam may need a restart.")
+        note.setWordWrap(True)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.list, 1)
+        lay.addWidget(note)
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def choose(self, item: QListWidgetItem) -> None:
+        self.win.back()
+        self.on_done(item.data(Qt.UserRole))
 
 
 class KeyButton(QPushButton):
@@ -1264,18 +1343,17 @@ class GamePage(Page):
             self.bar.setValue(1)
             self.first = self._button("Play", self.play, True)
             self._button("Shortcuts / executable", lambda: self.choose_executable(rec))
-            self._button("Uninstall", lambda: self.uninstall(rec), danger=True)
+            self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
-            self._button("Uninstall", lambda: self.uninstall(rec), danger=True)
+            self._button("Options", lambda: self.show_options(rec))
         else:
             self.status.setText("Partially downloaded, can resume" if rec else "Not installed")
             self.bar.setRange(0, 1)
             self.bar.setValue(0)
             self.first = self._button("Resume" if rec else "Install", self.install, True)
-            if rec:
-                self._button("Discard", lambda: self.uninstall(rec), danger=True)
+            self._button("Options", lambda: self.show_options(rec))
 
     def install(self) -> None:
         group = self._group()
@@ -1310,19 +1388,81 @@ class GamePage(Page):
     def play(self) -> None:
         rec = load_library()[self.game["id"]]
         try:
-            launch(rec, self.app.settings.launcher)
+            proc = launch(rec, self.app.settings.launcher)
         except (RuntimeError, OSError) as e:
             self.win.notify(str(e))
+            return
+        self.win.notify(f"Starting {rec.name}...")
+        # A launcher that dies within seconds never showed the game: say why.
+        QTimer.singleShot(6000, lambda: (msg := launch_failure(proc)) and self.win.notify(msg))
+
+    def show_options(self, rec: InstalledGame | None) -> None:
+        self.win.push(OptionsPage(self.win, self, rec))
+
+    def regenerate(self, rec: InstalledGame) -> None:
+        def go() -> None:
+            def work():
+                try:
+                    changed = manager.regenerate_entries(rec, self.game, self.app.settings.launcher)
+                except RuntimeError as e:
+                    self.app.bridge.error.emit(str(e))
+                    return
+                message = f"Shortcuts of {rec.name} rebuilt"
+                if changed and steam.steam_running():
+                    message += "; restart Steam to see the updated shortcut"
+                self.app.bridge.error.emit(message)
+                self.app.bridge.finished.emit(rec.game_id, "")
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
+
+        self.win.ask(
+            "Rebuild this game's launch script, desktop entry and Steam shortcut from its current settings? "
+            "The Steam shortcut is edited in place, so it keeps its artwork and play time.",
+            go,
+        )
+
+    def delete_server_cache(self) -> None:
+        gid = self.game["id"]
+
+        def go() -> None:
+            def work():
+                self.app.client().clear_cache(gid)
+                self.app.bridge.error.emit("The install cache on the server was deleted")
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not delete the server cache: {m}"))
+
+        self.win.ask(
+            "Delete this game's install cache on the server? The copy on this device is not touched.",
+            go,
+            danger=True,
+        )
+
+    def choose_launcher(self, rec: InstalledGame) -> None:
+        def done(engine: str) -> None:
+            def work():
+                try:
+                    steam_changed = manager.set_launcher(rec, engine, self.app.settings.launcher)
+                except RuntimeError as e:
+                    self.app.bridge.error.emit(str(e))
+                    return
+                message = f"{rec.name} now launches through {launcher_label(engine) if engine != 'auto' else 'the default engine'}"
+                if steam_changed and steam.steam_running():
+                    message += "; restart Steam to see the updated shortcut"
+                self.app.bridge.error.emit(message)
+                self.app.bridge.finished.emit(rec.game_id, "")
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
+
+        self.win.push(LauncherPage(self.win, rec, done))
 
     def choose_executable(self, rec: InstalledGame) -> None:
         def done(exe: str, steam_user: Path | None, desktop: bool) -> None:
-            if steam_user and steam.steam_running():
-                self.win.notify("Steam is running: restart it to see the new shortcut.")
-            manager.remove_entries(rec)
-            self.logbox.appendPlainText("Creating entries and fetching artwork...")
+            self.logbox.appendPlainText("Updating entries and fetching artwork...")
 
             def work():
-                manager.finish_setup(rec, self.game, exe, steam_user, desktop)
+                changed = manager.finish_setup(rec, self.game, exe, steam_user, desktop, self.app.settings.launcher)
+                if changed and steam_user and steam.steam_running():
+                    self.app.bridge.error.emit("Steam is running: restart it to see the updated shortcut.")
                 self.app.bridge.finished.emit(rec.game_id, "")
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.finished.emit(rec.game_id, m))
