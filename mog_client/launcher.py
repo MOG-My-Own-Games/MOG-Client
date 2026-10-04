@@ -63,9 +63,13 @@ def faugus_invocation() -> tuple[list[str], str, bool] | None:
 
     The runner takes a whole shell-style command line (env vars + umu-run +
     exe), the same one Faugus builds for its own games."""
-    if shutil.which("faugus-run"):
+    # Faugus 2.x runs a command through `faugus-launcher --run`; older installs have a faugus-run binary.
+    native = (["faugus-run"] if shutil.which("faugus-run") else None) or (
+        ["faugus-launcher", "--run"] if shutil.which("faugus-launcher") else None
+    )
+    if native:
         umu = Path.home() / ".local/share/faugus-launcher/umu-run"
-        return ["faugus-run"], str(umu if umu.is_file() else shutil.which("umu-run") or umu), False
+        return native, str(umu if umu.is_file() else shutil.which("umu-run") or umu), False
     if _flatpak_has(FAUGUS_FLATPAK):
         umu = Path.home() / ".var/app" / FAUGUS_FLATPAK / "data/faugus-launcher/umu-run"
         runner = ["flatpak", "run", "--command=/app/bin/faugus-launcher", FAUGUS_FLATPAK, "--run"]
