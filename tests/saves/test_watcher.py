@@ -4,10 +4,11 @@ from mog_client.saves import watcher
 
 
 def _proc(root: Path, pid: int, cmdline: str, environ: str = "") -> None:
+    """A process; `environ` is `NAME=value` entries separated by a bar (a value may hold spaces)."""
     folder = root / str(pid)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "cmdline").write_bytes(cmdline.replace(" ", "\0").encode())
-    (folder / "environ").write_bytes(environ.replace(" ", "\0").encode())
+    (folder / "environ").write_bytes(environ.replace("|", "\0").encode())
 
 
 def _gone(root: Path, pid: int) -> None:
@@ -36,7 +37,7 @@ def test_a_wine_process_running_an_exe_from_the_install_folder_is_the_game(tmp_p
 
 
 def test_the_prefix_comes_from_the_environment_of_the_process(tmp_path):
-    _proc(tmp_path, 1, "x", "HOME=/home/x WINEPREFIX=/home/x/Faugus/g/pfx PATH=/bin")
+    _proc(tmp_path, 1, "x", "HOME=/home/x|WINEPREFIX=/home/x/Faugus/g/pfx|PATH=/bin")
     assert watcher.prefix_from_environ(1, tmp_path) == Path("/home/x/Faugus/g/pfx")
 
     compat = tmp_path / "compat"
@@ -47,6 +48,11 @@ def test_the_prefix_comes_from_the_environment_of_the_process(tmp_path):
     _proc(tmp_path, 3, "x", "HOME=/home/x")
     assert watcher.prefix_from_environ(3, tmp_path) is None
     assert watcher.prefix_from_environ(99, tmp_path) is None
+
+
+def test_a_prefix_path_with_spaces_is_read_whole(tmp_path):
+    _proc(tmp_path, 4, "x", "HOME=/home/x|WINEPREFIX=/home/x/mog-installed/Jazz Jackrabbit 2_ The Secret Files/pfx|PATH=/bin")
+    assert watcher.prefix_from_environ(4, tmp_path) == Path("/home/x/mog-installed/Jazz Jackrabbit 2_ The Secret Files/pfx")
 
 
 class Clock:

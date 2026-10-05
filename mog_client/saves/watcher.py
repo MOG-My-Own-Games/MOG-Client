@@ -46,8 +46,11 @@ def running_pids(install_dir: Path, proc_root: Path = PROC, exclude: tuple[int, 
 def prefix_from_environ(pid: int, proc_root: Path = PROC) -> Path | None:
     """The Wine prefix a process was started with: WINEPREFIX, or Proton's compatdata folder."""
     env = {}
-    raw = _read(proc_root / str(pid) / "environ")
-    for item in raw.split(" "):
+    try:
+        raw = (proc_root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    for item in raw.decode(errors="replace").split("\0"):  # NUL-separated: a value may hold spaces
         key, _, value = item.partition("=")
         if key in ("WINEPREFIX", "STEAM_COMPAT_DATA_PATH") and value:
             env[key] = value
