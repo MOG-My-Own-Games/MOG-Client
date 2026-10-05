@@ -95,6 +95,9 @@ QPushButton:focus { border-color: white; }
 QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; max-width: 16777215px; }
 QPushButton[danger="true"] { background: #e2574c; }
 QPushButton[danger="true"]:hover { background: #c94439; }
+QComboBox QAbstractItemView { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; outline: none; selection-background-color: #1e2733; selection-color: white; }
+QComboBox QAbstractItemView::item { color: #e8eaed; padding: 6px 8px; min-height: 28px; }
+QComboBox QAbstractItemView::item:selected { color: white; background: #1e2733; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius: 10px; padding: 6px; }
 QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
@@ -1283,9 +1286,13 @@ class GamePage(Page):
         self.version_label.setWordWrap(True)
         info_col.addWidget(self.version_label)
         form = QFormLayout()
+        # Some desktop styles keep a field at its size hint, and a word-wrapped label's hint is a
+        # narrow guess: the text then wraps early and its row is cut off.
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         for label, value in metadata_lines(game):
             val = QLabel(value)
             val.setWordWrap(True)
+            val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             form.addRow(label, val)
         self.size_label = QLabel("...")
         form.addRow("Size on server", self.size_label)
