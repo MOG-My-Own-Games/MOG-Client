@@ -55,6 +55,35 @@ def test_cache_log_and_system_noise_is_skipped(drive_c):
     assert len(keys(profile_candidates(drive_c))) == 6
 
 
+def test_log_files_are_never_saves_whatever_their_case(drive_c):
+    for log in (
+        "users/steamuser/AppData/Roaming/Game/debug.log",
+        "users/steamuser/AppData/Roaming/Game/Player.LOG",
+        "users/steamuser/AppData/Roaming/Game/output_log.txt",
+        "users/steamuser/AppData/Roaming/Game/Crash-Log-2026.TXT",
+        "users/steamuser/AppData/Roaming/Game/logs_backup.txt",
+        "users/steamuser/Documents/Game/session log.log",
+    ):
+        _touch(drive_c / log)
+    _touch(drive_c / "users/steamuser/Documents/Game/notes.txt")  # a text file that is not a log stays
+    _touch(drive_c / "users/steamuser/Documents/Game/dialogue.dat")
+
+    found = keys(profile_candidates(drive_c))
+
+    assert not [k for k in found if k.lower().endswith((".log", "log.txt", "log-2026.txt", "logs_backup.txt"))]
+    assert not [k for k in found if "debug" in k or "Player" in k or "output_log" in k or "Crash-Log" in k or "session log" in k]
+    assert "users/USER/Documents/Game/notes.txt" in found and "users/USER/Documents/Game/dialogue.dat" in found
+
+
+def test_log_files_in_the_games_own_folder_are_not_offered_either(tmp_path):
+    game = tmp_path / "game"
+    _touch(game / "Saves/profile.sav")
+    _touch(game / "game.log")
+    _touch(game / "Logs_old.txt")
+    _touch(game / "sub/engine_log.txt")
+    assert keys(install_candidates(game, {})) == ["game/Saves/profile.sav"]
+
+
 def test_symbolic_links_are_never_followed(drive_c, tmp_path):
     home_documents = tmp_path / "home" / "Documents"
     _touch(home_documents / "private.txt")

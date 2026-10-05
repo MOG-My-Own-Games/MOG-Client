@@ -11,6 +11,7 @@ file is named in archives by a key that does not depend on this machine's user n
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 from collections.abc import Iterator
@@ -40,7 +41,9 @@ DENY_DIRS = frozenset(
         "glcache", "shadercache", "cache", "code cache", "gpucache", "logs", "wine",
     }
 )  # fmt: skip
-DENY_SUFFIXES = (".log", ".tmp", ".dmp", ".etl")
+DENY_SUFFIXES = (".tmp", ".dmp", ".etl")
+# Log files, by name (any case): `output_log.txt`, `Player.log`, `crash_log.log`...
+DENY_NAME_PATTERNS = ("*.log", "*log*.txt", "*log*.log")
 
 
 class UnsafeKey(ValueError):
@@ -58,7 +61,9 @@ def is_denied(parts: tuple[str, ...]) -> bool:
     if any(part.casefold() in DENY_DIRS for part in parts[:-1]):
         return True
     name = parts[-1].casefold()
-    return name.endswith(DENY_SUFFIXES) or name in DENY_DIRS
+    if name.endswith(DENY_SUFFIXES) or name in DENY_DIRS:
+        return True
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in DENY_NAME_PATTERNS)
 
 
 def real_dir(path: Path) -> bool:
