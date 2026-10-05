@@ -41,6 +41,17 @@ def make_context(
     return sync.Context(rec, settings, client, device, engine)
 
 
+def runtime_prefix_recorder(ctx: sync.Context) -> Callable[[Path], None]:
+    """What to do with the prefix seen in a running game's environment: keep it, but only when
+    nothing else names one (it would otherwise replace the right one and drop what is tracked)."""
+
+    def found(prefix: Path) -> None:
+        if sync.find_prefix(ctx, load_state(ctx.rec.game_id)) is None:
+            sync.remember_prefix(ctx.rec.game_id, prefix, RUNTIME)
+
+    return found
+
+
 def watch_session(
     rec: InstalledGame,
     settings: Settings,
@@ -54,12 +65,7 @@ def watch_session(
     if ctx is None:
         return None
 
-    def found_prefix(prefix: Path) -> None:
-        # Only a prefix nothing else names: it would otherwise replace the right one and drop what is tracked.
-        if sync.find_prefix(ctx, load_state(rec.game_id)) is None:
-            sync.remember_prefix(rec.game_id, prefix, RUNTIME)
-
-    if not wait_for_game(Path(rec.install_dir), on_prefix=found_prefix, stop=stop):
+    if not wait_for_game(Path(rec.install_dir), on_prefix=runtime_prefix_recorder(ctx), stop=stop):
         return None
     result = sync.backup(ctx, sync.QUIT, since_ns=since_ns)
     log(f"save sync: {result.status}")

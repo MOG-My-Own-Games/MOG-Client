@@ -72,10 +72,13 @@ def wait_for_game(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     stop: Callable[[], bool] = lambda: False,
+    abort_before_start: Callable[[], bool] = lambda: False,
 ) -> bool:
     """Block until the game has started and then ended. Returns False when it never started.
 
-    `on_prefix` is called once with the prefix found in the game's environment, while it runs."""
+    `on_prefix` is called once with the prefix found in the game's environment, while it runs.
+    `abort_before_start` ends the wait early while no game process has appeared (a launcher that
+    already failed), and is not asked once one has."""
     me = (os.getpid(),)
     waited_from = clock()
     started = False
@@ -96,7 +99,7 @@ def wait_for_game(
             gone_since = now if gone_since is None else gone_since
             if now - gone_since >= linger:
                 return True
-        elif now - waited_from >= appear_timeout:
+        elif now - waited_from >= appear_timeout or abort_before_start():
             return False
         sleep(poll)
     return started
