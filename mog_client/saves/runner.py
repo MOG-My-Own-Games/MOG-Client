@@ -11,6 +11,7 @@ from mog_client.config import InstalledGame, Settings, load_library
 from mog_client.launcher import detect_launcher, effective_launcher
 from mog_client.saves import devices, sync
 from mog_client.saves.devices import HostnameTaken
+from mog_client.saves.state import load_state
 from mog_client.saves.watcher import wait_for_game
 
 Log = Callable[[str], None]
@@ -54,7 +55,9 @@ def watch_session(
         return None
 
     def found_prefix(prefix: Path) -> None:
-        sync.remember_prefix(rec.game_id, prefix, RUNTIME)
+        # Only a prefix nothing else names: it would otherwise replace the right one and drop what is tracked.
+        if sync.find_prefix(ctx, load_state(rec.game_id)) is None:
+            sync.remember_prefix(rec.game_id, prefix, RUNTIME)
 
     if not wait_for_game(Path(rec.install_dir), on_prefix=found_prefix, stop=stop):
         return None

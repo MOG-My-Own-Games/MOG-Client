@@ -247,3 +247,21 @@ def test_a_game_with_its_prefix_in_its_own_folder_backs_up_without_asking_and_wi
         "users/USER/Saved Games/slot1.sav",
     ]
     assert load_state(7).prefix == str(pfx) and load_state(7).prefix_source == "game-folder"
+
+
+def test_a_prefix_seen_while_the_game_runs_never_replaces_the_one_the_game_has(world, monkeypatch):
+    from mog_client.saves import runner
+    from mog_client.saves.state import FileInfo, SaveState, save_state
+
+    pfx = world.install / "pfx"
+    pfx.mkdir()
+    world.rec.prefix = str(pfx)
+    save_state(7, SaveState(prefix=str(pfx), prefix_source="game-folder", tracked={"k": FileInfo(1, 2, "h")}))
+    monkeypatch.setattr(runner.devices, "known_device", lambda: world.ctx.device)
+    monkeypatch.setattr(runner, "wait_for_game", lambda install, on_prefix, stop: on_prefix(Path("/home/x/Jazz")) or True)
+    monkeypatch.setattr(sync, "backup", lambda ctx, trigger, since_ns=None, force=False: sync.BackupResult("unchanged"))
+
+    runner.watch_session(world.rec, world.ctx.settings, world.server, since_ns=0, log=lambda m: None)
+
+    state = load_state(7)
+    assert state.prefix == str(pfx) and state.prefix_source == "game-folder" and list(state.tracked) == ["k"]
