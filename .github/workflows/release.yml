@@ -2,7 +2,7 @@ name: Release
 
 # Every push computes the version with scripts/version.py, builds the AppImage
 # and the Windows exe and attaches them to a DRAFT release tagged v<version>.
-# On a branch other than main the version carries the branch name (v0.43.1-feat-save-sync.6)
+# On a branch other than main the version carries the branch name (v0.43.1-feat-save-sync)
 # and the release is marked as a pre-release, so it can never become the "latest" release
 # that the self-updater looks at.
 # Nothing is published until someone reviews the draft on GitHub and clicks
