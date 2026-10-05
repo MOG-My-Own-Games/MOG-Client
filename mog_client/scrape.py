@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from mog_client import logstore
 from mog_client.api import fetch_url, warn
 
 
@@ -26,22 +27,30 @@ STEAM_KINDS = {"portrait": "cover", "wide": "banner", "hero": "hero", "logo": "l
 
 def fetch_artwork(game: dict, client=None) -> dict[str, bytes]:
     """The images for a Steam shortcut. The server chooses, caches and serves each kind (cover,
-    banner, hero, title logo, icon), so they come from it; only a server that does not serve
-    them yet falls back to the cover straight from its URL."""
+    banner, hero, title logo, icon), so they come from it. What it has not chosen is filled from the
+    game's IGDB data where there is something to use (the cover, screenshots as banner and hero art,
+    the cover again as the icon), and what is still missing is said in the log."""
     out: dict[str, bytes] = {}
     if client is not None:
         for steam_kind, kind in STEAM_KINDS.items():
             blob = client.get_image(f"/api/games/{game['id']}/media/{kind}")
             if blob:
                 out[steam_kind] = blob
-        if out:
-            return out
-    url = artwork_urls(game).get("portrait")
-    if url:
-        try:
-            out["portrait"] = fetch_url(url)
-        except RuntimeError as e:
-            warn(str(e))
+    from_server = set(out)
+    for kind, url in artwork_urls(game).items():
+        if kind not in out:
+            try:
+                out[kind] = fetch_url(url)
+            except RuntimeError as e:
+                warn(f"{game.get('name', game['id'])}: could not fetch the {kind} image: {e}")
+    if "icon" not in out and "portrait" in out:
+        out["icon"] = out["portrait"]
+    missing = [kind for steam_kind, kind in STEAM_KINDS.items() if steam_kind not in out]  # the server's names
+    name = game.get("name", game.get("id"))
+    named = lambda kinds: ", ".join(sorted(STEAM_KINDS[k] for k in kinds)) or "nothing"  # noqa: E731
+    logstore.info(f"Artwork of {name}: from the server {named(from_server)}; filled in: {named(set(out) - from_server)}")
+    if missing:
+        warn(f"{name} has no {', '.join(missing)} artwork: choose it in the server's scrape dialog")
     return out
 
 

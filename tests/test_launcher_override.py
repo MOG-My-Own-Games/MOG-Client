@@ -160,7 +160,13 @@ def test_the_entries_artwork_comes_from_the_server_kind_by_kind():
     server = Server()
     art = scrape.fetch_artwork({"id": 7}, server)
 
-    assert art == {"portrait": b"cover-bytes", "wide": b"banner-bytes", "hero": b"hero-bytes", "logo": b"logo-bytes"}
+    assert art == {
+        "portrait": b"cover-bytes",
+        "wide": b"banner-bytes",
+        "hero": b"hero-bytes",
+        "logo": b"logo-bytes",
+        "icon": b"cover-bytes",  # none chosen: the cover stands in
+    }
     assert server.asked == [f"/api/games/7/media/{k}" for k in ("cover", "banner", "hero", "logo", "icon")]
 
 
@@ -173,4 +179,4 @@ def test_an_older_server_that_serves_no_artwork_still_gives_the_cover(monkeypatc
 
     monkeypatch.setattr(scrape, "fetch_url", lambda url: b"direct-cover")
     art = scrape.fetch_artwork({"id": 7, "cover_path": "https://cdn2.steamgriddb.com/p.png"}, Old())
-    assert art == {"portrait": b"direct-cover"}
+    assert art == {"portrait": b"direct-cover", "icon": b"direct-cover"}
