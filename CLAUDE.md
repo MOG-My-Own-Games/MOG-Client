@@ -3,7 +3,7 @@
 CLI client for [MOG-Server](https://github.com/MOG-My-Own-Games/MOG-Server).
 Stdlib-only Python today (`mog_client/cli.py`); a multi-platform GUI client
 (Linux/Windows) is the planned Phase 2 (see `docs/TODO.md`), along with
-GameNative/Playnite integration research and save-file sync.
+GameNative/Playnite integration research.
 
 Read `CLAUDE.local.md` (gitignored, not committed) before writing any
 repo-wide text (docs, comments, commit messages, PR descriptions) - it
@@ -29,11 +29,13 @@ mog_client/
   config.py     Settings + installed-games record (JSON under XDG dirs)
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
   launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
+  saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher
   steam.py      shortcuts.vdf read/write + grid artwork
   scrape.py     Artwork URLs from the server's already-scraped metadata
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
     widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
     keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
+    saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`notify`)
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
 .github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>
@@ -46,6 +48,9 @@ mcp/
 lives in the `gui` extra.
 
 ## Conventions
+
+- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
+- Save sync never replaces a file without first copying it into a backup archive, and never follows a symbolic link out of the prefix.
 
 - Stdlib only in `mog_client/` (no third-party runtime deps - see
   `pyproject.toml`'s empty `dependencies`). The `dev` extra (used by

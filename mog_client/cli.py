@@ -49,14 +49,16 @@ from mog_client.config import load_library, load_settings
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
 def launch_installed(game_id: int) -> int:
-    from mog_client.launcher import launch, launch_failure
+    from mog_client.launcher import ensure_scanned, launch, launch_failure
 
     rec = load_library().get(game_id)
     if rec is None or rec.state != "installed":
         warn(f"game {game_id} is not installed")
         return 1
+    settings = load_settings()
+    ensure_scanned(settings)
     try:
-        proc = launch(rec, load_settings().launcher)
+        proc = launch(rec, settings.launcher)
     except (RuntimeError, OSError) as e:
         warn(str(e))
         return 1
@@ -75,6 +77,12 @@ def main() -> int:
     parser.add_argument("--game-id", type=int, default=None)
     parser.add_argument("--list", action="store_true", help="List the games on the server and exit")
     parser.add_argument("--launch", type=int, metavar="GAME_ID", default=None, help="Launch an installed game and exit")
+    for action, text in (
+        ("pre", "Before a shortcut starts the game: restore saves that were waiting for the prefix"),
+        ("watch", "Follow a started game and back its saves up when it ends"),
+        ("sync", "Back up a game's saves now"),
+    ):
+        parser.add_argument(f"--save-{action}", type=int, metavar="GAME_ID", default=None, help=text)
     parser.add_argument("--gui", action="store_true", help="Open the graphical client (default when no other action is given)")
     parser.add_argument("--out", type=Path, default=None, help="Output directory (default: ./<game name>)")
     parser.add_argument("--installer-path", default=None, help="Specific installer file to run, instead of auto-pick")
@@ -90,6 +98,15 @@ def main() -> int:
 
     if args.launch is not None:
         return launch_installed(args.launch)
+    for action in ("pre", "watch", "sync"):
+        game_id = getattr(args, f"save_{action}")
+        if game_id is not None:
+            from mog_client.saves.runner import run_command
+
+            if not (args.base and args.user and args.password):
+                warn("save sync needs the server settings saved from the GUI")
+                return 1
+            return run_command(action, game_id, saved, MogClient(Client(args.base, args.user, args.password)))
     if args.gui or (args.game_id is None and not args.list):
         from mog_client.gui.app import run_gui
 

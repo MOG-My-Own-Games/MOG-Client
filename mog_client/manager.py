@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Callable
@@ -11,7 +12,17 @@ from typing import Callable
 from mog_client import steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, save_library
-from mog_client.launcher import create_desktop_entry, entry_command, launch_script_path
+from mog_client.launcher import (
+    create_desktop_entry,
+    desktop_file_path,
+    entry_command,
+    icon_path,
+    pfx_dir,
+    remove_entry_files,
+    shortcut_lnk_path,
+    write_directory_file,
+)
+from mog_client.saves.state import forget_game, save_install_manifest
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
@@ -106,7 +117,15 @@ def run_install(
         if state == "failed":
             raise RuntimeError(f"install failed: {server_final.get('error')}")
         return rec  # paused or cancelled: not a failure, the buttons already say so
-    verify_and_repair(client, gid, out_dir, session_id=session_id, log=log, warn=log)
+    verify_and_repair(
+        client,
+        gid,
+        out_dir,
+        session_id=session_id,
+        log=log,
+        warn=log,
+        on_manifest=lambda files: save_install_manifest(gid, files),
+    )
     _update(rec, state="awaiting_executable")
     return rec
 
@@ -131,15 +150,19 @@ def finish_setup(
     command = entry_command(rec, launcher)
     art = fetch_artwork(game_meta, client)
 
+    # The folder's icon is kept when the server has none now, so a failed download never wipes it.
+    picture = art.get("icon") or art.get("portrait")
+    if picture:
+        icon_path(rec).write_bytes(picture)
+    write_directory_file(rec)
+
     desktop_path = None
     if desktop:
-        icon = Path(rec.install_dir) / ".mog-icon"
-        picture = art.get("icon") or art.get("portrait")
-        if picture:
-            icon.write_bytes(picture)
-        desktop_path = create_desktop_entry(rec, icon if icon.exists() else None, launcher)
-    elif rec.desktop_entry:
-        Path(rec.desktop_entry).unlink(missing_ok=True)
+        desktop_path = create_desktop_entry(rec, icon_path(rec) if icon_path(rec).exists() else None, launcher)
+    else:
+        for stale in (rec.desktop_entry, desktop_file_path(rec), shortcut_lnk_path(rec)):
+            if stale:
+                Path(stale).unlink(missing_ok=True)
 
     wanted_file = str(steam.shortcuts_path(steam_user)) if steam_user is not None else None
     start_dir, options = str(Path(executable).parent), shlex.join(command[1:])
@@ -157,7 +180,8 @@ def finish_setup(
     if steam_user is not None and not kept:
         kept.append(steam.add_shortcut(steam_user, rec.name, command[0], start_dir, options, artwork=art))
         steam_changed = True
-    _update(rec, executable=executable, state="installed", desktop_entry=desktop_path, steam_entries=kept)
+    prefix = None if sys.platform == "win32" else str(pfx_dir(rec))
+    _update(rec, executable=executable, prefix=prefix, state="installed", desktop_entry=desktop_path, steam_entries=kept)
     return steam_changed
 
 
@@ -173,6 +197,14 @@ def regenerate_entries(
     return finish_setup(
         rec, game_meta, rec.executable, steam_user, desktop=bool(rec.desktop_entry), launcher=preference, client=client
     )
+
+
+def refresh_metadata(rec: InstalledGame, client: MogClient, preference: str = "auto") -> tuple[dict, bool]:
+    """Fetch the game's metadata and artwork choice from the server again and rebuild what depends on
+    them (icons, entries, the folder's icon), editing the Steam shortcut in place. Returns the fresh
+    metadata and whether the Steam shortcut changed (Steam sees that after a restart)."""
+    game = client.get_game(rec.game_id)
+    return game, regenerate_entries(rec, game, preference, client)
 
 
 def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> bool:
@@ -200,34 +232,42 @@ def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> b
 
 
 def remove_entries(rec: InstalledGame) -> None:
-    if rec.desktop_entry:
-        Path(rec.desktop_entry).unlink(missing_ok=True)
+    remove_entry_files(rec)
     for entry in rec.steam_entries:
         steam.remove_shortcut(entry)
-    launch_script_path(rec).unlink(missing_ok=True)
     rec.desktop_entry = None
     rec.steam_entries = []
 
 
 def _rmtree(path: str) -> bool:
-    """Remove a tree, retrying read-only entries. Returns True when it is gone."""
+    """Remove a file or a tree, retrying read-only entries. Returns True when it is gone."""
 
     def make_writable(func, p, _exc):
         Path(p).chmod(0o700)
         func(p)
 
-    if Path(path).exists():
+    target = Path(path)
+    if target.is_symlink() or target.is_file():
+        target.unlink(missing_ok=True)
+    elif target.exists():
         shutil.rmtree(path, onerror=make_writable)
-    return not Path(path).exists()
+    return not target.exists() and not target.is_symlink()
 
 
 def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
-    """Remove the game files and shortcuts, returning the paths that could not
-    be deleted. A local Wine prefix may hold save files, so it is only deleted
-    when the caller got the user's consent."""
+    """Remove the game files and shortcuts, returning the paths that could not be deleted.
+
+    The prefix lives in the game's folder and may hold save files, so it is only deleted when the
+    caller got the user's consent; without it everything else in the folder goes and `pfx` stays."""
     remove_entries(rec)
+    install = Path(rec.install_dir)
+    keep = pfx_dir(rec)
+    keeping = not delete_prefix and rec.prefix is not None and Path(rec.prefix) == keep and keep.is_dir()
+    paths = [str(c) for c in install.iterdir() if c != keep] if keeping and install.is_dir() else [rec.install_dir]
+    if delete_prefix and rec.prefix and not Path(rec.prefix).is_relative_to(install):
+        paths.append(rec.prefix)
     leftovers = []
-    for path in [rec.install_dir] + ([rec.prefix] if delete_prefix and rec.prefix else []):
+    for path in paths:
         try:
             if not _rmtree(path):
                 leftovers.append(path)
@@ -237,4 +277,5 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
         lib = load_library()
         lib.pop(rec.game_id, None)
         save_library(lib)
+        forget_game(rec.game_id)
     return leftovers

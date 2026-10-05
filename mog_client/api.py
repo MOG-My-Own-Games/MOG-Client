@@ -111,12 +111,82 @@ class Client:
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
 
+    def post_file(self, path: str, file_path: Path, timeout: float = 600.0) -> tuple[int, dict]:
+        """POST a file as multipart form data under the field name `file`. Never retried."""
+        boundary = uuid.uuid4().hex
+        head = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+            "Content-Type: application/zip\r\n\r\n"
+        ).encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        length = len(head) + file_path.stat().st_size + len(tail)
+        try:
+            with file_path.open("rb") as f:
+                req = urllib.request.Request(
+                    self.base + path,
+                    data=_MultipartBody(head, f, tail),
+                    method="POST",
+                    headers=self._headers(
+                        {"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(length)}
+                    ),
+                )
+                try:
+                    with net.urlopen(req, timeout=timeout) as resp:
+                        status, content = resp.status, resp.read()
+                except urllib.error.HTTPError as e:
+                    status, content = e.code, e.read()
+        except (OSError, http.client.HTTPException) as e:
+            raise RuntimeError(f"connection error ({self.base}): {getattr(e, 'reason', e)}") from e
+        try:
+            return status, json.loads(content.decode() or "null")
+        except json.JSONDecodeError:
+            return status, {"_raw": content.decode(errors="replace")}
+
+    def download_to(self, path: str, dest: Path, timeout: float = 600.0) -> int:
+        """GET a file straight to `dest` (replaced atomically); returns the HTTP status."""
+        req = urllib.request.Request(self.base + path, headers=self._headers({"Accept": "*/*"}))
+        part = dest.with_name(dest.name + ".part")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with net.urlopen(req, timeout=timeout) as resp, open(part, "wb") as out:
+                while chunk := resp.read(STREAM_CHUNK):
+                    out.write(chunk)
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            part.unlink(missing_ok=True)
+            return e.code
+        except (OSError, http.client.HTTPException) as e:
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"connection error ({self.base}): {getattr(e, 'reason', e)}") from e
+        part.replace(dest)
+        return status
+
     def delete_json(self, path: str, **kw) -> tuple[int, dict]:
         status, content, _ = self.request("DELETE", path, **kw)
         try:
             return status, json.loads(content.decode() or "null")
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
+
+
+class _MultipartBody:
+    """A multipart/form-data body (head, the file, tail) read in pieces, so a big file is never held in memory."""
+
+    def __init__(self, head: bytes, f, tail: bytes):
+        self._parts = [head, f, tail]
+
+    def read(self, n: int = -1) -> bytes:
+        while self._parts:
+            part = self._parts[0]
+            if isinstance(part, bytes):
+                self._parts.pop(0)
+                if part:
+                    return part
+                continue
+            if chunk := part.read(n):
+                return chunk
+            self._parts.pop(0)
+        return b""
 
 
 def fmt_bytes(n: float) -> str:
@@ -353,6 +423,48 @@ class MogClient:
             return None
         size = data.get("size_bytes") if status == 200 and isinstance(data, dict) else None
         return size if isinstance(size, int) else None
+
+    def register_device(
+        self,
+        client_uid: str,
+        hostname: str,
+        platform: str,
+        os_id: str | None,
+        adopt_device_id: int | None = None,
+        name: str | None = None,
+    ) -> tuple[int, dict]:
+        body = {"client_uid": client_uid, "hostname": hostname, "platform": platform, "os_id": os_id}
+        if adopt_device_id is not None:
+            body["adopt_device_id"] = adopt_device_id
+        if name:
+            body["name"] = name
+        return self.c.post_json("/api/devices/register", body)
+
+    def list_saves(self, game_id: int) -> dict | None:
+        """Every device's saved versions of a game, or None when the server cannot say (an older one)."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/saves")
+        except RuntimeError:
+            return None
+        return data if status == 200 and isinstance(data, dict) else None
+
+    def get_save(self, version_id: int) -> dict:
+        status, data = self.c.get_json(f"/api/saves/{version_id}")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def upload_save(self, game_id: int, device_id: int, archive: Path, trigger: str) -> dict:
+        query = urllib.parse.urlencode({"device_id": device_id, "trigger": trigger})
+        status, data = self.c.post_file(f"/api/games/{game_id}/saves?{query}", archive)
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def download_save(self, version_id: int, dest: Path) -> None:
+        status = self.c.download_to(f"/api/saves/{version_id}/download", dest)
+        if status != 200:
+            raise RuntimeError(f"could not download save version {version_id}: HTTP {status}")
 
     def get_image(self, path: str) -> bytes | None:
         """An image served by the MOG-Server (cached there), or None if it has none."""

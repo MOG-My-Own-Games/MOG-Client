@@ -28,3 +28,16 @@ def group_games(games: list[dict]) -> list[Group]:
         present = [g for g in members if not g.get("missing_from_fs")]
         groups.append(Group(members=members, versions=present or members))
     return groups
+
+
+SAVES_ONLY, ADDONS_ONLY = "saves-only", "addons-only"
+
+
+def corner_state(game: dict) -> str | None:
+    """What the server says is special about a game's files, for a badge on its cover: gone from
+    disk but its saves are kept, or only add-ons (mods, DLC) and nothing that installs the game."""
+    if game.get("saves_only"):
+        return SAVES_ONLY
+    if game.get("addons_only") and not game.get("missing_from_fs"):
+        return ADDONS_ONLY
+    return None
