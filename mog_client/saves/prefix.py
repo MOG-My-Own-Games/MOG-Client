@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mog_client.config import InstalledGame
+from mog_client.launcher import PREFIX_DIR
 
 FAUGUS_FLATPAK = "io.github.Faugus.faugus-launcher"
 
+FROM_GAME = "game-folder"  # the `pfx` MOG hands the engine, inside the game's own folder
 FROM_USER = "chosen"
 FROM_STATE = "remembered"
 FROM_FAUGUS = "faugus"
@@ -125,7 +127,8 @@ def resolve_prefix(
     What the user set for the game or picked for the sync comes first, then what Faugus or Steam currently record (so
     moving the game there is followed), then what an earlier run remembered, then the runner's default."""
     if rec.prefix:
-        return Found(Path(rec.prefix), FROM_USER)
+        in_game_folder = Path(rec.prefix) == Path(rec.install_dir) / PREFIX_DIR
+        return Found(Path(rec.prefix), FROM_GAME if in_game_folder else FROM_USER)
     if remembered and remembered_source == FROM_USER:
         return Found(Path(remembered), FROM_USER)  # picked for the sync only: it does not change how the game starts
     if rec.executable:

@@ -41,7 +41,7 @@ from mog_client.saves.state import (
 LAUNCH, QUIT, MANUAL, UNINSTALL, SYNC = "launch", "quit", "manual", "uninstall", "sync"
 
 # Prefixes that belong to one game only, so everything in them can be attributed to it.
-DEDICATED_SOURCES = (prefixes.FROM_FAUGUS, prefixes.FROM_STEAM)
+DEDICATED_SOURCES = (prefixes.FROM_GAME, prefixes.FROM_FAUGUS, prefixes.FROM_STEAM)
 
 
 @dataclass

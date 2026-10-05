@@ -118,3 +118,23 @@ def test_candidates_are_the_prefixes_that_exist(tmp_path, monkeypatch):
         home / "Faugus/a",
         home / "steam/steamapps/compatdata/123",
     ]
+
+
+def test_the_prefix_in_the_games_folder_is_found_first_and_is_the_games_alone():
+    from mog_client.saves.sync import DEDICATED_SOURCES
+
+    game = _game()
+    game.prefix = str(Path(game.install_dir) / "pfx")
+    found = resolve_prefix(game, "faugus", remembered="/old")
+    assert (found.prefix, found.source) == (Path(game.prefix), prefixes.FROM_GAME)
+    assert prefixes.FROM_GAME in DEDICATED_SOURCES
+
+    elsewhere = _game(prefix="/somewhere-else")
+    assert resolve_prefix(elsewhere, "faugus").source == FROM_USER
+
+
+def test_both_layouts_an_engine_may_leave_in_the_prefix_folder_are_understood(tmp_path):
+    wine_style = _prefix(tmp_path / "wine", "")  # WINEPREFIX=pfx: drive_c right inside
+    proton_style = _prefix(tmp_path / "proton", "pfx")  # STEAM_COMPAT_DATA_PATH=pfx: pfx/drive_c inside
+    assert prefixes.drive_c_of(wine_style) == wine_style / "drive_c"
+    assert prefixes.drive_c_of(proton_style) == proton_style / "pfx/drive_c"

@@ -17,11 +17,16 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from mog_client.launcher import PREFIX_DIR
+
 USER_KEY = "users/USER"
 GAME_KEY = "game"
 PUBLIC_USER = "Public"
 # Files MOG itself keeps in a game's install folder (the icon), never the game's.
 MOG_FILE_PREFIX = ".mog-"
+# The launch script, entries and folder icon MOG writes at the top of a game's folder (next to the prefix).
+GENERATED_SUFFIXES = (".sh", ".desktop", ".lnk")
+GENERATED_NAMES = (".directory",)
 # Where a Proton or umu prefix names the Windows user, before any other.
 PREFERRED_USER = "steamuser"
 
@@ -80,12 +85,16 @@ def user_dir_name(drive_c: Path) -> str:
     return max(dirs, key=lambda d: d.stat().st_mtime).name
 
 
-def _walk(root: Path, key_prefix: str) -> Iterator[Candidate]:
+def _walk(root: Path, key_prefix: str, skip_top_dirs: tuple[str, ...] = ()) -> Iterator[Candidate]:
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(dirpath)
         rel_dir = here.relative_to(root)
         dirnames[:] = sorted(
-            d for d in dirnames if d.casefold() not in DENY_DIRS and not (here / d).is_symlink()
+            d
+            for d in dirnames
+            if d.casefold() not in DENY_DIRS
+            and not (here / d).is_symlink()
+            and not (here == root and d in skip_top_dirs)
         )
         for name in sorted(filenames):
             path = here / name
@@ -123,9 +132,11 @@ def install_candidates(install_dir: Path, manifest: dict[str, tuple[int, str]] |
     manifest there is no telling the game's files from its saves, so nothing is offered."""
     if manifest is None or not real_dir(install_dir):
         return
-    for candidate in _walk(install_dir, GAME_KEY):
+    for candidate in _walk(install_dir, GAME_KEY, skip_top_dirs=(PREFIX_DIR,)):
         rel = candidate.key[len(GAME_KEY) + 1 :]
-        if rel.startswith(MOG_FILE_PREFIX):
+        if rel.startswith(MOG_FILE_PREFIX) or rel in GENERATED_NAMES:
+            continue
+        if "/" not in rel and rel.endswith(GENERATED_SUFFIXES):
             continue
         known = manifest.get(rel)
         if known is not None:

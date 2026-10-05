@@ -228,3 +228,22 @@ def test_picking_another_prefix_forgets_what_was_tracked_and_confirmed(world):
     save_state(7, SaveState(prefix="/b", prefix_source="chosen", includes=["x"]))
     sync.remember_prefix(7, Path("/b"), "chosen")  # picked again by hand: ask again
     assert load_state(7).includes is None
+
+
+def test_a_game_with_its_prefix_in_its_own_folder_backs_up_without_asking_and_without_the_prefix_files(world):
+    pfx = world.install / "pfx"
+    user = pfx / "drive_c/users/steamuser"
+    write(user / "Saved Games/slot1.sav", b"progress")
+    write(user / "AppData/Roaming/Other/settings.json", b"also this game's: the prefix is its alone")
+    world.rec.prefix = str(pfx)
+    save_install_manifest(7, [{"path": "game.exe", "size_bytes": 3, "sha1": hashlib.sha1(b"exe").hexdigest()}])
+    write(world.install / "Some Game.sh", b"#!/bin/sh")
+
+    result = sync.backup(world.ctx, sync.SYNC)
+
+    assert result.status == "uploaded"
+    assert sorted(world.server.uploads[0][1]) == [
+        "users/USER/AppData/Roaming/Other/settings.json",
+        "users/USER/Saved Games/slot1.sav",
+    ]
+    assert load_state(7).prefix == str(pfx) and load_state(7).prefix_source == "game-folder"

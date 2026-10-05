@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, data_dir
 
 # Redistributables, helpers and uninstallers: never the game's own executable.
@@ -23,17 +24,25 @@ _NOT_A_GAME = re.compile(
 _REDIST_DIRS = re.compile(r"(redist|directx|dotnet|vcredist|_commonredist|__installer|support)", re.IGNORECASE)
 
 
+PREFIX_DIR = "pfx"  # the prefix folder inside a game's folder (see pfx_dir)
+
+
 def list_executables(install_dir: Path) -> list[Path]:
     """Candidate game executables under install_dir, largest first (the game
     binary is nearly always the biggest .exe that isn't a redistributable)."""
     found = []
-    for path in install_dir.rglob("*"):
-        if path.suffix.lower() != ".exe" or not path.is_file():
-            continue
-        rel = path.relative_to(install_dir)
-        if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
-            continue
-        found.append(path)
+    for dirpath, dirnames, filenames in os.walk(install_dir):
+        here = Path(dirpath)
+        if here == install_dir:
+            dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]  # the prefix is full of Windows executables
+        for name in filenames:
+            path = here / name
+            if path.suffix.lower() != ".exe" or not path.is_file():
+                continue
+            rel = path.relative_to(install_dir)
+            if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
+                continue
+            found.append(path)
     found.sort(key=lambda p: p.stat().st_size, reverse=True)
     return found
 
@@ -159,9 +168,10 @@ def effective_launcher(game: InstalledGame, preference: str = "auto") -> str:
     return game.launcher if game.launcher and game.launcher != "auto" else preference
 
 
-def prefix_for(game: InstalledGame) -> Path:
-    """Where MOG keeps a prefix for a game whose engine cannot run without one (system Proton)."""
-    return data_dir() / "prefixes" / str(game.game_id)
+def pfx_dir(game: InstalledGame) -> Path:
+    """The prefix MOG hands every engine: a `pfx` folder inside the game's own folder. What goes in
+    it, and how, is up to the engine."""
+    return Path(game.install_dir) / PREFIX_DIR
 
 
 def open_command() -> list[str]:
@@ -184,22 +194,18 @@ def launch_command(
     if launcher == "system":
         # Returns once the handler has started, so a Steam shortcut cannot follow the game's lifetime.
         return [*open_command(), game.executable], {}
-    # The prefix is the user's: only a path they chose for this game (game.prefix) is passed on,
-    # otherwise each engine uses its own default, as when the exe is opened by hand.
-    env = {"WINEPREFIX": game.prefix} if game.prefix else {}
+    prefix = pfx_dir(game)
+    prefix.mkdir(parents=True, exist_ok=True)
+    env = {"WINEPREFIX": str(prefix), "GAMEID": f"umu-mog-{game.game_id}"}
     if launcher == "wine":
-        return ["wine", game.executable], env
+        return ["wine", game.executable], {"WINEPREFIX": str(prefix)}
     if launcher == "proton":
-        # Proton has no default prefix: it cannot run without STEAM_COMPAT_DATA_PATH.
-        prefix = game.prefix or str(prefix_for(game))
         proton = find_proton()
-        compat = Path(prefix) / "pfx-data"
-        compat.mkdir(parents=True, exist_ok=True)
         steam_root = next(
             str(p.parent) for p in proton.parents if p.name in ("steamapps", "compatibilitytools.d")
         )
         return [str(proton), "run", game.executable], {
-            "STEAM_COMPAT_DATA_PATH": str(compat),
+            "STEAM_COMPAT_DATA_PATH": str(prefix),
             "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
         }
     if launcher == "faugus":
@@ -304,8 +310,36 @@ def standalone_command(game: InstalledGame, preference: str = "auto") -> list[st
     return [shutil.which("env") or "/usr/bin/env", *(f"{k}={v}" for k, v in extra.items()), *resolved]
 
 
+def entry_stem(game: InstalledGame) -> str:
+    return safe_dirname(game.name)
+
+
+def _in_game_folder(game: InstalledGame, name: str) -> Path:
+    return Path(game.install_dir) / name
+
+
 def launch_script_path(game: InstalledGame) -> Path:
-    return data_dir() / "launchers" / f"mog-{game.game_id}.sh"
+    return _in_game_folder(game, f"{entry_stem(game)}.sh")
+
+
+def desktop_file_path(game: InstalledGame) -> Path:
+    return _in_game_folder(game, f"{entry_stem(game)}.desktop")
+
+
+def shortcut_lnk_path(game: InstalledGame) -> Path:
+    return _in_game_folder(game, f"{entry_stem(game)}.lnk")
+
+
+def directory_file_path(game: InstalledGame) -> Path:
+    return _in_game_folder(game, ".directory")
+
+
+def icon_path(game: InstalledGame) -> Path:
+    return _in_game_folder(game, ".mog-icon")
+
+
+def menu_entry_path(game: InstalledGame) -> Path:
+    return desktop_entries_dir() / f"mog-{game.game_id}.desktop"
 
 
 def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
@@ -362,14 +396,14 @@ def desktop_entries_dir() -> Path:
 
 
 def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preference: str = "auto") -> str | None:
-    """Freedesktop entry that starts the game through its launch script, not through MOG.
-    Returns its path (None on Windows, which has no .desktop files)."""
+    """The game's entry point next to its files: a `.desktop` that starts the game through its launch
+    script (not through MOG), with a symlink to it in the applications menu; on Windows a `.lnk`
+    to the executable. Returns the path to record (the menu symlink, or the `.lnk`)."""
     if sys.platform == "win32":
-        return None
-    d = desktop_entries_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    path = d / f"mog-{game.game_id}.desktop"
+        create_windows_shortcut(shortcut_lnk_path(game), game.executable, str(Path(game.executable).parent))
+        return str(shortcut_lnk_path(game))
     name = game.name.replace("\n", " ")
+    icon = icon or (icon_path(game) if icon_path(game).is_file() else None)
     lines = [
         "[Desktop Entry]",
         "Type=Application",
@@ -381,6 +415,65 @@ def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preferen
     ]
     if icon:
         lines.append(f"Icon={icon}")
-    path.write_text("\n".join(lines) + "\n")
-    path.chmod(0o755)
-    return str(path)
+    desktop = desktop_file_path(game)
+    desktop.write_text("\n".join(lines) + "\n")
+    desktop.chmod(0o755)
+    menu = menu_entry_path(game)
+    menu.parent.mkdir(parents=True, exist_ok=True)
+    if menu.is_symlink() or menu.exists():
+        menu.unlink()
+    menu.symlink_to(desktop)
+    return str(menu)
+
+
+def write_directory_file(game: InstalledGame) -> None:
+    """Give the game's folder its icon in file managers that read `.directory` (KDE's); no icon, no file."""
+    if sys.platform == "win32":
+        return
+    path, icon = directory_file_path(game), icon_path(game)
+    if icon.is_file():
+        path.write_text(f"[Desktop Entry]\nIcon={icon}\n")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def windows_shortcut_script(lnk: Path, target: str, workdir: str) -> str:
+    """The PowerShell that makes a `.lnk` (WScript.Shell is the only stock way to write one)."""
+
+    def quote(value) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    return ";".join(
+        [
+            f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({quote(lnk)})",
+            f"$s.TargetPath={quote(target)}",
+            f"$s.WorkingDirectory={quote(workdir)}",
+            "$s.Save()",
+        ]
+    )
+
+
+def create_windows_shortcut(lnk: Path, target: str, workdir: str) -> None:
+    lnk.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", windows_shortcut_script(lnk, target, workdir)],
+            check=True,
+            capture_output=True,
+            creationflags=0x08000000 if sys.platform == "win32" else 0,  # no console window
+        )
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"could not create the shortcut {lnk}: {e}") from e
+
+
+def remove_entry_files(game: InstalledGame) -> None:
+    """Delete what MOG generated for the game: its script, entries, folder icon and menu link."""
+    for path in (
+        launch_script_path(game),
+        desktop_file_path(game),
+        shortcut_lnk_path(game),
+        directory_file_path(game),
+        menu_entry_path(game),
+        *([Path(game.desktop_entry)] if game.desktop_entry else []),
+    ):
+        path.unlink(missing_ok=True)

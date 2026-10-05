@@ -31,48 +31,69 @@ def test_flatpak_faugus_runs_the_game_through_the_launchers_run_flag(monkeypatch
 
     assert cmd[:-1] == runner and extra == {}
     command = cmd[-1]
-    assert command.startswith(f"WINEPREFIX={tmp_path / 'pfx'} ") and "GAMEID" not in command
+    assert command.startswith(f"WINEPREFIX={tmp_path / 'Game' / 'pfx'} GAMEID=umu-mog-7 ")
     assert command.endswith(f"{umu} {tmp_path / 'Game' / 'game.exe'}")
 
 
 @pytest.mark.parametrize("engine", ["faugus", "umu", "wine"])
-def test_no_prefix_is_imposed_unless_the_user_chose_one(monkeypatch, tmp_path, engine):
+def test_every_engine_is_handed_the_prefix_inside_the_games_folder(monkeypatch, tmp_path, engine):
     umu = tmp_path / "umu-run"
     umu.write_text("")
-    runner = ["faugus-launcher", "--run"]
-    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (runner, str(umu), False))
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-launcher", "--run"], str(umu), False))
     monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": engine)
     game = _game(tmp_path)
-    game.prefix = None
+    pfx = tmp_path / "Game" / "pfx"
 
     cmd, extra = launcher.launch_command(game)
 
-    assert "WINEPREFIX" not in extra and "GAMEID" not in extra
-    assert "WINEPREFIX" not in " ".join(cmd) and "GAMEID" not in " ".join(cmd)
-    assert not (tmp_path / "data" / "prefixes").exists()
-    assert game.prefix is None
+    assert f"WINEPREFIX={pfx}" in " ".join(cmd) or extra["WINEPREFIX"] == str(pfx)
+    assert pfx.is_dir()  # made ready for the engine to fill
+    assert launcher.pfx_dir(game) == pfx
 
 
-def test_a_prefix_the_user_chose_is_passed_to_wine_and_umu(monkeypatch, tmp_path):
+def test_umu_gets_a_game_id_and_wine_only_the_prefix(monkeypatch, tmp_path):
     game = _game(tmp_path)
-    for engine in ("wine", "umu"):
-        monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto", engine=engine: engine)
-        _, extra = launcher.launch_command(game)
-        assert extra["WINEPREFIX"] == str(tmp_path / "pfx") and "GAMEID" not in extra
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+    assert launcher.launch_command(game) == (
+        ["umu-run", game.executable],
+        {"WINEPREFIX": str(tmp_path / "Game/pfx"), "GAMEID": "umu-mog-7", "PROTONPATH": "GE-Proton"},
+    )
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "wine")
+    assert launcher.launch_command(game) == (["wine", game.executable], {"WINEPREFIX": str(tmp_path / "Game/pfx")})
 
 
-def test_proton_needs_a_prefix_so_it_gets_one_of_mogs_when_the_user_has_none(monkeypatch, tmp_path):
+def test_proton_keeps_its_compat_data_in_the_games_folder(monkeypatch, tmp_path):
     proton = tmp_path / "steamapps" / "common" / "Proton 9" / "proton"
     proton.parent.mkdir(parents=True)
     proton.write_text("")
     monkeypatch.setattr(launcher, "find_proton", lambda: proton)
     monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "proton")
     game = _game(tmp_path)
-    game.prefix = None
 
-    _, extra = launcher.launch_command(game)
+    cmd, extra = launcher.launch_command(game)
 
-    assert extra["STEAM_COMPAT_DATA_PATH"] == str(tmp_path / "data" / "prefixes" / "7" / "pfx-data")
+    assert cmd == [str(proton), "run", game.executable]
+    assert extra["STEAM_COMPAT_DATA_PATH"] == str(tmp_path / "Game/pfx")
+    assert extra["STEAM_COMPAT_CLIENT_INSTALL_PATH"] == str(tmp_path)
+
+
+def test_windows_runs_the_executable_with_no_prefix(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "native")
+    game = _game(tmp_path)
+    assert launcher.launch_command(game) == ([game.executable], {})
+    assert not (tmp_path / "Game" / "pfx").exists()
+
+
+def test_the_executable_picker_does_not_look_inside_the_prefix(tmp_path):
+    game = tmp_path / "Game"
+    (game / "pfx/drive_c/windows").mkdir(parents=True)
+    (game / "pfx/drive_c/windows/notepad.exe").write_bytes(b"x" * 500)
+    (game / "bin").mkdir()
+    (game / "bin/game.exe").write_bytes(b"x" * 100)
+    (game / "sub/pfx").mkdir(parents=True)
+    (game / "sub/pfx/other.exe").write_bytes(b"x")  # only the top-level `pfx` is the prefix
+
+    assert [p.name for p in launcher.list_executables(game)] == ["game.exe", "other.exe"]
 
 
 def test_system_engine_opens_the_exe_like_a_double_click(monkeypatch, tmp_path):

@@ -131,3 +131,21 @@ def test_a_key_cannot_be_written_through_a_link_that_leaves_the_prefix(drive_c, 
     (drive_c / "users/steamuser/Documents/Out").symlink_to(outside)
     with pytest.raises(UnsafeKey):
         target_for_key("users/USER/Documents/Out/x.sav", drive_c, tmp_path / "game")
+
+
+def test_the_prefix_and_the_files_mog_writes_are_not_the_games_files(tmp_path):
+    import hashlib
+
+    game = tmp_path / "game"
+    _touch(game / "data.pak", b"shipped")
+    _touch(game / "pfx/drive_c/users/steamuser/Saved Games/slot1.sav", b"in the prefix")
+    _touch(game / "Game Name.sh", b"#!/bin/sh")
+    _touch(game / "Game Name.desktop", b"[Desktop Entry]")
+    _touch(game / "Game Name.lnk", b"lnk")
+    _touch(game / ".directory", b"[Desktop Entry]")
+    _touch(game / ".mog-icon", b"png")
+    _touch(game / "Saves/profile.sav", b"progress")
+    _touch(game / "tools/run.sh", b"#!/bin/sh")  # a script deeper down is the game's own
+    manifest = {"data.pak": (7, hashlib.sha1(b"shipped").hexdigest())}
+
+    assert keys(install_candidates(game, manifest)) == ["game/Saves/profile.sav", "game/tools/run.sh"]
