@@ -49,7 +49,7 @@ lives in the `gui` extra.
 
 ## Conventions
 
-- **MOG never chooses a Wine prefix for the user.** A user may use MOG only to install and uninstall and start the game by hand, so launching passes no `WINEPREFIX`/`GAMEID` unless the user set `InstalledGame.prefix`. Save sync finds the prefix instead (`saves/prefix.py`); what the user picks for the sync is kept in the sync state, not in `InstalledGame.prefix`, which would change how the game starts.
+- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
 - Save sync never replaces a file without first copying it into a backup archive, and never follows a symbolic link out of the prefix.
 
 - Stdlib only in `mog_client/` (no third-party runtime deps - see
