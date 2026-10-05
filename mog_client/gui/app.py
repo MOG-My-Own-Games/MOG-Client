@@ -69,6 +69,7 @@ from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, 
 from mog_client.launcher import (
     available_launchers,
     detect_launcher,
+    ensure_scanned,
     launch,
     launch_failure,
     launcher_label,
@@ -975,19 +976,13 @@ class SettingsPage(Page):
         self.games_dir = QLineEdit(s.games_dir)
         self.games_dir.setPlaceholderText(str(s.games_path))
         self.launcher = QComboBox()
-        available = available_launchers()
-        for name in available:
-            self.launcher.addItem(launcher_label(name), name)
-        chosen = detect_launcher(s.launcher)
-        if chosen:
-            self.launcher.setCurrentIndex(available.index(chosen))
-        self.launcher.setEnabled(len(available) > 1)
+        self.launcher_status = QLabel()
+        self.launcher_status.setWordWrap(True)
+        self.fill_launchers(s.launcher)
         hint = (
-            "Default is whatever opens .exe files on this system, else Faugus when installed, "
-            "else the system's umu, Proton or Wine. None of them is given a prefix by MOG."
+            "Games start through the first of Faugus, umu, Proton and Wine that is installed. "
+            "MOG gives each game a prefix of its own in the game's folder (pfx); the launcher fills it."
         )
-        if not available:
-            hint = "No launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine."
         mascotte = QLabel()
         mascotte.setPixmap(asset_pixmap("mascotte.png", 160))
         mascotte.setAlignment(Qt.AlignCenter)
@@ -998,7 +993,13 @@ class SettingsPage(Page):
         browse_games = QPushButton("Browse...")
         browse_games.clicked.connect(self.browse_games_dir)
         form.addRow("Games folder", _row(self.games_dir, browse_games, stretch_first=False))
-        form.addRow("Launcher", self.launcher)
+        if sys.platform == "win32":
+            form.addRow("Launcher", self.launcher)
+        else:
+            rescan = QPushButton("Rescan launchers")
+            rescan.clicked.connect(self.rescan_launchers)
+            form.addRow("Launcher", _row(self.launcher, rescan, stretch_first=False))
+            form.addRow("", self.launcher_status)
         form.addRow("Version", QLabel(__version__))
         self.sync_saves_box = Toggle("Back up game saves to the server")
         self.sync_saves_box.setChecked(s.sync_saves)
@@ -1024,6 +1025,28 @@ class SettingsPage(Page):
         lay.addWidget(note)
         lay.addStretch()
         lay.addLayout(_row(save))
+
+    def fill_launchers(self, preference: str) -> None:
+        """The launcher list as the last scan found it, with the current choice selected."""
+        available = available_launchers()
+        self.launcher.clear()
+        for name in available:
+            self.launcher.addItem(launcher_label(name), name)
+        chosen = detect_launcher(preference)
+        if chosen:
+            self.launcher.setCurrentIndex(available.index(chosen))
+        self.launcher.setEnabled(len(available) > 1)
+
+    def rescan_launchers(self) -> None:
+        settings = self.win.app.settings
+        keep = self.launcher.currentData() or settings.launcher
+        found = ensure_scanned(settings, rescan=True)
+        self.fill_launchers(keep)
+        self.launcher_status.setText(
+            "Found: " + ", ".join(launcher_label(n) for n in found)
+            if found
+            else "No launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine."
+        )
 
     def browse_games_dir(self) -> None:
         start = Path(self.games_dir.text().strip() or str(self.win.app.settings.games_path))
@@ -1057,6 +1080,8 @@ class SettingsPage(Page):
             check_updates=self.check_updates_box.isChecked(),
             show_sidebar=self.win.app.settings.show_sidebar,
             sync_saves=self.sync_saves_box.isChecked(),
+            launchers=self.win.app.settings.launchers,
+            launchers_scanned_for=self.win.app.settings.launchers_scanned_for,
         )
         save_settings(self.win.app.settings)
         self.win.back()
@@ -2244,6 +2269,7 @@ def run_gui() -> int:
     qapp.installEventFilter(enter_filter)
     updater.cleanup_old()
     app = App()
+    ensure_scanned(app.settings)
     win = MainWindow(app)
     win.osk.install(qapp)
     if is_deck():

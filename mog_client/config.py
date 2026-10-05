@@ -51,6 +51,9 @@ class Settings:
     check_updates: bool = True
     # The library page's left-hand sidebar (toggled with L2).
     show_sidebar: bool = True
+    # The launchers found on this machine, in order of preference, and the MOG version that looked.
+    launchers: list[str] = field(default_factory=list)
+    launchers_scanned_for: str = ""
     # Back up each game's save files to the server (a game can opt out: InstalledGame.save_sync).
     sync_saves: bool = True
 

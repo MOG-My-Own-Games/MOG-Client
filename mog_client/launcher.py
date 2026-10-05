@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import os
 import re
 import shlex
@@ -49,7 +48,6 @@ def list_executables(install_dir: Path) -> list[Path]:
 
 FAUGUS_FLATPAK = "io.github.Faugus.faugus-launcher"
 LAUNCHER_LABELS = {
-    "system": "System default (as a double click)",
     "faugus": "Faugus Launcher",  # see launcher_label for the Flatpak variant
     "umu": "umu-launcher",
     "proton": "Proton (system)",
@@ -114,49 +112,49 @@ def find_proton() -> Path | None:
     return max(found, key=lambda p: p.parent.name, default=None)
 
 
-_EXE_MIME_TYPES = (
-    "application/vnd.microsoft.portable-executable",
-    "application/x-ms-dos-executable",
-    "application/x-msdownload",
-)
+# Faugus first, then umu, Proton and Wine. PortProton (between Faugus and umu in the intended
+# order) is not supported yet: it picks its own prefix by name and ignores a given path.
+LAUNCHER_PRIORITY = ("faugus", "umu", "proton", "wine")
+
+_known: list[str] | None = None  # the saved scan, once loaded (see ensure_scanned)
 
 
-@functools.lru_cache(maxsize=1)
-def exe_handler_registered() -> bool:
-    """Whether the desktop has a default application for .exe files, i.e. something a double click runs."""
-    gio = shutil.which("gio")
-    if not gio:
-        return False
-    env = {**host_environ(), "LC_ALL": "C"}
-    for mime in _EXE_MIME_TYPES:
-        out = subprocess.run([gio, "mime", mime], capture_output=True, text=True, env=env).stdout
-        if out.strip() and "No default" not in out:
-            return True
-    return False
+def scan_launchers() -> list[str]:
+    """The launchers present on this machine, in order of preference."""
+    if sys.platform == "win32":
+        return ["native"]
+    present = {
+        "faugus": bool(faugus_command()),
+        "umu": bool(shutil.which("umu-run")),
+        "proton": find_proton() is not None,
+        "wine": bool(shutil.which("wine")),
+    }
+    return [name for name in LAUNCHER_PRIORITY if present[name]]
+
+
+def ensure_scanned(settings, rescan: bool = False) -> list[str]:
+    """Put the saved list of launchers in use, scanning (and saving) first when none is saved, MOG
+    was updated since, or `rescan` asks for it."""
+    from mog_client.config import save_settings
+    from mog_client.version import __version__
+
+    global _known
+    if rescan or not settings.launchers or settings.launchers_scanned_for != __version__:
+        found = scan_launchers()
+        if (found, __version__) != (settings.launchers, settings.launchers_scanned_for):
+            settings.launchers, settings.launchers_scanned_for = found, __version__
+            save_settings(settings)
+    _known = list(settings.launchers)
+    return _known
 
 
 def available_launchers() -> list[str]:
     """Launchers usable on this machine, in default-preference order."""
-    if sys.platform == "win32":
-        return ["native"]
-    found = []
-    # The user's own .exe handler is the engine that leaves the prefix choice to them.
-    if exe_handler_registered():
-        found.append("system")
-    if faugus_command():
-        found.append("faugus")
-    if shutil.which("umu-run"):
-        found.append("umu")
-    if find_proton():
-        found.append("proton")
-    if shutil.which("wine"):
-        found.append("wine")
-    return found
+    return list(_known) if _known is not None else scan_launchers()
 
 
 def detect_launcher(preference: str = "auto") -> str | None:
-    """The launcher to use: the preference if usable, else Faugus when
-    installed, else the first system one found."""
+    """The launcher to use: the preference if usable, else the first one found."""
     available = available_launchers()
     if preference in available:
         return preference
@@ -174,12 +172,6 @@ def pfx_dir(game: InstalledGame) -> Path:
     return Path(game.install_dir) / PREFIX_DIR
 
 
-def open_command() -> list[str]:
-    """The command that opens a file with the user's default application, without waiting for it."""
-    gio = shutil.which("gio")
-    return [gio, "open"] if gio else [shutil.which("xdg-open") or "xdg-open"]
-
-
 def launch_command(
     game: InstalledGame, preference: str = "auto", require_umu: bool = True
 ) -> tuple[list[str], dict[str, str]]:
@@ -191,9 +183,6 @@ def launch_command(
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
         return [game.executable], {}
-    if launcher == "system":
-        # Returns once the handler has started, so a Steam shortcut cannot follow the game's lifetime.
-        return [*open_command(), game.executable], {}
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
     env = {"WINEPREFIX": str(prefix), "GAMEID": f"umu-mog-{game.game_id}"}

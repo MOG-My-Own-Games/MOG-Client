@@ -84,6 +84,59 @@ def test_windows_runs_the_executable_with_no_prefix(monkeypatch, tmp_path):
     assert not (tmp_path / "Game" / "pfx").exists()
 
 
+def _present(monkeypatch, faugus=False, umu=False, proton=False, wine=False):
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+    monkeypatch.setattr(launcher, "faugus_command", lambda: ["faugus-run"] if faugus else None)
+    monkeypatch.setattr(launcher, "find_proton", lambda: Path("/steam/steamapps/common/P/proton") if proton else None)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/usr/bin/{name}" if (name == "umu-run" and umu) or (name == "wine" and wine) else None)
+
+
+def test_launchers_are_found_in_the_order_of_preference(monkeypatch):
+    _present(monkeypatch, faugus=True, umu=True, proton=True, wine=True)
+    assert launcher.scan_launchers() == ["faugus", "umu", "proton", "wine"]
+    _present(monkeypatch, proton=True, wine=True)
+    assert launcher.scan_launchers() == ["proton", "wine"]
+    _present(monkeypatch)
+    assert launcher.scan_launchers() == []
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    assert launcher.scan_launchers() == ["native"]
+
+
+@pytest.fixture
+def scanned(monkeypatch):
+    monkeypatch.setattr(launcher, "_known", None)
+    yield
+    monkeypatch.setattr(launcher, "_known", None)
+
+
+def test_the_scan_is_saved_and_only_repeated_after_an_update_or_on_request(monkeypatch, scanned):
+    from mog_client.config import Settings, load_settings
+
+    settings = Settings()
+    _present(monkeypatch, faugus=True, wine=True)
+    assert launcher.ensure_scanned(settings) == ["faugus", "wine"]
+    assert load_settings().launchers == ["faugus", "wine"] and load_settings().launchers_scanned_for
+
+    _present(monkeypatch, umu=True)  # installed since, but nothing asked for a rescan
+    assert launcher.ensure_scanned(settings) == ["faugus", "wine"]
+    assert launcher.available_launchers() == ["faugus", "wine"] and launcher.detect_launcher("auto") == "faugus"
+
+    assert launcher.ensure_scanned(settings, rescan=True) == ["umu"]
+    assert load_settings().launchers == ["umu"]
+
+    _present(monkeypatch, wine=True)
+    settings.launchers_scanned_for = "0.0.0-older"  # MOG was updated
+    assert launcher.ensure_scanned(settings) == ["wine"]
+
+
+def test_an_unavailable_preference_falls_back_to_the_first_launcher(monkeypatch, scanned):
+    monkeypatch.setattr(launcher, "_known", ["umu", "wine"])
+    assert launcher.detect_launcher("wine") == "wine"
+    assert launcher.detect_launcher("faugus") == "umu"
+    monkeypatch.setattr(launcher, "_known", [])
+    assert launcher.detect_launcher("auto") is None
+
+
 def test_the_executable_picker_does_not_look_inside_the_prefix(tmp_path):
     game = tmp_path / "Game"
     (game / "pfx/drive_c/windows").mkdir(parents=True)
@@ -94,45 +147,6 @@ def test_the_executable_picker_does_not_look_inside_the_prefix(tmp_path):
     (game / "sub/pfx/other.exe").write_bytes(b"x")  # only the top-level `pfx` is the prefix
 
     assert [p.name for p in launcher.list_executables(game)] == ["game.exe", "other.exe"]
-
-
-def test_system_engine_opens_the_exe_like_a_double_click(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/gio" if name == "gio" else None)
-    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "system")
-    game = _game(tmp_path)
-
-    cmd, extra = launcher.launch_command(game)
-
-    assert cmd == ["/usr/bin/gio", "open", game.executable] and extra == {}
-
-
-def test_system_engine_is_the_default_only_when_an_exe_handler_exists(monkeypatch):
-    monkeypatch.setattr(launcher.sys, "platform", "linux")
-    monkeypatch.setattr(launcher, "faugus_command", lambda: ["faugus-run"])
-    monkeypatch.setattr(launcher, "find_proton", lambda: None)
-    monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
-    monkeypatch.setattr(launcher, "exe_handler_registered", lambda: True)
-    assert launcher.detect_launcher("auto") == "system"
-    monkeypatch.setattr(launcher, "exe_handler_registered", lambda: False)
-    assert launcher.detect_launcher("auto") == "faugus"
-
-
-def test_exe_handler_is_read_from_gio_in_the_c_locale(monkeypatch):
-    launcher.exe_handler_registered.cache_clear()
-    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/gio")
-    seen = {}
-
-    def fake_run(cmd, **kwargs):
-        seen["env"] = kwargs["env"]
-        out = "Default application for 'x': wine.desktop\n" if cmd[-1].endswith("x-msdownload") else "No default applications for 'x'\n"
-        return type("R", (), {"stdout": out})()
-
-    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
-    try:
-        assert launcher.exe_handler_registered() is True
-        assert seen["env"]["LC_ALL"] == "C"
-    finally:
-        launcher.exe_handler_registered.cache_clear()
 
 
 def test_native_faugus_2x_has_no_faugus_run_so_launcher_run_is_used(monkeypatch):
