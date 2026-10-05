@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 
 from mog_client import manager, steam, trace, updater
 from mog_client.api import fetch_url, fmt_bytes
-from mog_client.grouping import ADDONS_ONLY, SAVES_ONLY, Group, corner_state, group_games
+from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
 from mog_client.stopactions import StopActions
 from mog_client.config import (
@@ -652,6 +652,7 @@ class OptionsPage(Page):
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Regenerate shortcuts", lambda: page.regenerate(rec))
+            add("Refresh metadata", lambda: page.refresh_metadata(rec))
             on = sync_enabled(rec, win.app.settings)
             add(f"Save sync: {'on' if on else 'off'} (this game)", lambda: page.toggle_save_sync(rec))
             if on:
@@ -1578,6 +1579,21 @@ class GamePage(Page):
         wanted = not now
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
         self.win.notify(f"Save sync for {rec.name} is {'on' if wanted else 'off'}")
+
+    def refresh_metadata(self, rec: InstalledGame) -> None:
+        """Fetch the game's metadata and artwork from the server again and rebuild its icons, entries and
+        Steam shortcut from them (the shortcut is edited, not recreated)."""
+
+        def work() -> None:
+            game, changed = manager.refresh_metadata(rec, self.app.client(), self.app.settings.launcher)
+            self.app.games[rec.game_id] = game
+            message = f"Metadata of {rec.name} refreshed"
+            if changed and steam.steam_running():
+                message += "; restart Steam to see the updated shortcut"
+            self.app.bridge.error.emit(message)
+            self.app.bridge.call.emit(self.app.refresh)
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not refresh: {m}"))
 
     def delete_server_cache(self) -> None:
         gid = self.game["id"]

@@ -199,6 +199,14 @@ def regenerate_entries(
     )
 
 
+def refresh_metadata(rec: InstalledGame, client: MogClient, preference: str = "auto") -> tuple[dict, bool]:
+    """Fetch the game's metadata and artwork choice from the server again and rebuild what depends on
+    them (icons, entries, the folder's icon), editing the Steam shortcut in place. Returns the fresh
+    metadata and whether the Steam shortcut changed (Steam sees that after a restart)."""
+    game = client.get_game(rec.game_id)
+    return game, regenerate_entries(rec, game, preference, client)
+
+
 def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> bool:
     """Switch the game to another launch engine, updating its entries in place: the launch
     script is rewritten, the desktop entry keeps its file, and a Steam shortcut is edited (never

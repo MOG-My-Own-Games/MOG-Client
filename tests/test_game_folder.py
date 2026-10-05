@@ -112,6 +112,24 @@ def test_a_game_installed_before_this_has_everything_removed(home):
     assert manager.uninstall(rec, delete_prefix=False) == [] and not home.folder.exists()
 
 
+def test_refreshing_metadata_rebuilds_from_the_servers_new_data_and_edits_the_steam_shortcut(home, monkeypatch):
+    finish(home)
+    rec = load_library()[138]
+    rec.steam_entries = [{"shortcuts_path": str(home.tmp / "steam/userdata/1/config/shortcuts.vdf"), "appid": 1}]
+    calls = {}
+    monkeypatch.setattr(manager.steam, "update_shortcut", lambda entry, exe, start, opts, name=None, artwork=None: calls.update(artwork=artwork, name=name) or True)
+    monkeypatch.setattr(manager.steam, "add_shortcut", lambda *a, **k: pytest.fail("the shortcut must not be recreated"))
+    home.art.clear()
+    home.art["icon"] = b"NEW ICON"
+    server = SimpleNamespace(get_game=lambda gid: {"id": gid, "name": "Jazz 2", "igdb_metadata": {"changed": True}})
+
+    game, changed = manager.refresh_metadata(rec, server)
+
+    assert game["igdb_metadata"] == {"changed": True} and changed is True
+    assert (home.folder / ".mog-icon").read_bytes() == b"NEW ICON"
+    assert calls["artwork"] == {"icon": b"NEW ICON"} and rec.steam_entries[0]["appid"] == 1
+
+
 def test_a_windows_shortcut_is_made_with_powershell(monkeypatch, tmp_path):
     script = launcher.windows_shortcut_script(tmp_path / "G O'Brien.lnk", "C:\\Games\\G\\g.exe", "C:\\Games\\G")
     assert "CreateShortcut('" in script and "G O''Brien.lnk" in script
