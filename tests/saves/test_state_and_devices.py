@@ -82,6 +82,13 @@ def test_a_name_in_use_and_other_errors():
         register(FakeServer([(500, {"detail": "boom"})]))
 
 
+@pytest.mark.parametrize("status", [404, 405])
+def test_a_server_without_save_sync_is_named_as_such(status):
+    with pytest.raises(devices.ServerLacksSaveSync, match="does not support save sync"):
+        register(FakeServer([(status, {"detail": "Method Not Allowed"})]))
+    assert load_device().device_id is None
+
+
 def test_os_id_names_the_system(monkeypatch, tmp_path):
     monkeypatch.setattr(devices, "HOST_OS_RELEASE", tmp_path / "no-host-release")
     monkeypatch.setattr(devices.platform, "freedesktop_os_release", lambda: {"ID": "fedora"})

@@ -36,6 +36,14 @@ class NameTaken(Exception):
     pass
 
 
+class ServerLacksSaveSync(RuntimeError):
+    """The server answers 404 or 405 where the save API should be: it is a version without save sync
+    (an unknown path under its web UI reads as 405, as the UI's file server only allows GET)."""
+
+    def __init__(self) -> None:
+        super().__init__("this MOG-Server does not support save sync yet; update it to a version that does")
+
+
 def device_path() -> Path:
     return config_dir() / "device.json"
 
@@ -105,6 +113,8 @@ def register(client: MogClient, adopt_device_id: int | None = None, name: str | 
         raise HostnameTaken(detail.get("devices", []), detail.get("suggested_names", []))
     if status == 409 and code == "name_taken":
         raise NameTaken(name or "")
+    if status in (404, 405):
+        raise ServerLacksSaveSync
     raise RuntimeError(f"could not register this device: HTTP {status}: {json.dumps(detail or data)[:200]}")
 
 
