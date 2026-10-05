@@ -265,3 +265,72 @@ def test_a_prefix_seen_while_the_game_runs_never_replaces_the_one_the_game_has(w
 
     state = load_state(7)
     assert state.prefix == str(pfx) and state.prefix_source == "game-folder" and list(state.tracked) == ["k"]
+
+
+# --- looking over the saves when the client starts ---
+
+
+def _synced_game(world, monkeypatch):
+    """A game with its own prefix whose saves were backed up from this machine (device 1)."""
+    prefix = make_prefix(world.tmp)
+    faugus_owns(world, prefix, monkeypatch)
+    save = write(prefix / "pfx/drive_c/users/steamuser/Saved Games/slot1.sav", b"mine")
+    assert sync.backup(world.ctx, sync.QUIT).status == "uploaded"
+    return save
+
+
+def test_nothing_new_anywhere_means_nothing_to_do_and_a_local_change_is_sent(world, monkeypatch):
+    save = _synced_game(world, monkeypatch)
+    assert sync.startup_check(world.ctx).status == "unchanged"
+
+    write(save, b"mine, played since", mtime=save.stat().st_mtime + 10)
+    outcome = sync.startup_check(world.ctx)
+
+    assert outcome.status == "uploaded" and world.server.uploads[-1][0] == "sync"
+
+
+def test_a_newer_save_from_another_machine_is_taken_when_nothing_changed_here(world, monkeypatch):
+    save = _synced_game(world, monkeypatch)
+    newer = world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"from karasu-2"}, device_id=2)
+
+    outcome = sync.startup_check(world.ctx)
+
+    assert (outcome.status, outcome.from_device, outcome.files) == ("restored", "karasu-2", 1)
+    assert save.read_bytes() == b"from karasu-2"
+    assert load_state(7).seen_version_id == newer["id"]
+    backups = list((world.tmp / "data/saves/7/backups").glob("*.zip"))
+    assert len(backups) == 1 and zipfile.ZipFile(backups[0]).read("users/USER/Saved Games/slot1.sav") == b"mine"
+    assert sync.startup_check(world.ctx).status == "unchanged"  # and it does not do it twice
+
+
+def test_when_both_sides_changed_nothing_is_overwritten_and_the_user_is_told(world, monkeypatch):
+    save = _synced_game(world, monkeypatch)
+    write(save, b"played here since", mtime=save.stat().st_mtime + 10)
+    world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"played there too"}, device_id=2)
+    uploads = len(world.server.uploads)
+
+    outcome = sync.startup_check(world.ctx)
+
+    assert (outcome.status, outcome.from_device) == ("conflict", "karasu-2")
+    assert save.read_bytes() == b"played here since" and len(world.server.uploads) == uploads
+    assert sync.newer_elsewhere(world.ctx) is not None  # still offered when the game is started from here
+
+
+def test_a_machine_that_does_not_know_where_the_saves_go_waits_for_setup(world):
+    world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"theirs"}, device_id=2)
+    outcome = sync.startup_check(world.ctx)
+    assert (outcome.status, outcome.from_device) == ("setup", "karasu-2")
+    assert world.server.uploads == [] and not (world.install / "pfx").exists()
+
+
+def test_a_preview_changes_nothing_and_sends_nothing(world, monkeypatch):
+    save = _synced_game(world, monkeypatch)
+    write(save, b"changed", mtime=save.stat().st_mtime + 10)
+    tracked_before = dict(load_state(7).tracked)
+    uploads = len(world.server.uploads)
+
+    result = sync.backup(world.ctx, sync.SYNC, upload=False)
+
+    assert result.status == "changed" and result.changed == ["users/USER/Saved Games/slot1.sav"]
+    assert len(world.server.uploads) == uploads and load_state(7).tracked == tracked_before
+    assert sync.backup(world.ctx, sync.SYNC).status == "uploaded"  # the real thing still sees the change

@@ -27,6 +27,7 @@ class FakeWin:
             run_bg=self.run_bg,
         )
         self.notes: list[str] = []
+        self.messages: list[tuple[str, str]] = []
         self.choices: list[tuple] = []
         self.skips: list[str | None] = []
         self.checklists: list[tuple] = []
@@ -42,7 +43,11 @@ class FakeWin:
             if on_error:
                 on_error(str(e))
 
-    def notify(self, text):
+    def notify(self, text, level="info"):
+        self.notes.append(text)
+
+    def message(self, text, level="error"):
+        self.messages.append((level, text))
         self.notes.append(text)
 
     def choose(self, title, text, options, on_choose, skip=None):
@@ -285,12 +290,39 @@ def test_a_final_backup_that_works_lets_the_uninstall_go_on(ui, monkeypatch):
     assert done == [1] and ui.server.uploads == [("uninstall", ["users/USER/Saved Games/s.sav"])]
 
 
-def test_the_startup_check_runs_once_and_reports_in_one_line(ui):
+def test_the_startup_check_runs_once_and_says_what_needs_the_user_in_one_message(ui):
+    ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)  # and nothing is known locally yet
+    ui.ui.check_all()
+    ui.ui.check_all()
+    assert len(ui.win.messages) == 1
+    level, text = ui.win.messages[0]
+    assert level == "warning" and text == "Saves: needs setup: Some Game (from karasu-2)"
+
+
+def test_the_startup_check_can_be_switched_off_and_does_nothing_when_saves_are_not_synced(ui):
     ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    ui.win.settings.sync_on_start = False
     ui.ui.check_all()
+    ui.win.settings.sync_on_start = True
+    ui.win.settings.sync_saves = False
     ui.ui.check_all()
-    assert len(ui.win.notes) == 1 and "newer saves elsewhere: Some Game (karasu-2)" in ui.win.notes[0]
-    assert "needs setup" in ui.win.notes[0]
+    assert ui.win.messages == [] and ui.win.notes == []
+
+    ui.win.settings.sync_saves = True  # both on: it runs (a switched-off check did not use up its one go)
+    ui.ui.check_all()
+    assert len(ui.win.messages) == 1
+
+
+def test_a_quiet_startup_only_goes_to_the_log(ui, monkeypatch):
+    prefix = _prefix(ui.tmp)
+    games = ui.tmp / "games.json"
+    games.write_text(json.dumps([{"path": ui.rec.executable, "prefix": str(prefix)}]))
+    monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [games])
+    (prefix / "pfx/drive_c/users/steamuser/Saved Games/s.sav").write_bytes(b"s")
+
+    ui.ui.check_all()
+
+    assert ui.win.messages == [] and ui.win.notes == ["Saves: backed up: Some Game"]
 
 
 def test_labels_name_the_machine_the_time_and_the_size(ui):

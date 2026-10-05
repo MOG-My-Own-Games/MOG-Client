@@ -7,16 +7,14 @@ tested with a stand-in window. Work that talks to the server runs on worker thre
 
 from __future__ import annotations
 
-import sys
-import threading
-import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from mog_client import logstore
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import detect_launcher, effective_launcher
-from mog_client.saves import devices, prefix as prefixes, runner, sync
+from mog_client.saves import devices, prefix as prefixes, sync
 from mog_client.saves.state import load_state
 
 SKIP = None
@@ -49,8 +47,9 @@ class SaveSync:
     def gui(self, fn: Callable[[], None]) -> None:
         self.app.bridge.call.emit(fn)
 
-    def say(self, text: str) -> None:
-        self.gui(lambda: self.win.notify(text))
+    def say(self, text: str, level: str | None = None) -> None:
+        """From any thread: a message over the window when it has a level, else just the log."""
+        self.gui(lambda: self.win.message(text, level) if level else self.win.notify(text))
 
     def enabled(self, rec: InstalledGame) -> bool:
         return sync.enabled(rec, self.app.settings)
@@ -71,7 +70,7 @@ class SaveSync:
             if otherwise is not None:
                 self.gui(lambda: otherwise(reason))
             elif reason:
-                self.say(f"Save sync: {reason}")
+                self.say(f"Save sync: {reason}", "error")
 
         def work() -> None:
             settings = app.settings
@@ -109,7 +108,7 @@ class SaveSync:
                     devices.register(client, name=value)
                 self.with_context(rec, then, otherwise)
 
-            self.app.run_bg(work, on_error=lambda m: self.say(f"Save sync: {m}"))
+            self.app.run_bg(work, on_error=lambda m: self.say(f"Save sync: {m}", "error"))
 
         self.win.choose(
             "Is this machine one of these?",
@@ -132,19 +131,20 @@ class SaveSync:
         status = result.status
         if status == "uploaded":
             count = (result.version or {}).get("file_count")
-            self.win.notify(f"Saves of {rec.name} backed up" + (f" ({count} files)" if count else ""))
+            text = f"Saves of {rec.name} backed up" + (f" ({count} files)" if count else "")
+            self.win.notify(text) if quiet else self.win.message(text, "info")
         elif status in ("unchanged", "duplicate") and not quiet:
-            self.win.notify(f"Saves of {rec.name} are up to date")
+            self.win.message(f"Saves of {rec.name} are up to date", "info")
         elif status == "nothing" and not quiet:
-            self.win.notify(f"No save files found for {rec.name} yet")
+            self.win.message(f"No save files found for {rec.name} yet", "info")
         elif status == "needs-prefix":
             if quiet:
-                self.win.notify(f"Where does {rec.name} keep its saves? Open its Options > Where is the prefix")
+                self.win.message(f"Where does {rec.name} keep its saves? Open its Options > Where is the prefix", "warning")
             else:
                 self.choose_prefix(rec, retry)
         elif status == "needs-confirmation":
             if quiet:
-                self.win.notify(f"Confirm which folders are {rec.name}'s saves: Options > Back up saves now")
+                self.win.message(f"Confirm which folders are {rec.name}'s saves: Options > Back up saves now", "warning")
             else:
                 self.confirm_folders(rec, result.folders, retry)
 
@@ -157,7 +157,7 @@ class SaveSync:
 
         def store(path: Path) -> None:
             if not prefixes.is_prefix(path):
-                self.win.notify(f"{path} does not look like a Wine prefix (no drive_c inside)")
+                self.win.message(f"{path} does not look like a Wine prefix (no drive_c inside)", "error")
                 return
             sync.remember_prefix(rec.game_id, path, prefixes.FROM_USER)
             self.win.notify(f"Saves of {rec.name} will be looked for in {path}")
@@ -192,25 +192,6 @@ class SaveSync:
             [(f, f) for f in folders],
             done,
         )
-
-    def watch(self, rec: InstalledGame, proc=None) -> None:
-        """After a game started from here: back its saves up once it ends."""
-        if not self.enabled(rec):
-            return
-        started = time.time_ns()
-        client = self.app.client()
-
-        def work() -> None:
-            if sys.platform == "win32" and proc is not None:
-                proc.wait()
-                ctx = runner.make_context(rec, self.app.settings, client, log=lambda m: None)
-                result = sync.backup(ctx, sync.QUIT, since_ns=started) if ctx else None
-            else:
-                result = runner.watch_session(rec, self.app.settings, client, started, log=lambda m: None)
-            if result is not None:
-                self.gui(lambda: self.after_backup(rec, result, lambda: None, quiet=True))
-
-        threading.Thread(target=work, daemon=True).start()
 
     # --- before the game starts ---
 
@@ -295,21 +276,26 @@ class SaveSync:
             result = sync.restore(ctx, version_id)
             self.gui(lambda: self._restored(rec, ctx, result, then))
 
-        self.app.run_bg(run, on_error=lambda m: self.gui(lambda: (self.win.notify(f"Could not restore: {m}"), then and then())))
+        def failed(m: str) -> None:
+            self.win.message(f"Could not restore: {m}", "error")
+            if then:
+                then()
+
+        self.app.run_bg(run, on_error=lambda m: self.gui(lambda: failed(m)))
 
     def _restored(self, rec, ctx, result: sync.RestoreResult, then) -> None:
         if result.status == "restored":
             kept = f"; what it replaced is in {result.backup}" if result.backup else ""
-            self.win.notify(f"Saves of {rec.name} restored ({len(result.restored)} files){kept}")
+            self.win.message(f"Saves of {rec.name} restored ({len(result.restored)} files){kept}", "info")
             if then:
                 then()
         elif result.status == "needs-prefix":
             def apply() -> None:
                 def work() -> None:
                     sync.apply_pending(ctx)
-                    self.say(f"Saves of {rec.name} restored")
+                    self.say(f"Saves of {rec.name} restored", "info")
 
-                self.app.run_bg(work, on_error=lambda m: self.say(f"Could not restore: {m}"))
+                self.app.run_bg(work, on_error=lambda m: self.say(f"Could not restore: {m}", "error"))
 
             def skip() -> None:
                 self.win.notify("They stay downloaded until the prefix is known")
@@ -329,7 +315,7 @@ class SaveSync:
 
     def _pick(self, rec, ctx, rows) -> None:
         if not rows:
-            self.win.notify(f"No saves of {rec.name} on the server yet")
+            self.win.message(f"No saves of {rec.name} on the server yet", "info")
             return
         self.win.choose(
             "Restore which save?",
@@ -388,9 +374,11 @@ class SaveSync:
         self.with_context(rec, run, otherwise=uneasy)
 
     def check_all(self) -> None:
-        """Once per session, quietly: back up the games that changed since last time (a game started
-        by hand has no one to notice it ended) and say which have a newer save elsewhere."""
-        if self._checked or not self.app.settings.sync_saves or not self.app.settings.configured:
+        """Once per session, when the setting allows: look over every game's saves. What changed here is
+        sent; a newer version from another machine is taken when nothing changed here (the files it
+        replaces are backed up first); when both changed, the user is told and nothing is overwritten."""
+        settings = self.app.settings
+        if self._checked or not settings.sync_saves or not settings.sync_on_start or not settings.configured:
             return
         self._checked = True
         games = [r for r in load_library().values() if r.state == "installed" and r.executable and self.enabled(r)]
@@ -398,29 +386,28 @@ class SaveSync:
             return
 
         def run(ctx: sync.Context) -> None:
-            uploaded, newer, unsure = [], [], []
+            groups: dict[str, list[str]] = {"uploaded": [], "restored": [], "conflict": [], "setup": [], "pending": []}
             for rec in games:
                 one = sync.Context(rec, ctx.settings, ctx.client, ctx.device, ctx.engine)
                 try:
-                    result = sync.backup(one, sync.SYNC)
-                    if result.status == "uploaded":
-                        uploaded.append(rec.name)
-                    elif result.status in ("needs-prefix", "needs-confirmation"):
-                        unsure.append(rec.name)
-                    found = sync.newer_elsewhere(one)
-                    if found is not None:
-                        newer.append(f"{rec.name} ({found[1]['name']})")
-                except RuntimeError:
+                    outcome = sync.startup_check(one)
+                except (RuntimeError, OSError) as e:
+                    logstore.warning(f"Saves of {rec.name}: {e}")
                     continue
-            parts = []
-            if uploaded:
-                parts.append("backed up: " + ", ".join(uploaded))
-            if newer:
-                parts.append("newer saves elsewhere: " + ", ".join(newer))
-            if unsure:
-                parts.append("needs setup: " + ", ".join(unsure))
-            if parts:
-                self.say("Saves: " + "; ".join(parts))
+                if outcome.status in groups:
+                    who = f" (from {outcome.from_device})" if outcome.from_device else ""
+                    groups[outcome.status].append(f"{rec.name}{who}" if outcome.status != "uploaded" else rec.name)
+            labels = {
+                "uploaded": "backed up",
+                "restored": "newer saves put back",
+                "conflict": "changed here and elsewhere, nothing overwritten: open the game to choose",
+                "setup": "needs setup",
+                "pending": "waiting for the prefix",
+            }
+            parts = [f"{labels[k]}: {', '.join(v)}" for k, v in groups.items() if v]
+            if parts:  # worth interrupting for only when something needs the user
+                needs = bool(groups["conflict"] or groups["setup"])
+                self.say("Saves: " + "; ".join(parts), "warning" if needs else None)
 
         first = games[0]
         self.with_context(first, run, ask=True, otherwise=lambda _reason: None)

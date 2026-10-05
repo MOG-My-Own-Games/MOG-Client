@@ -124,9 +124,10 @@ def confirm_folders(game_id: int, folders: list[str]) -> None:
 
 
 def backup(
-    ctx: Context, trigger: str, since_ns: int | None = None, force: bool = False
+    ctx: Context, trigger: str, since_ns: int | None = None, force: bool = False, upload: bool = True
 ) -> BackupResult:
-    """Upload this game's saves if they changed. `since_ns` is when the session began, when known."""
+    """Upload this game's saves if they changed. `since_ns` is when the session began, when known.
+    With `upload=False` nothing is sent or remembered: "changed" says only that something differs here."""
     rec = ctx.rec
     state = load_state(rec.game_id)
     found = find_prefix(ctx, state)
@@ -148,6 +149,9 @@ def backup(
         folders = sorted({_folder_of(k) for k in result.unattributed if not k.startswith(f"{GAME_KEY}/")})
         if folders:
             return BackupResult("needs-confirmation", folders=folders)
+
+    if not upload and result.changed:
+        return BackupResult("changed", changed=result.changed)
 
     state.tracked = result.tracked
     if found is not None and not state.prefix:
@@ -174,6 +178,41 @@ def backup(
     state.last_synced_at = _now()
     save_state(rec.game_id, state)
     return BackupResult("uploaded" if uploaded.get("created") else "duplicate", version, result.changed)
+
+
+@dataclass
+class StartupOutcome:
+    # "uploaded" | "restored" | "conflict" | "setup" | "pending" | "unchanged"
+    status: str
+    from_device: str | None = None
+    version: dict | None = None
+    files: int = 0
+
+
+def startup_check(ctx: Context) -> StartupOutcome:
+    """What to do about a game's saves when the client starts: send what changed here, or take the newer
+    version another machine left when nothing changed here (what it replaces is backed up first). When
+    both sides changed it does neither and says so, and when the game's folders are not known yet it waits."""
+    try:
+        newer = newer_elsewhere(ctx)
+    except RuntimeError:
+        newer = None
+    if newer is None:
+        result = backup(ctx, SYNC)
+        status = {"uploaded": "uploaded", "needs-prefix": "setup", "needs-confirmation": "setup"}.get(
+            result.status, "unchanged"
+        )
+        return StartupOutcome(status, version=result.version)
+    version, device = newer
+    local = backup(ctx, SYNC, upload=False)
+    if local.status in ("needs-prefix", "needs-confirmation"):
+        return StartupOutcome("setup", device["name"], version)
+    if local.status == "changed":
+        return StartupOutcome("conflict", device["name"], version)
+    restored = restore(ctx, version["id"])
+    if restored.status == "restored":
+        return StartupOutcome("restored", device["name"], version, len(restored.restored))
+    return StartupOutcome("pending", device["name"], version)
 
 
 def newest_version(saves: dict | None) -> tuple[dict, dict] | None:
