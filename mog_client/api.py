@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import net, trace
+from mog_client import logstore, net, trace
 
 POLL_INTERVAL = 3
 STREAM_TIMEOUT = 30.0  # per socket read, not for the whole transfer
@@ -35,10 +35,12 @@ DEVICE_ID = f"client-{uuid.uuid4().hex[:8]}"
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+    logstore.info(msg)
 
 
 def warn(msg: str) -> None:
     print(f"WARN: {msg}", file=sys.stderr, flush=True)
+    logstore.warning(msg)
 
 
 def basic_header(user: str, pw: str) -> str:
