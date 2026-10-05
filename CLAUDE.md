@@ -29,13 +29,20 @@ mog_client/
   config.py     Settings + installed-games record (JSON under XDG dirs)
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
   launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
+  gameplay.py   Following a game started from here to its end, and stopping it (stdlib)
   saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher
   steam.py      shortcuts.vdf read/write + grid artwork
   scrape.py     Artwork URLs from the server's already-scraped metadata
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
     widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
     keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
-    saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`notify`)
+    saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`message`/`notify`)
+    overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
+    logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
+    about.py    the About tab; legend.py builds the guide at the bottom per page, with button and key icons
+    sounds.py   menu sounds (QSoundEffect; silent when the setting is off or there is no audio)
+    playing.py  the "Playing" message over the window while a game started here runs (cover, name, Stop)
+    menu.py     the settings menu: OptionRow (title, description, control), MenuView, controls the arrows do not change
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
 .github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>
@@ -50,6 +57,9 @@ lives in the `gui` extra.
 ## Conventions
 
 - **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
+- **No status line.** What the user must see is `MainWindow.message(text, level)` (an overlay with OK, also logged); what is only worth keeping is `MainWindow.notify(text, level)` (the log only). Do not add messages to the page layouts. Errors and the result of something the user asked for are messages; ambient information ("N games", "Starting X...") is not. Worker threads use `Bridge.error`, `Bridge.message` or `Bridge.note`.
+- Steam rewrites `shortcuts.vdf` from memory when it quits, so a shortcut is never changed while it runs (`manager._sync_steam_entries` marks `steam_pending` and `settle_steam_shortcuts` finishes it at the next start); keys are matched without regard to case.
+- The pad reader reports whatever window has the focus: `MainWindow.on_pad_event` drops events when none of ours is active.
 - Save sync never replaces a file without first copying it into a backup archive, and never follows a symbolic link out of the prefix.
 
 - Stdlib only in `mog_client/` (no third-party runtime deps - see
