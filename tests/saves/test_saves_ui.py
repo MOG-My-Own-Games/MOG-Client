@@ -28,6 +28,7 @@ class FakeWin:
         )
         self.notes: list[str] = []
         self.choices: list[tuple] = []
+        self.skips: list[str | None] = []
         self.checklists: list[tuple] = []
         self.asks: list[tuple] = []
         self.browsed: list[Path] = []
@@ -44,8 +45,9 @@ class FakeWin:
     def notify(self, text):
         self.notes.append(text)
 
-    def choose(self, title, text, options, on_choose):
+    def choose(self, title, text, options, on_choose, skip=None):
         self.choices.append((title, options, on_choose))
+        self.skips.append(skip)
 
     def checklist(self, title, text, items, on_done):
         self.checklists.append((title, items, on_done))
@@ -189,6 +191,7 @@ def test_picking_the_prefix_tells_sync_where_to_look_without_touching_how_the_ga
     ui.ui.choose_prefix(ui.rec, then=lambda: done.append(1))
     title, options, answer = ui.win.choices[0]
     assert title == "Where is this game's Wine prefix?" and options[0][1] == prefix and options[-1][1] == "browse"
+    assert ui.win.skips[0] is None  # nothing to skip: the question was asked on purpose
 
     answer(prefix)
 
@@ -212,7 +215,8 @@ def test_saves_waiting_for_a_prefix_ask_for_one_before_the_game_starts_then_appl
 
     ui.ui.before_launch(ui.rec, lambda: started.append(1))
     title, options, answer = ui.win.choices[0]
-    assert title == "Where is this game's Wine prefix?" and options[-1][0] == "Not now" and started == []
+    assert title == "Where is this game's Wine prefix?" and options[-1][1] == "browse" and started == []
+    assert ui.win.skips[0] == "Not now"
 
     prefix = _prefix(ui.tmp)
     answer(prefix)  # remembers the prefix and asks again from the start
@@ -241,7 +245,8 @@ def test_after_an_install_the_newest_save_of_each_machine_can_be_restored_or_ski
     ui.ui.offer_after_install(ui.rec)
 
     title, options, answer = ui.win.choices[0]
-    assert title == "Saves from another machine" and [v for _, v in options] == [newer["id"], None]
+    assert title == "Saves from another machine" and [v for _, v in options] == [newer["id"]]
+    assert ui.win.skips[0] == "Skip"  # a red button of its own, not an entry of the list
     answer(newer["id"])
     assert (ui.install / "a.sav").read_bytes() == b"new"
     answer(None)  # Skip does nothing

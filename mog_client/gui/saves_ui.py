@@ -154,8 +154,6 @@ class SaveSync:
         found = prefixes.candidate_prefixes()
         options: list[tuple[str, object]] = [(str(p), p) for p in found]
         options.append(("Another folder...", "browse"))
-        if skip is not None:
-            options.append(("Not now", SKIP))
 
         def store(path: Path) -> None:
             if not prefixes.is_prefix(path):
@@ -180,6 +178,7 @@ class SaveSync:
             f"MOG did not choose a prefix for {rec.name} and cannot tell which one it runs in. Pick the one it uses.",
             options,
             chosen,
+            skip="Not now" if skip is not None else None,
         )
 
     def confirm_folders(self, rec: InstalledGame, folders: list[str], then: Callable[[], None]) -> None:
@@ -355,12 +354,13 @@ class SaveSync:
         self.with_context(rec, run, otherwise=lambda _reason: None, ask=True)
 
     def _offer_install(self, rec, ctx, rows) -> None:
-        options = [(f"Restore {version_label(v, d)}", v["id"]) for v, d in rows] + [("Skip", SKIP)]
+        options = [(f"Restore {version_label(v, d)}", v["id"]) for v, d in rows]
         self.win.choose(
             "Saves from another machine",
             f"The server has saves of {rec.name}. Put one on this machine now?",
             options,
             lambda version_id: self._restore(rec, ctx, version_id) if version_id is not SKIP else None,
+            skip="Skip",
         )
 
     # --- uninstalling, and looking over every game at startup ---

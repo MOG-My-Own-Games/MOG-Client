@@ -677,9 +677,10 @@ class OptionsPage(Page):
 
 
 class ChoicePage(Page):
-    """A list to pick one answer from; Esc or Back leaves without answering."""
+    """A list to pick one answer from, then OK (or Enter on an entry). `skip` adds a red button that
+    answers None; Esc or Back leaves without answering."""
 
-    def __init__(self, win: "MainWindow", title: str, text: str, options: list, on_choose):
+    def __init__(self, win: "MainWindow", title: str, text: str, options: list, on_choose, skip: str | None = None):
         super().__init__()
         self.title, self.win, self.on_choose = title, win, on_choose
         note = QLabel(text)
@@ -692,9 +693,19 @@ class ChoicePage(Page):
         if self.list.count():
             self.list.setCurrentRow(0)
         self.list.itemActivated.connect(self.choose)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        buttons = [ok]
+        if skip is not None:
+            skip_button = QPushButton(skip)
+            skip_button.setProperty("danger", True)
+            skip_button.clicked.connect(self.skip)
+            buttons.append(skip_button)
         lay = QVBoxLayout(self)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
+        lay.addLayout(_centered_row(*buttons))
 
     def focus_default(self) -> None:
         self.list.setFocus()
@@ -703,6 +714,14 @@ class ChoicePage(Page):
         value = item.data(Qt.UserRole)
         self.win.back()
         self.on_choose(value)
+
+    def accept(self) -> None:
+        if self.list.currentItem() is not None:
+            self.choose(self.list.currentItem())
+
+    def skip(self) -> None:
+        self.win.back()
+        self.on_choose(None)
 
 
 class ChecklistPage(Page):
@@ -2070,8 +2089,8 @@ class MainWindow(QMainWindow):
     def notify(self, text: str) -> None:
         self.status.setText(text)
 
-    def choose(self, title: str, text: str, options: list, on_choose) -> None:
-        self.push(ChoicePage(self, title, text, options, on_choose))
+    def choose(self, title: str, text: str, options: list, on_choose, skip: str | None = None) -> None:
+        self.push(ChoicePage(self, title, text, options, on_choose, skip))
 
     def checklist(self, title: str, text: str, items: list, on_done) -> None:
         self.push(ChecklistPage(self, title, text, items, on_done))
