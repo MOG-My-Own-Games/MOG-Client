@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox
+from PySide6.QtWidgets import QCheckBox, QTabBar, QTabWidget
 
 ACCENT_STOPS = ((0.0, "#7fa8ff"), (0.55, "#5b8def"), (1.0, "#3c64c4"))
 ACCENT_HOVER_STOPS = ((0.0, "#94b7ff"), (0.55, "#709cf2"), (1.0, "#4d75d4"))
@@ -43,7 +43,9 @@ class Toggle(QCheckBox):
         painter.setRenderHint(QPainter.Antialiasing)
         top = (self.height() - self.TRACK_H) / 2
         track = QRectF(2, top, self.TRACK_W, self.TRACK_H)
-        if self.isChecked():
+        if not self.isEnabled():  # greyed, but still showing the position it is left in
+            painter.setBrush(QColor("#434a56") if self.isChecked() else QColor("#2c333d"))
+        elif self.isChecked():
             painter.setBrush(accent_gradient(track.left(), track.top(), track.right(), track.bottom()))
         else:
             painter.setBrush(QColor("#2c333d"))
@@ -52,7 +54,7 @@ class Toggle(QCheckBox):
         knob_d = self.TRACK_H - 8
         knob_x = track.right() - knob_d - 4 if self.isChecked() else track.left() + 4
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("white"))
+        painter.setBrush(QColor("white") if self.isEnabled() else QColor("#8b929e"))
         painter.drawEllipse(QRectF(knob_x, top + 4, knob_d, knob_d))
         if self.text():
             painter.setPen(QColor("#e8eaed") if self.isEnabled() else QColor("#6b7380"))
@@ -83,3 +85,30 @@ def bell_icon(size: int = 24) -> QIcon:
     painter.drawEllipse(QRectF(10 * s, 17.5 * s, 4 * s, 3 * s))
     painter.end()
     return QIcon(pix)
+
+
+class FocusTabBar(QTabBar):
+    """A tab bar that outlines the selected tab while it has the focus. Drawn here because changing a style
+    property from a focus event makes some system styles loop."""
+
+    def focusInEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().focusOutEvent(e)
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().paintEvent(e)
+        if self.hasFocus() and self.currentIndex() >= 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor("white"), 2))
+            painter.drawRoundedRect(QRectF(self.tabRect(self.currentIndex())).adjusted(1, 1, -1, -1), 8, 8)
+
+
+class FocusTabs(QTabWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setTabBar(FocusTabBar())

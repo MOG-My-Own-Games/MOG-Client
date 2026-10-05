@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,6 +28,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QAbstractScrollArea,
     QApplication,
     QComboBox,
     QFormLayout,
@@ -49,23 +50,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mog_client import manager, steam, trace, updater
+from mog_client import crashlog, gameplay, logstore, manager, steam, trace, updater
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
 from mog_client.stopactions import StopActions
 from mog_client.config import (
     InstalledGame,
-    Settings,
     data_dir,
     load_library,
     load_settings,
     save_settings,
 )
-from mog_client.gui import gamepad, keyboard, osk
+from mog_client.gui import gamepad, keyboard, legend, osk
+from mog_client.gui.about import AboutTab
+from mog_client.gui.logview import LogView
+from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
+from mog_client.gui.overlay import MessageOverlay
+from mog_client.gui.playing import PlayingOverlay
 from mog_client.gui.saves_ui import SaveSync
+from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
+from mog_client.saves import runner, sync
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, Toggle, accent_gradient, accent_qss, bell_icon
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, FocusTabs, Toggle, accent_gradient, accent_qss, bell_icon
 from mog_client.launcher import (
     available_launchers,
     detect_launcher,
@@ -103,78 +110,46 @@ QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius: 10px; padding: 6px; }
 QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
 *:focus { border-color: #4c8dff; }
+QTabWidget::pane { border: none; }
+QTabBar::tab { background: #1e232b; color: #9aa3b0; padding: 10px 24px; border-radius: 8px; margin-right: 6px; }
+QTabBar::tab:selected { background: {accent}; color: white; }
+QPushButton[filter="true"] { background: #2c333d; color: #9aa3b0; }
+QPushButton[filter="true"]:checked { background: {accent}; color: white; }
+QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
+#menuView, #menuView > QWidget > QWidget { background: transparent; }
+#menuSection { color: #9aa3b0; font-size: 14px; font-weight: bold; padding: 16px 4px 2px 4px; }
+#optionRow { background: #1b2028; border: 2px solid transparent; border-radius: 10px; }
+#optionRow[active="true"] { background: #1e2733; border-color: #4c8dff; }
+#optionTitle { font-size: 19px; font-weight: 600; }
+#optionDescription { color: #9aa3b0; font-size: 15px; }
+#optionStatus { color: #6fb1ff; font-size: 15px; }
+#overlay { background: rgba(0, 0, 0, 175); }
+#overlayCard { background: #1e232b; border: 2px solid #4c8dff; border-radius: 12px; padding: 18px; }
+#overlayCard[level="error"] { border-color: #e2574c; }
+#overlayCard[level="warning"] { border-color: #e8c547; }
+#overlayTitle { font-size: 22px; font-weight: bold; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
 QProgressBar::chunk { background: {accent}; border-radius: 6px; }
 """.replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss())
 
+def steam_outcome(rec: InstalledGame, done: str) -> tuple[str, str]:
+    """(level, text) for what was done, with a note when Steam's own shortcut had to wait: Steam is
+    running, and it would put its old one back when it quits."""
+    if not rec.steam_pending:
+        return "info", done
+    return "warning", (
+        f"{done}. Steam is running, so its shortcut for {rec.name} is updated the next time MOG starts "
+        "with Steam closed."
+    )
+
+
 COVER_SIZE = QSize(200, 270)
+TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
 IMAGE_WORKERS = 6
-PAD_ICON_HEIGHT = 28
 
 
-def keyboard_legend(typing: bool = False, inbox: bool = False) -> str:
-    """The same guide as the controller's, for the keyboard."""
-    if typing:
-        items = (("Type", "Enter text"), ("Backspace", "Delete"), ("Esc", "Cancel"))
-    elif inbox:
-        items = (("\u2191\u2193", "Move"), ("Enter", "Open"), ("Del", "Delete"), ("Esc", "Back"))
-    else:
-        items = (
-            ("\u2191\u2193\u2190\u2192", "Move"),
-            ("Enter", "Select"),
-            ("Esc", "Back"),
-            ("F5", "Refresh"),
-            ("Ctrl+F", "Search"),
-            ("Ctrl+B", "Sidebar"),
-            ("Ctrl+N", "Notifications"),
-            ("Ctrl+,", "Settings"),
-            ("Ctrl+Q", "Quit"),
-        )
-    return "&nbsp;&nbsp;&nbsp;&nbsp;".join(f"<b>{keys}</b> {label}" for keys, label in items)
-
-
-def pad_legend(family: str, typing: bool = False, inbox: bool = False) -> str:
-    def icon(button: str) -> str:
-        path = (ASSETS / "pad" / family / f"{button}.png").as_posix()
-        return f'<img src="{path}" height="{PAD_ICON_HEIGHT}" style="vertical-align: middle;">'
-
-    def glyph(function: str) -> str:
-        return icon(gamepad.BUTTON_FOR[function])
-
-    gap = "&nbsp;&nbsp;&nbsp;&nbsp;"
-    if typing:
-        items = (
-            (icon(gamepad.DPAD), "Move"),
-            (glyph(gamepad.ACCEPT), "Type"),
-            (glyph(gamepad.REFRESH), "Delete"),
-            (glyph(gamepad.SEARCH), "Space"),
-            (glyph(gamepad.PAGE_PREV) + glyph(gamepad.PAGE_NEXT), "Cursor"),
-            (glyph(gamepad.TRIGGER_R), "Done"),
-            (glyph(gamepad.BACK), "Cancel"),
-        )
-        return gap.join(f"{glyphs} {label}" for glyphs, label in items)
-    if inbox:
-        items = (
-            (icon(gamepad.DPAD), "Move"),
-            (glyph(gamepad.ACCEPT), "Open"),
-            (glyph(gamepad.REFRESH), "Delete"),
-            (glyph(gamepad.BACK), "Back"),
-        )
-        return gap.join(f"{glyphs} {label}" for glyphs, label in items)
-    items = (
-        (icon(gamepad.DPAD), "Move"),
-        (glyph(gamepad.ACCEPT), "Select"),
-        (glyph(gamepad.BACK), "Back"),
-        (glyph(gamepad.PAGE_PREV) + glyph(gamepad.PAGE_NEXT), "Switch focus"),
-        (glyph(gamepad.REFRESH), "Refresh"),
-        (glyph(gamepad.SEARCH), "Search"),
-        (glyph(gamepad.TRIGGER_L), "Sidebar"),
-        (glyph(gamepad.MENU), "Settings"),
-        (f"{glyph(gamepad.MENU)}+{icon(gamepad.SELECT)}", "Quit"),
-    )
-    return gap.join(f"{glyphs} {label}" for glyphs, label in items)
 _KEYS = {
     gamepad.UP: Qt.Key_Up,
     gamepad.DOWN: Qt.Key_Down,
@@ -191,7 +166,9 @@ class Bridge(QObject):
     """Thread-safe hand-off from worker threads to the GUI thread."""
 
     games = Signal(list)
-    error = Signal(str)
+    error = Signal(str)  # something failed: a message over the window, and the log
+    message = Signal(str, str)  # level, text: a message over the window, and the log
+    note = Signal(str)  # only the log
     cover = Signal(int, bytes)
     image = Signal(str, bytes)  # url, bytes (screenshots)
     progress = Signal(int, int, int, str)  # game, written, total, state text
@@ -397,7 +374,7 @@ class App:
             if s.get("auto_status") == "needs_manual" and not server_state.get("warned"):
                 server_state["warned"] = True
                 server_state["label"] = "auto mode needs you: open the installer display"
-                bridge.error.emit(f"{game['name']}: auto mode cannot continue, finish the installer by hand")
+                bridge.message.emit("warning", f"{game['name']}: auto mode cannot continue, finish the installer by hand")
             written, total, _ = self.progress.get(gid, (0, 0, ""))
             report(written, total)
 
@@ -441,7 +418,7 @@ class App:
                 manager.uninstall(rec)
                 trace.event(f"cancel local: discarded the partial download of game {gid}")
             elif rec:
-                self.bridge.error.emit(f"{rec.name} had already finished installing, so it was kept")
+                self.bridge.message.emit("info", f"{rec.name} had already finished installing, so it was kept")
 
         if self.after_stop.register(gid, discard, running=gid in self.installs):
             self.pause_install(gid)
@@ -982,69 +959,217 @@ class InstallerPickerPage(Page):
 
 
 class SettingsPage(Page):
+    """Settings in tabs (General, Server, Logs, About); the pad's L2 and R2 switch between them."""
+
     title = "Settings"
+    SAVED_TABS = (0, 1)  # the tabs with fields to save
 
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
         s = win.app.settings
-        self.base = QLineEdit(s.base)
+        self.base = MenuLineEdit(s.base)
         self.base.setPlaceholderText("http://server:5000")
-        self.user = QLineEdit(s.user)
-        self.password = QLineEdit(s.password)
+        self.user = MenuLineEdit(s.user)
+        self.password = MenuLineEdit(s.password)
         self.password.setEchoMode(QLineEdit.Password)
-        self.games_dir = QLineEdit(s.games_dir)
+        self.games_dir = MenuLineEdit(s.games_dir)
         self.games_dir.setPlaceholderText(str(s.games_path))
-        self.launcher = QComboBox()
-        self.launcher_status = QLabel()
-        self.launcher_status.setWordWrap(True)
+        self.launcher = MenuCombo()
         self.fill_launchers(s.launcher)
-        hint = (
-            "Games start through the first of Faugus, umu, Proton and Wine that is installed. "
-            "MOG gives each game a prefix of its own in the game's folder (pfx); the launcher fills it."
+        self.sync_saves_box = Toggle()
+        self.sync_saves_box.setChecked(s.sync_saves)
+        self.sync_start_box = Toggle()
+        self.sync_start_box.setChecked(s.sync_on_start)
+        self.sync_start_box.setEnabled(s.sync_saves)  # greyed while saves are not synced at all
+        self.sync_saves_box.toggled.connect(self.sync_start_box.setEnabled)
+        self.sounds_box = Toggle()
+        self.sounds_box.setChecked(s.sounds)
+        self.check_updates_box = Toggle()
+        self.check_updates_box.setChecked(s.check_updates)
+        if updater.supported():
+            win.app.bridge.update_checked.connect(self.on_checked)
+
+        self.logview = LogView()
+        self.about = AboutTab()
+        self.tabs = FocusTabs()
+        self.tabs.tabBar().setFocusPolicy(Qt.StrongFocus)  # reached with Up from the first row
+        self.general = self._general_tab()
+        self.server = self._server_tab()
+        self.tabs.addTab(self.general, "General")
+        self.tabs.addTab(self.server, "Server")
+        self.tabs.addTab(self.logview, "Logs")
+        self.tabs.addTab(self.about, "About")
+        self.tabs.currentChanged.connect(self._on_tab)
+        self.save_button = QPushButton("Save")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self.save)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.tabs, 1)
+        lay.addLayout(_row(self.save_button))
+        if not s.base:
+            self.tabs.setCurrentWidget(self.server)  # a first start begins where the server is entered
+        listening = (
+            self.tabs.tabBar(),
+            self.save_button,
+            *self._focus_targets(self.general, enabled_only=False),
+            *self._focus_targets(self.server, enabled_only=False),
+            *self.logview.findChildren(QPushButton),
+            self.logview.view,
+            self.about.github,
         )
-        mascotte = QLabel()
-        mascotte.setPixmap(asset_pixmap("mascotte.png", 160))
-        mascotte.setAlignment(Qt.AlignCenter)
-        form = QFormLayout()
-        form.addRow("Server URL", self.base)
-        form.addRow("User", self.user)
-        form.addRow("Password", self.password)
+        for widget in listening:
+            widget.installEventFilter(self)
+
+    # --- moving with Up and Down: rows, then the tabs; past the end back to the first row ---
+
+    @staticmethod
+    def _focus_targets(menu: MenuView, enabled_only: bool = True) -> list[QWidget]:
+        """The controls of a menu in the order Up and Down visit them; a greyed one is passed over."""
+        found = []
+        for row in menu.rows:
+            inside = [] if isinstance(row.control, QComboBox) else row.control.findChildren(QWidget)  # not a popup's list
+            for widget in (row.control, *inside):
+                if widget.focusPolicy() != Qt.NoFocus and (widget.isEnabled() or not enabled_only):
+                    found.append(widget)
+        return found
+
+    def _chain(self) -> list[QWidget]:
+        """What Up and Down walk through on the tab showing."""
+        tab = self.tabs.currentWidget()
+        if tab is self.logview:
+            return self.logview.focus_targets()
+        if tab is self.about:
+            return [self.about.github]
+        return [*self._focus_targets(tab), self.save_button]
+
+    def navigate(self, down: bool) -> bool:
+        """Up from the first row goes to the tabs, Down from the tabs into the first row, and Down from the
+        last wraps to the first. Returns False when the key is not for this to decide (a log being scrolled)."""
+        bar = self.tabs.tabBar()
+        focus = QApplication.focusWidget()
+        chain = self._chain()
+        if focus is bar:
+            if down and chain:
+                chain[0].setFocus()
+            return True
+        if focus not in chain:
+            return False
+        at = chain.index(focus)
+        if focus is self.logview.view:  # a log scrolls; only its edges hand the key on
+            scrollbar = self.logview.view.verticalScrollBar()
+            if (down and scrollbar.value() < scrollbar.maximum()) or (not down and scrollbar.value() > scrollbar.minimum()):
+                return False
+        if down:
+            chain[(at + 1) % len(chain)].setFocus()
+        elif at == 0:
+            bar.setFocus()
+        else:
+            chain[at - 1].setFocus()
+        return True
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() in (Qt.Key_Up, Qt.Key_Down)
+            and not event.modifiers()
+            and QApplication.activePopupWidget() is None
+        ):
+            return self.navigate(event.key() == Qt.Key_Down)
+        return False
+
+    def _general_tab(self) -> MenuView:
+        menu = MenuView()
+        menu.section("Saves")
+        menu.add(
+            OptionRow(
+                "Back up saves",
+                "Keep each game's saves on the server, one copy per machine, so two PCs never overwrite each other's.",
+                self.sync_saves_box,
+            )
+        )
+        menu.add(
+            OptionRow(
+                "Check saves at startup",
+                "When MOG starts, send what changed here and take a newer save another machine left (what it replaces "
+                "is backed up first). Greyed while saves are not backed up.",
+                self.sync_start_box,
+            )
+        )
+        menu.section("Games")
         browse_games = QPushButton("Browse...")
         browse_games.clicked.connect(self.browse_games_dir)
-        form.addRow("Games folder", _row(self.games_dir, browse_games, stretch_first=False))
-        if sys.platform == "win32":
-            form.addRow("Launcher", self.launcher)
-        else:
-            rescan = QPushButton("Rescan launchers")
+        folder = QWidget()
+        folder_lay = QHBoxLayout(folder)
+        folder_lay.setContentsMargins(0, 0, 0, 0)
+        folder_lay.addWidget(self.games_dir, 1)
+        folder_lay.addWidget(browse_games)
+        menu.add(OptionRow("Games folder", "Where the games are installed.", folder, wide=True))
+        menu.add(
+            OptionRow(
+                "Launcher",
+                "What starts the games: the first of Faugus, umu, Proton and Wine that is installed, unless you pick "
+                "another. Each game gets a prefix of its own in its folder (pfx), which the launcher fills."
+                if sys.platform != "win32"
+                else "Games run directly.",
+                self.launcher,
+                wide=True,
+            )
+        )
+        self.launcher_status = QLabel()  # replaced below on systems that have launchers to look for
+        if sys.platform != "win32":
+            rescan = QPushButton("Rescan")
             rescan.clicked.connect(self.rescan_launchers)
-            form.addRow("Launcher", _row(self.launcher, rescan, stretch_first=False))
-            form.addRow("", self.launcher_status)
-        form.addRow("Version", QLabel(__version__))
-        self.sync_saves_box = Toggle("Back up game saves to the server")
-        self.sync_saves_box.setChecked(s.sync_saves)
-        form.addRow("Saves", self.sync_saves_box)
-        self.check_updates_box = Toggle("Check for updates at startup")
-        self.check_updates_box.setChecked(s.check_updates)
+            row = menu.add(
+                OptionRow(
+                    "Scan for launchers",
+                    "Look again for what is installed. This also happens at the first start and after an update.",
+                    rescan,
+                )
+            )
+            self.launcher_status = row.status
+            self._scan_row = row
+        menu.section("Application")
         self.update_status = QLabel()
-        self.update_status.setWordWrap(True)
         if updater.supported():
+            menu.add(OptionRow("Check for updates at startup", "Offer a new version when one is out.", self.check_updates_box))
             check_now = QPushButton("Check now")
             check_now.clicked.connect(self.check_updates)
-            form.addRow("Updates", _row(self.check_updates_box, check_now, stretch_first=False))
-            form.addRow("", self.update_status)
-            win.app.bridge.update_checked.connect(self.on_checked)
-        save = QPushButton("Save")
-        save.setDefault(True)
-        save.clicked.connect(self.save)
-        lay = QVBoxLayout(self)
-        lay.addWidget(mascotte)
-        lay.addLayout(form)
-        note = QLabel(hint)
-        note.setWordWrap(True)
-        lay.addWidget(note)
-        lay.addStretch()
-        lay.addLayout(_row(save))
+            row = menu.add(OptionRow("Check for updates", "Look for a new version right now.", check_now))
+            self.update_status = row.status
+            self._update_row = row
+        menu.add(
+            OptionRow(
+                "Sounds",
+                "A short sound when moving through the menus and when a game starts.",
+                self.sounds_box,
+            )
+        )
+        return menu
+
+    def _server_tab(self) -> MenuView:
+        menu = MenuView()
+        menu.section("MOG-Server")
+        menu.add(OptionRow("Server URL", "The address of your MOG-Server, for example http://server:5000.", self.base, wide=True))
+        menu.add(OptionRow("User", "The account to sign in with.", self.user, wide=True))
+        menu.add(OptionRow("Password", "Kept in this device's settings file, readable only by you.", self.password, wide=True))
+        return menu
+
+    def switch_tab(self, step: int) -> None:
+        self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % self.tabs.count())
+
+    def _on_tab(self, index: int) -> None:
+        self.save_button.setVisible(index in self.SAVED_TABS)
+        if QApplication.focusWidget() is not self.tabs.tabBar():  # switching tabs from the bar keeps the focus there
+            self.focus_default()
+        self.win.refresh_legend()
+
+    def scroll_logs(self, amount: float) -> bool:
+        """The right stick: scroll the log when its tab is the one showing."""
+        if self.tabs.currentWidget() is not self.logview:
+            return False
+        self.logview.scroll_by(amount)
+        return True
 
     def fill_launchers(self, preference: str) -> None:
         """The launcher list as the last scan found it, with the current choice selected."""
@@ -1087,10 +1212,18 @@ class SettingsPage(Page):
             self.update_status.setText("You are up to date.")
 
     def focus_default(self) -> None:
-        (self.base if not self.base.text() else self.launcher).setFocus()
+        tab = self.tabs.currentWidget()
+        if tab is self.logview or tab is self.about:
+            tab.focus_default()
+        elif tab is self.server:
+            self.base.setFocus()
+        else:
+            self.sync_saves_box.setFocus()
 
     def save(self) -> None:
-        self.win.app.settings = Settings(
+        old = self.win.app.settings
+        self.win.app.settings = replace(
+            old,
             base=self.base.text().strip(),
             user=self.user.text().strip(),
             password=self.password.text(),
@@ -1098,10 +1231,9 @@ class SettingsPage(Page):
             # "auto" keeps following the preference order (Faugus first) as launchers come and go.
             launcher="auto" if self.launcher.currentData() == detect_launcher() else self.launcher.currentData() or "auto",
             check_updates=self.check_updates_box.isChecked(),
-            show_sidebar=self.win.app.settings.show_sidebar,
             sync_saves=self.sync_saves_box.isChecked(),
-            launchers=self.win.app.settings.launchers,
-            launchers_scanned_for=self.win.app.settings.launchers_scanned_for,
+            sync_on_start=self.sync_start_box.isChecked(),
+            sounds=self.sounds_box.isChecked(),
         )
         save_settings(self.win.app.settings)
         self.win.back()
@@ -1360,16 +1492,12 @@ class GamePage(Page):
 
         self.status = QLabel()
         self.bar = QProgressBar()
-        self.logbox = QPlainTextEdit()
-        self.logbox.setReadOnly(True)
-        self.logbox.setMaximumBlockCount(500)
-        self.logbox.setMaximumHeight(90)
         self.buttons = QHBoxLayout()
         self.first: QPushButton | None = None
         lay = QVBoxLayout(self)
         lay.addLayout(head)
         lay.addWidget(self.shots)
-        for w in (self.status, self.bar, self.logbox):
+        for w in (self.status, self.bar):
             lay.addWidget(w)
         lay.addLayout(self.buttons)
         b = self.app.bridge
@@ -1456,21 +1584,20 @@ class GamePage(Page):
 
     def _on_log(self, gid: int, msg: str) -> None:
         if gid == self.game["id"]:
-            self.logbox.appendPlainText(msg)
+            logstore.info(f"{self.game['name']}: {msg}")
 
     def _on_finished(self, gid: int, err: str) -> None:
         if gid != self.game["id"]:
             return
         if err:
-            self.logbox.appendPlainText(err)
-            self.win.notify(f"{self.game['name']}: {err}")
+            self.win.message(f"{self.game['name']}: {err}", "error")
         self.rebuild()
         rec = load_library().get(gid)
         if rec and rec.state == "awaiting_executable" and not err:
             if self.win.current_page() is self:
                 self.choose_executable(rec)
             else:
-                self.win.notify(f"{self.game['name']} finished installing: open it to choose the executable")
+                self.win.message(f"{self.game['name']} finished installing: open it to choose the executable", "info")
 
     def _button(self, text: str, fn, default: bool = False, danger: bool = False) -> QPushButton:
         btn = QPushButton(text)
@@ -1561,12 +1688,11 @@ class GamePage(Page):
         try:
             proc = launch(rec, self.app.settings.launcher)
         except (RuntimeError, OSError) as e:
-            self.win.notify(str(e))
+            self.win.message(str(e), "error")
             return
         self.win.notify(f"Starting {rec.name}...")
-        self.win.saves.watch(rec, proc)
-        # A launcher that dies within seconds never showed the game: say why.
-        QTimer.singleShot(6000, lambda: (msg := launch_failure(proc)) and self.win.notify(msg))
+        self.win.sounds.play(PLAY)
+        self.win.begin_play(rec, proc)
 
     def show_options(self, rec: InstalledGame | None) -> None:
         self.win.push(OptionsPage(self.win, self, rec))
@@ -1575,14 +1701,11 @@ class GamePage(Page):
         def go() -> None:
             def work():
                 try:
-                    changed = manager.regenerate_entries(rec, self.game, self.app.settings.launcher, self.app.client())
+                    manager.regenerate_entries(rec, self.game, self.app.settings.launcher, self.app.client())
                 except RuntimeError as e:
                     self.app.bridge.error.emit(str(e))
                     return
-                message = f"Shortcuts of {rec.name} rebuilt"
-                if changed and steam.steam_running():
-                    message += "; restart Steam to see the updated shortcut"
-                self.app.bridge.error.emit(message)
+                self.app.bridge.message.emit(*steam_outcome(rec, f"Shortcuts of {rec.name} rebuilt"))
                 self.app.bridge.finished.emit(rec.game_id, "")
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
@@ -1597,19 +1720,16 @@ class GamePage(Page):
         now = sync_enabled(rec, self.app.settings)
         wanted = not now
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
-        self.win.notify(f"Save sync for {rec.name} is {'on' if wanted else 'off'}")
+        self.win.message(f"Save sync for {rec.name} is {'on' if wanted else 'off'}", "info")
 
     def refresh_metadata(self, rec: InstalledGame) -> None:
         """Fetch the game's metadata and artwork from the server again and rebuild its icons, entries and
         Steam shortcut from them (the shortcut is edited, not recreated)."""
 
         def work() -> None:
-            game, changed = manager.refresh_metadata(rec, self.app.client(), self.app.settings.launcher)
+            game, _changed = manager.refresh_metadata(rec, self.app.client(), self.app.settings.launcher)
             self.app.games[rec.game_id] = game
-            message = f"Metadata of {rec.name} refreshed"
-            if changed and steam.steam_running():
-                message += "; restart Steam to see the updated shortcut"
-            self.app.bridge.error.emit(message)
+            self.app.bridge.message.emit(*steam_outcome(rec, f"Metadata of {rec.name} refreshed"))
             self.app.bridge.call.emit(self.app.refresh)
 
         self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not refresh: {m}"))
@@ -1620,7 +1740,7 @@ class GamePage(Page):
         def go() -> None:
             def work():
                 self.app.client().clear_cache(gid)
-                self.app.bridge.error.emit("The install cache on the server was deleted")
+                self.app.bridge.message.emit("info", "The install cache on the server was deleted")
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not delete the server cache: {m}"))
 
@@ -1634,14 +1754,12 @@ class GamePage(Page):
         def done(engine: str) -> None:
             def work():
                 try:
-                    steam_changed = manager.set_launcher(rec, engine, self.app.settings.launcher)
+                    manager.set_launcher(rec, engine, self.app.settings.launcher)
                 except RuntimeError as e:
                     self.app.bridge.error.emit(str(e))
                     return
-                message = f"{rec.name} now launches through {launcher_label(engine) if engine != 'auto' else 'the default engine'}"
-                if steam_changed and steam.steam_running():
-                    message += "; restart Steam to see the updated shortcut"
-                self.app.bridge.error.emit(message)
+                what = launcher_label(engine) if engine != "auto" else "the default engine"
+                self.app.bridge.message.emit(*steam_outcome(rec, f"{rec.name} now launches through {what}"))
                 self.app.bridge.finished.emit(rec.game_id, "")
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
@@ -1650,14 +1768,14 @@ class GamePage(Page):
 
     def choose_executable(self, rec: InstalledGame) -> None:
         def done(exe: str, steam_user: Path | None, desktop: bool) -> None:
-            self.logbox.appendPlainText("Updating entries and fetching artwork...")
+            logstore.info(f"{rec.name}: updating entries and fetching artwork...")
 
             def work():
-                changed = manager.finish_setup(
+                manager.finish_setup(
                     rec, self.game, exe, steam_user, desktop, self.app.settings.launcher, self.app.client()
                 )
-                if changed and steam_user and steam.steam_running():
-                    self.app.bridge.error.emit("Steam is running: restart it to see the updated shortcut.")
+                if rec.steam_pending:
+                    self.app.bridge.message.emit("warning", steam_outcome(rec, f"{rec.name} is ready")[1])
                 self.app.bridge.finished.emit(rec.game_id, "")
                 self.app.bridge.call.emit(lambda: self.win.saves.offer_after_install(rec))
 
@@ -1667,17 +1785,25 @@ class GamePage(Page):
 
     def uninstall(self, rec: InstalledGame, and_server_cache: bool = False) -> None:
         def remove(delete_prefix: bool) -> None:
+            had_steam_shortcut = bool(rec.steam_entries) and steam.steam_running()
             leftovers = manager.uninstall(rec, delete_prefix)
+            if had_steam_shortcut:  # Steam writes its own copy of the file back when it quits
+                self.win.message(
+                    f"Steam is running, so it puts the shortcut of {rec.name} back when it quits. "
+                    "Close Steam and delete it there.",
+                    "warning",
+                )
             if and_server_cache:
                 self.app.run_bg(
                     lambda: self.app.client().clear_cache(rec.game_id),
                     on_error=lambda m: self.app.bridge.error.emit(f"Could not delete the server cache: {m}"),
                 )
-            self.win.notify(
-                f"Could not remove everything, delete by hand: {', '.join(leftovers)}"
-                if leftovers
-                else f"{rec.name} uninstalled" + (" and its server cache deleted" if and_server_cache else "")
-            )
+            if leftovers:
+                self.win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
+            else:
+                self.win.message(
+                    f"{rec.name} uninstalled" + (" and its server cache deleted" if and_server_cache else ""), "info"
+                )
             self.win.refresh_items()
             self.rebuild()
 
@@ -1975,7 +2101,7 @@ class MainWindow(QMainWindow):
         self.app = app
         self.setWindowTitle("MOG")
         self.setWindowIcon(QIcon(str(ASSETS / "icon.png")))
-        self.resize(1280, 800)
+        self.resize(1320, 800)
         self.back_btn = QPushButton("< Back")
         self.back_btn.clicked.connect(self.back)
         self.title = QLabel()
@@ -2008,29 +2134,38 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.library)
         self.history: list[Page] = [self.library]
         self.game_pages: dict[int, GamePage] = {}
-        self.status = QLabel()
-        self.status.setWordWrap(True)
         self.legend = QLabel()
         self.legend.setAlignment(Qt.AlignCenter)
-        self.legend.setStyleSheet("color: #9aa3b0; font-size: 15px;")
+        self.legend.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # never makes the window wider
         self.pad_family: str | None = None
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addLayout(top)
         lay.addWidget(self.stack, 1)
-        lay.addWidget(self.status)
         lay.addWidget(self.legend)
         self.setCentralWidget(central)
+        self.playing = PlayingOverlay(central, suspended=lambda: self.overlay.isVisible())
+        self.playing.changed.connect(self.refresh_legend)
+        self.playing.stop_clicked.connect(self.stop_playing)
+        self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
+        self.overlay.changed.connect(self.refresh_legend)
         self.covers: dict[int, QPixmap] = {}
         b = app.bridge
         b.call.connect(lambda fn: fn())
+        self._steam_settled = False
+        self._playing = None
         self.saves = SaveSync(self)
+        self.sounds = SoundPlayer(lambda: app.settings.sounds)
+        self.nav_sounds = NavigationSounds(self.sounds)
+        QApplication.instance().installEventFilter(self.nav_sounds)
         b.games.connect(self.set_games)
-        b.error.connect(self.notify)
+        b.error.connect(lambda text: self.message(text, "error"))
+        b.message.connect(self.message)
+        b.note.connect(self.notify)
         b.cover.connect(self.set_cover)
         b.finished.connect(lambda *_: self.refresh_items())
         b.progress.connect(lambda gid, *_: self.library.update_label(gid))
-        b.pad.connect(self.on_pad)
+        b.pad.connect(self.on_pad_event)
         b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
         b.notifications.connect(self.on_notifications)
@@ -2081,13 +2216,27 @@ class MainWindow(QMainWindow):
         self.refresh_items()
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
+        if self.overlay.showing or self.playing.showing:
+            return
         if e.key() == Qt.Key_Escape:
             self.back()
         else:
             super().keyPressEvent(e)
 
-    def notify(self, text: str) -> None:
-        self.status.setText(text)
+    def notify(self, text: str, level: str = "info") -> None:
+        """Something worth keeping but not worth interrupting for: it goes to the log."""
+        getattr(logstore, "warning" if level == "warning" else "error" if level == "error" else "info")(text)
+
+    def message(self, text: str, level: str = "error") -> None:
+        """A message laid over the window until OK is pressed; also kept in the log."""
+        self.notify(text, level)
+        self.overlay.show_message(text, level)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self.overlay.fit_to_parent()
+        self.playing.fit_to_parent()
+        self.refresh_legend()  # its size follows the window
 
     def choose(self, title: str, text: str, options: list, on_choose, skip: str | None = None) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip))
@@ -2109,7 +2258,7 @@ class MainWindow(QMainWindow):
 
     def on_update_checked(self, info, error: str, manual: bool) -> None:
         if error and not manual:
-            self.notify(f"Update check failed: {error}")
+            self.notify(f"Update check failed: {error}", "warning")
         if info is None:
             return
         self.ask(
@@ -2137,11 +2286,25 @@ class MainWindow(QMainWindow):
 
     def refresh_legend(self) -> None:
         """The controller's guide while one is connected, the keyboard's otherwise."""
-        page = self.current_page()
-        typing, inbox = isinstance(page, KeyboardPage), isinstance(page, NotificationsPage)
-        family = self.pad_family
-        self.legend.setText(pad_legend(family, typing, inbox) if family else keyboard_legend(typing, inbox))
+        context = self.legend_context()
+        height, entries = legend.fit(context, self.pad_family, legend.icon_height_for(self.height()), int(self.width() * 0.96))
+        self.legend.setStyleSheet(f"color: #9aa3b0; font-size: {legend.font_px_for(height)}px;")
+        self.legend.setText(legend.render(context, self.pad_family, height, entries))
         self.legend.setVisible(True)
+
+    def legend_context(self) -> str:
+        page = self.current_page()
+        if self.overlay.showing:
+            return legend.MESSAGE
+        if self.playing.showing:
+            return legend.PLAYING
+        if isinstance(page, KeyboardPage):
+            return legend.TYPING
+        if isinstance(page, NotificationsPage):
+            return legend.INBOX
+        if isinstance(page, SettingsPage):
+            return legend.LOGS if page.tabs.currentWidget() is page.logview else legend.SETTINGS
+        return legend.LIBRARY if page is self.library else legend.PAGE
 
     def open_keyboard(self, target: QWidget) -> None:
         if not isinstance(self.current_page(), KeyboardPage):
@@ -2157,7 +2320,31 @@ class MainWindow(QMainWindow):
         else:
             self.close()
 
+    def on_pad_event(self, name: str) -> None:
+        """What the pad reader reports. It reads the device whatever window has the focus, so while a
+        game (or anything else) is in front these presses are not ours: ignoring them keeps the menus
+        from reacting, and from making sounds, to someone playing."""
+        if QApplication.activeWindow() is None:
+            return
+        self.on_pad(name)
+
     def on_pad(self, name: str) -> None:
+        if self.overlay.showing and name != gamepad.QUIT:
+            # A message is up: A and B answer it, nothing else reaches the page underneath.
+            if name in (gamepad.ACCEPT, gamepad.BACK):
+                self.overlay.dismiss()
+            return
+        if self.playing.showing and name != gamepad.QUIT:
+            # A game is running: A stops it, nothing else reaches the page underneath.
+            if name == gamepad.ACCEPT:
+                self.playing.stop_button.click()
+            return
+        if name in (gamepad.UP, gamepad.DOWN, gamepad.LEFT, gamepad.RIGHT, gamepad.PAGE_PREV, gamepad.PAGE_NEXT):
+            self.sounds.play(NAVIGATE)
+        amount = gamepad.scroll_amount(name)
+        if amount is not None:
+            self._scroll(amount)
+            return
         if self.osk.steam_visible:
             # Steam's keyboard owns the controller while it is up; B dismisses it.
             if name == gamepad.BACK:
@@ -2187,6 +2374,10 @@ class MainWindow(QMainWindow):
         if isinstance(page, NotificationsPage) and name == gamepad.REFRESH:
             page.delete_current()
             return
+        if isinstance(page, SettingsPage) and name in (gamepad.TRIGGER_L, gamepad.TRIGGER_R):
+            page.switch_tab(-1 if name == gamepad.TRIGGER_L else 1)
+            self.sounds.play(NAVIGATE)
+            return
         if name == gamepad.TRIGGER_L:
             if page is self.library:
                 self.library.toggle_sidebar()
@@ -2208,6 +2399,9 @@ class MainWindow(QMainWindow):
             return
         popup = QApplication.activePopupWidget()
         focus = QApplication.focusWidget()
+        if popup is None and isinstance(page, SettingsPage) and name in (gamepad.UP, gamepad.DOWN):
+            if page.navigate(name == gamepad.DOWN):
+                return
         if popup is None and focus is not None:
             if name in (gamepad.UP, gamepad.DOWN) and isinstance(focus, (QLineEdit, QComboBox, QPlainTextEdit)):
                 # These widgets swallow Up/Down, so the pad would be stuck on them.
@@ -2221,16 +2415,85 @@ class MainWindow(QMainWindow):
                 return
         self._post_key(name)
 
+    def _scroll(self, amount: float) -> None:
+        """The right stick: scroll the log in Settings, else the list or text that has the focus."""
+        page = self.current_page()
+        if isinstance(page, SettingsPage) and page.scroll_logs(amount):
+            return
+        area = QApplication.focusWidget()
+        while area is not None and not isinstance(area, QAbstractScrollArea):
+            area = area.parentWidget()
+        if area is not None:
+            bar = area.verticalScrollBar()
+            bar.setValue(bar.value() + int(amount * 60))
+
     def _post_key(self, name: str) -> None:
         key = _KEYS.get(name)
         if key is None:
             return
-        target = QApplication.activePopupWidget() or QApplication.focusWidget() or self.current_page()
+        popup = QApplication.activePopupWidget()
+        # A combo's popup is a frame around the list that has the focus and takes the keys.
+        target = (popup.focusWidget() or popup) if popup is not None else (QApplication.focusWidget() or self.current_page())
         for kind in (QEvent.KeyPress, QEvent.KeyRelease):
             QApplication.postEvent(target, QKeyEvent(kind, key, Qt.NoModifier))
 
     def open_settings(self) -> None:
         self.push(SettingsPage(self))
+
+    def begin_play(self, rec: InstalledGame, proc, **timing) -> None:
+        """A game was started from here: show that it is running, follow it to its end (a launcher that
+        failed before the game showed up is reported), then back its saves up."""
+        stop = threading.Event()
+        self._playing = (rec, proc, stop)
+        self.playing.show_game(rec.name, self.covers.get(rec.game_id))
+        started_ns = time.time_ns()
+
+        def work() -> None:
+            ctx = None
+            if sync_enabled(rec, self.app.settings):
+                ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)
+            recorder = runner.runtime_prefix_recorder(ctx) if ctx else None
+            started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, **timing)
+            result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None
+            self.app.bridge.call.emit(lambda: self._play_ended(rec, proc, started, stop.is_set(), result))
+
+        def failed(message: str) -> None:
+            self.app.bridge.call.emit(lambda: (self.playing.end(), self.message(message, "error")))
+
+        self.app.run_bg(work, on_error=failed)
+
+    def stop_playing(self) -> None:
+        playing = getattr(self, "_playing", None)
+        if playing is None:
+            return
+        rec, proc, stop = playing
+        stop.set()
+        self.playing.stopping()
+        logstore.info(f"Stopping {rec.name}")
+        threading.Thread(
+            target=lambda: gameplay.stop_game(Path(rec.install_dir), proc), daemon=True, name="stop-game"
+        ).start()
+
+    def _play_ended(self, rec: InstalledGame, proc, started: bool, stopped: bool, result) -> None:
+        self._playing = None
+        self.playing.end()
+        if not started and not stopped:
+            self.message(launch_failure(proc) or f"{rec.name} did not start", "error")
+        if result is not None:
+            self.saves.after_backup(rec, result, lambda: None, quiet=True)
+
+    def settle_steam(self) -> None:
+        """Once per session, with Steam closed: the shortcut changes that had to wait for it."""
+        if self._steam_settled or not self.app.settings.configured:
+            return
+        self._steam_settled = True
+
+        def work() -> None:
+            done = manager.settle_steam_shortcuts(self.app.client(), self.app.settings.launcher)
+            if done:
+                self.app.bridge.message.emit("info", "Steam shortcuts brought up to date: " + ", ".join(done))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.note.emit(f"Steam shortcuts: {m}"))
 
     def set_games(self, games: list) -> None:
         self.app.set_games(games)
@@ -2238,6 +2501,7 @@ class MainWindow(QMainWindow):
         self.notify(f"{len(games)} games")
         self.refresh_items()
         self.saves.check_all()
+        self.settle_steam()
 
     def set_cover(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()
@@ -2300,6 +2564,10 @@ def run_gui() -> int:
     osk.prefer_xcb()
     qapp = QApplication(sys.argv[:1])
     qapp.setStyleSheet(STYLE)
+    if crashlog.install():
+        heartbeat = QTimer()
+        heartbeat.timeout.connect(crashlog.beat)
+        heartbeat.start(1000)
     enter_filter = ActivateOnEnter()
     qapp.installEventFilter(enter_filter)
     updater.cleanup_old()

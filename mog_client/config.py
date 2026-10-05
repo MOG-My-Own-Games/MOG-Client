@@ -54,6 +54,10 @@ class Settings:
     # The launchers found on this machine, in order of preference, and the MOG version that looked.
     launchers: list[str] = field(default_factory=list)
     launchers_scanned_for: str = ""
+    # Short sounds when moving through the menus and when a game starts.
+    sounds: bool = True
+    # Look over the saves of every game when the client starts (only with sync_saves on).
+    sync_on_start: bool = True
     # Back up each game's save files to the server (a game can opt out: InstalledGame.save_sync).
     sync_saves: bool = True
 

@@ -69,3 +69,32 @@ def test_trigger_fires_once_per_pull():
     for down in (False, True, True, False, True):
         trigger.set(down)
     assert events == [gamepad.TRIGGER_L, gamepad.TRIGGER_L]
+
+
+def test_the_right_stick_scrolls_faster_the_further_it_is_pushed():
+    events, now = [], [0.0]
+    scroller = gamepad._Scroller(events.append, clock=lambda: now[0])
+
+    scroller.set(5000)  # inside the dead zone
+    scroller.tick()
+    assert events == []
+
+    scroller.set(32767)
+    scroller.tick()
+    scroller.tick()  # too soon after the first
+    now[0] = 0.06
+    scroller.tick()
+    scroller.set(-16384)
+    now[0] = 0.12
+    scroller.tick()
+    assert events == ["scroll:1.000", "scroll:1.000", "scroll:-0.500"]
+
+    scroller.set(0)
+    now[0] = 1.0
+    scroller.tick()
+    assert len(events) == 3
+
+
+def test_scroll_events_are_told_apart_from_buttons():
+    assert gamepad.scroll_amount("scroll:0.500") == 0.5 and gamepad.scroll_amount("scroll:-1.000") == -1.0
+    assert gamepad.scroll_amount("up") is None and gamepad.scroll_amount("scroll:x") is None

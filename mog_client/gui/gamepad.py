@@ -23,13 +23,30 @@ UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, 
     "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search", "trigger_r", "trigger_l"
 )
 
+# The right stick as a stream of "scroll:<tilt>" events, tilt from -1 (up) to 1 (down).
+SCROLL = "scroll"
+
+
+def scroll_amount(name: str) -> float | None:
+    """The tilt in a scroll event, or None when `name` is a different event."""
+    if not name.startswith(f"{SCROLL}:"):
+        return None
+    try:
+        return float(name.split(":", 1)[1])
+    except ValueError:
+        return None
+
+
 # Physical buttons, named by position: pad/<family>/<name>.png is whatever that family
 # prints there (A, Cross, Nintendo's B...), whatever function the button has here.
 SOUTH, EAST, WEST, NORTH = "south", "east", "west", "north"
 SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, TRIGGER_L_GLYPH, START, SELECT, DPAD = (
     "shoulder_l", "shoulder_r", "trigger_r", "trigger_l", "start", "select", "dpad"
 )
-GLYPHS = (SOUTH, EAST, WEST, NORTH, SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, TRIGGER_L_GLYPH, START, SELECT, DPAD)
+STICK_R = "stick_r"
+GLYPHS = (
+    SOUTH, EAST, WEST, NORTH, SHOULDER_L, SHOULDER_R, TRIGGER_R_GLYPH, TRIGGER_L_GLYPH, START, SELECT, DPAD, STICK_R
+)
 
 # Which physical button triggers each function (the joydev/XInput tables below
 # implement the same assignment).
@@ -80,6 +97,8 @@ _DEADZONE = 16000
 _TRIGGER_ON = 8000
 _JS_TRIGGER_L_AXIS, _JS_TRIGGER_R_AXIS = 2, 5
 _REPEAT_DELAY, _REPEAT_RATE = 0.4, 0.09
+_SCROLL_RATE = 0.05
+_JS_RIGHT_STICK_Y = 4
 
 
 class _Repeater:
@@ -102,6 +121,25 @@ class _Repeater:
             if now >= due:
                 self.held[name] = now + _REPEAT_RATE
                 self.emit(name)
+
+
+class _Scroller:
+    """The right stick, scrolling: while it is tilted past the dead zone an event with the tilt goes
+    out every few milliseconds, so the further it is pushed the faster a list moves."""
+
+    def __init__(self, emit: Callable[[str], None], clock: Callable[[], float] = time.monotonic):
+        self.emit, self.clock = emit, clock
+        self.tilt = 0.0
+        self.due = 0.0
+
+    def set(self, raw: int) -> None:
+        self.tilt = 0.0 if abs(raw) < _DEADZONE else max(-1.0, min(1.0, raw / 32767))
+
+    def tick(self) -> None:
+        now = self.clock()
+        if self.tilt and now >= self.due:
+            self.due = now + _SCROLL_RATE
+            self.emit(f"{SCROLL}:{self.tilt:.3f}")
 
 
 class _Combo:
@@ -168,6 +206,7 @@ def _run_joydev(
     import select
 
     rep = _Repeater(emit)
+    scroller = _Scroller(emit)
     combo = _Combo(emit)
     rest: dict[int, int] = {}  # axis rest values; analog triggers rest at their minimum
     triggers = {_JS_TRIGGER_L_AXIS: _Trigger(emit, TRIGGER_L), _JS_TRIGGER_R_AXIS: _Trigger(emit, TRIGGER_R)}
@@ -216,6 +255,8 @@ def _run_joydev(
                         sticks.set("x", value, LEFT, RIGHT)
                     elif number == 1:
                         sticks.set("y", value, UP, DOWN)
+                    elif number == _JS_RIGHT_STICK_Y:
+                        scroller.set(value)
                     elif number == 6:
                         hats.set("x", value, LEFT, RIGHT)
                     elif number == 7:
@@ -223,6 +264,7 @@ def _run_joydev(
                     elif number in triggers and rest.get(number, 0) < -_DEADZONE:
                         triggers[number].set(value > _TRIGGER_ON)
         rep.tick()
+        scroller.tick()
 
 
 class _XInputState(ctypes.Structure):
@@ -261,6 +303,7 @@ def _run_xinput(
         return
     rep = _Repeater(emit)
     sticks = _Axes(rep)
+    scroller = _Scroller(emit)
     combo = _Combo(emit)
     previous = 0
     trigger_l, trigger_r = _Trigger(emit, TRIGGER_L), _Trigger(emit, TRIGGER_R)
@@ -295,7 +338,9 @@ def _run_xinput(
             sticks.set("y", -state.ly, UP, DOWN)
             trigger_l.set(state.lt > 128)
             trigger_r.set(state.rt > 128)
+            scroller.set(-state.ry)  # XInput's Y grows upwards
         rep.tick()
+        scroller.tick()
         stop.wait(0.016)
 
 
