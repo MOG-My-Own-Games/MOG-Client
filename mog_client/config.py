@@ -97,6 +97,10 @@ class InstalledGame:
     launcher: str = "auto"
     # None follows Settings.sync_saves; True or False overrides it for this game.
     save_sync: bool | None = None
+    # The Steam user folder this game's shortcut belongs in, if it should have one.
+    steam_user: str | None = None
+    # A change to the shortcut waited for Steam to be closed: it rewrites its shortcuts file when it quits.
+    steam_pending: bool = False
 
 
 def library_path() -> Path:

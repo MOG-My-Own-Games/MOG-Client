@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from mog_client import steam
+from mog_client import logstore, steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, save_library
 from mog_client.launcher import (
@@ -164,10 +164,35 @@ def finish_setup(
             if stale:
                 Path(stale).unlink(missing_ok=True)
 
+    kept, steam_changed, pending = _sync_steam_entries(rec, steam_user, command, art)
+    prefix = None if sys.platform == "win32" else str(pfx_dir(rec))
+    _update(
+        rec,
+        executable=executable,
+        prefix=prefix,
+        state="installed",
+        desktop_entry=desktop_path,
+        steam_entries=kept,
+        steam_user=str(steam_user) if steam_user is not None else None,
+        steam_pending=pending,
+    )
+    return steam_changed
+
+
+def _sync_steam_entries(
+    rec: InstalledGame, steam_user: Path | None, command: list[str], art: dict
+) -> tuple[list[dict], bool, bool]:
+    """Bring the game's Steam shortcut in line: (entries to keep, whether one changed, whether it had to wait).
+
+    Steam keeps its shortcuts in memory and writes the file when it quits, which undoes anything
+    changed in the meantime, so while it runs nothing is touched and `pending` says it is left for later."""
+    if (steam_user is not None or rec.steam_entries) and steam.steam_running():
+        logstore.warning(f"Steam is running: the shortcut of {rec.name} is left for when it is closed")
+        return rec.steam_entries, False, True
     wanted_file = str(steam.shortcuts_path(steam_user)) if steam_user is not None else None
-    start_dir, options = str(Path(executable).parent), shlex.join(command[1:])
+    start_dir, options = str(Path(rec.executable).parent), shlex.join(command[1:])
     kept: list[dict] = []
-    steam_changed = False
+    changed = False
     for entry in rec.steam_entries:
         if entry["shortcuts_path"] != wanted_file:
             steam.remove_shortcut(entry)  # the user no longer wants it there
@@ -176,13 +201,11 @@ def finish_setup(
         if outcome is None:  # deleted from Steam by hand: put it back
             continue
         kept.append(entry)
-        steam_changed |= outcome
+        changed |= outcome
     if steam_user is not None and not kept:
         kept.append(steam.add_shortcut(steam_user, rec.name, command[0], start_dir, options, artwork=art))
-        steam_changed = True
-    prefix = None if sys.platform == "win32" else str(pfx_dir(rec))
-    _update(rec, executable=executable, prefix=prefix, state="installed", desktop_entry=desktop_path, steam_entries=kept)
-    return steam_changed
+        changed = True
+    return kept, changed, False
 
 
 def regenerate_entries(
@@ -191,8 +214,8 @@ def regenerate_entries(
     """Rebuild the launch script, the desktop entry and the Steam shortcut (with fresh artwork)
     from the game's current settings. The Steam shortcut is edited in place; returns True when
     it changed and needs a Steam restart to show."""
-    steam_user = None
-    if rec.steam_entries:
+    steam_user = Path(rec.steam_user) if rec.steam_user else None
+    if steam_user is None and rec.steam_entries:
         steam_user = Path(rec.steam_entries[0]["shortcuts_path"]).parent.parent
     return finish_setup(
         rec, game_meta, rec.executable, steam_user, desktop=bool(rec.desktop_entry), launcher=preference, client=client
@@ -223,12 +246,36 @@ def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> b
         icon = Path(rec.install_dir) / ".mog-icon"
         create_desktop_entry(rec, icon if icon.exists() else None, preference)
     steam_changed = False
-    for entry in rec.steam_entries:
-        steam_changed |= bool(
-            steam.update_shortcut(entry, command[0], str(Path(rec.executable).parent), shlex.join(command[1:]))
-        )
-    _update(rec, launcher=engine)
+    pending = rec.steam_pending
+    if rec.steam_entries and steam.steam_running():  # Steam would undo the change when it quits
+        logstore.warning(f"Steam is running: the shortcut of {rec.name} is left for when it is closed")
+        pending = True
+    else:
+        for entry in rec.steam_entries:
+            steam_changed |= bool(
+                steam.update_shortcut(entry, command[0], str(Path(rec.executable).parent), shlex.join(command[1:]))
+            )
+    _update(rec, launcher=engine, steam_pending=pending)
     return steam_changed
+
+
+def settle_steam_shortcuts(client: MogClient, preference: str = "auto") -> list[str]:
+    """Apply the shortcut changes that waited for Steam to be closed, if it is closed now. Returns the
+    names of the games whose shortcut was brought up to date."""
+    if steam.steam_running():
+        return []
+    done = []
+    for rec in load_library().values():
+        if not (rec.steam_pending and rec.state == "installed" and rec.executable):
+            continue
+        try:
+            refresh_metadata(rec, client, preference)
+        except (RuntimeError, OSError) as e:
+            logstore.warning(f"Could not update the Steam shortcut of {rec.name}: {e}")
+            continue
+        if not load_library()[rec.game_id].steam_pending:
+            done.append(rec.name)
+    return done
 
 
 def remove_entries(rec: InstalledGame) -> None:

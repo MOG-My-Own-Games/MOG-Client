@@ -1,6 +1,7 @@
 """The prefix, launch script, entries and folder icon all live in the game's own folder."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -151,3 +152,81 @@ def test_on_windows_the_entry_is_a_lnk_next_to_the_game(home, monkeypatch):
     stem = "Jazz Jackrabbit 2_ The Secret Files"
     assert recorded == str(home.folder / f"{stem}.lnk")
     assert made == [(home.folder / f"{stem}.lnk", str(home.exe), str(home.exe.parent))]
+
+
+# --- Steam shortcuts: Steam's own casing, and nothing touched while it runs ---
+
+
+def _entry(path, appid):
+    from mog_client import steam
+
+    return next(e for e in steam.load_shortcuts(path)["shortcuts"].values() if e["appid"] & 0xFFFFFFFF == appid)
+
+
+@pytest.fixture
+def steam_home(home, monkeypatch):
+    from mog_client import steam
+
+    user = home.tmp / "steam/userdata/1"
+    home.steam_user, home.vdf = user, user / "config/shortcuts.vdf"
+    home.steam = SimpleNamespace(running=False)
+    monkeypatch.setattr(steam, "steam_running", lambda: home.steam.running)
+    return home
+
+
+def test_a_new_shortcut_is_written_the_way_steam_writes_its_own_and_gets_its_icon(steam_home):
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+
+    rec = load_library()[138]
+    entry = _entry(steam_home.vdf, rec.steam_entries[0]["appid"])
+    assert entry["appname"] == rec.name and entry["exe"].endswith('.sh"')
+    assert "Exe" not in entry and "AppName" not in entry
+    assert Path(entry["icon"]).stem.endswith("_icon") and Path(entry["icon"]).read_bytes() == b"PNG"
+    assert rec.steam_user == str(steam_home.steam_user) and rec.steam_pending is False
+
+
+def test_a_shortcut_steam_has_rewritten_is_still_updated_and_not_given_a_second_copy_of_its_keys(steam_home):
+    from mog_client import steam
+
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+    appid = load_library()[138].steam_entries[0]["appid"]
+    data = steam.load_shortcuts(steam_home.vdf)  # what Steam leaves when it has rewritten the file
+    entry = next(iter(data["shortcuts"].values()))
+    entry["exe"], entry["appname"] = '"/where/it/was.sh"', "Old name"
+    entry["Exe"], entry["AppName"] = '"/stale.sh"', "Stale"  # copies an earlier update added beside Steam's
+    steam.save_shortcuts(steam_home.vdf, data)
+
+    manager.regenerate_entries(load_library()[138], {"id": 138}, "auto", None)
+
+    entry = _entry(steam_home.vdf, appid)
+    assert entry["exe"].endswith('Secret Files.sh"') and entry["appname"] == steam_home.rec.name
+    assert sorted(k for k in entry if k.lower() in ("exe", "appname")) == ["appname", "exe"]  # one of each
+
+
+def test_while_steam_runs_its_shortcut_is_left_alone_and_settled_later(steam_home):
+    steam_home.steam.running = True
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+
+    rec = load_library()[138]
+    assert rec.steam_entries == [] and rec.steam_pending is True and rec.steam_user == str(steam_home.steam_user)
+    assert not steam_home.vdf.exists()  # Steam would have undone it when it quits
+
+    assert manager.settle_steam_shortcuts(SimpleNamespace(get_game=lambda gid: {"id": gid})) == []  # still running
+    steam_home.steam.running = False
+    done = manager.settle_steam_shortcuts(SimpleNamespace(get_game=lambda gid: {"id": gid}))
+
+    rec = load_library()[138]
+    assert done == [rec.name] and rec.steam_pending is False and len(rec.steam_entries) == 1
+    assert _entry(steam_home.vdf, rec.steam_entries[0]["appid"])["appname"] == rec.name
+
+
+def test_changing_the_engine_while_steam_runs_waits_too(steam_home, monkeypatch):
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+    rec = load_library()[138]
+    before = steam_home.vdf.read_bytes()
+    steam_home.steam.running = True
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+
+    assert manager.set_launcher(rec, "umu") is False
+
+    assert steam_home.vdf.read_bytes() == before and load_library()[138].steam_pending is True

@@ -98,6 +98,25 @@ def _to_i32(n: int) -> int:
     return n - (1 << 32) if n & 0x80000000 else n
 
 
+def _find(entry: dict, name: str) -> str | None:
+    """The key of `entry` that is `name`, whatever its case: Steam rewrites its file with `exe` and
+    `appname` in lower case, which is how it expects them, while other keys keep their capitals."""
+    wanted = name.lower()
+    return next((k for k in entry if k.lower() == wanted), None)
+
+
+def _set(entry: dict, name: str, value) -> bool:
+    """Set `name` to `value` under the key already in use, dropping any copy that differs only by
+    case (an earlier update added one beside Steam's, and Steam reads the first). True if it changed."""
+    keys = [k for k in entry if k.lower() == name.lower()]
+    canonical = keys[0] if keys else name
+    changed = entry.get(canonical) != value or len(keys) > 1
+    for key in keys[1:]:
+        del entry[key]
+    entry[canonical] = value
+    return changed
+
+
 def shortcuts_path(user_dir: Path) -> Path:
     return user_dir / "config" / "shortcuts.vdf"
 
@@ -138,6 +157,11 @@ def write_artwork(user_dir: Path, appid: int, artwork: dict[str, bytes] | None) 
     return written
 
 
+def icon_file(artwork_files: list[str]) -> str:
+    """The shortcut's icon among the files written for it, or "" when there is none."""
+    return next((f for f in artwork_files if Path(f).stem.endswith("_icon")), "")
+
+
 def add_shortcut(
     user_dir: Path,
     name: str,
@@ -155,12 +179,13 @@ def add_shortcut(
     data = load_shortcuts(path)
     entries = data["shortcuts"]
     entries = {k: v for k, v in entries.items() if v.get("appid", 0) & 0xFFFFFFFF != appid}
+    written = write_artwork(user_dir, appid, artwork)
     entries[str(len(entries))] = {
         "appid": appid,
-        "AppName": name,
-        "Exe": quoted,
+        "appname": name,
+        "exe": quoted,
         "StartDir": f'"{start_dir}"',
-        "icon": icon,
+        "icon": icon or icon_file(written),
         "ShortcutPath": "",
         "LaunchOptions": launch_options,
         "IsHidden": 0,
@@ -177,7 +202,7 @@ def add_shortcut(
     data["shortcuts"] = {str(i): v for i, v in enumerate(entries.values())}
     save_shortcuts(path, data)
 
-    return {"shortcuts_path": str(path), "appid": appid, "artwork": write_artwork(user_dir, appid, artwork)}
+    return {"shortcuts_path": str(path), "appid": appid, "artwork": written}
 
 
 def update_shortcut(
@@ -198,14 +223,18 @@ def update_shortcut(
     data = load_shortcuts(path)
     for entry in data["shortcuts"].values():
         if entry.get("appid", 0) & 0xFFFFFFFF == record["appid"]:
-            wanted = {"Exe": f'"{exe}"', "StartDir": f'"{start_dir}"', "LaunchOptions": launch_options}
+            wanted = {"exe": f'"{exe}"', "StartDir": f'"{start_dir}"', "LaunchOptions": launch_options}
             if name is not None:
-                wanted["AppName"] = name
+                wanted["appname"] = name
             if artwork:
                 record["artwork"] = write_artwork(path.parent.parent, record["appid"], artwork)
-            if all(entry.get(k) == v for k, v in wanted.items()):
+                if icon := icon_file(record["artwork"]):
+                    wanted["icon"] = icon
+            changed = False
+            for key, value in wanted.items():
+                changed |= _set(entry, key, value)
+            if not changed:
                 return False
-            entry.update(wanted)
             save_shortcuts(path, data)
             return True
     return None

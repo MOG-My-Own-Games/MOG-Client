@@ -39,7 +39,7 @@ def test_changing_the_engine_rewrites_the_script_and_edits_the_steam_entry_in_pl
     manager.set_launcher(game, "faugus", "wine")
     script = launcher.launch_script_path(game)
     assert "flatpak" in script.read_text() and "wine" not in script.read_text().split("exec", 1)[1].split("flatpak")[0]
-    assert _steam_entry(record)["Exe"] == f'"{script}"'
+    assert _steam_entry(record)["exe"] == f'"{script}"'
 
     changed = manager.set_launcher(game, "wine", "faugus")
 
@@ -47,7 +47,7 @@ def test_changing_the_engine_rewrites_the_script_and_edits_the_steam_entry_in_pl
     assert " wine " in script.read_text() or "/usr/bin/wine" in script.read_text()
     assert "flatpak" not in script.read_text()
     entry = _steam_entry(record)
-    assert entry["appid"] & 0xFFFFFFFF == record["appid"] and entry["AppName"] == "Game"
+    assert entry["appid"] & 0xFFFFFFFF == record["appid"] and entry["appname"] == "Game"
     assert all(Path(a).is_file() for a in record["artwork"])
 
 
@@ -105,7 +105,7 @@ def test_regenerating_edits_the_steam_entry_in_place_and_refreshes_its_artwork(s
     data = steam.load_shortcuts(Path(record["shortcuts_path"]))
     assert len(data["shortcuts"]) == 1
     entry = _steam_entry(record)
-    assert entry["appid"] == appid_before and entry["Exe"] == f'"{launcher.launch_script_path(game)}"'
+    assert entry["appid"] == appid_before and entry["exe"] == f'"{launcher.launch_script_path(game)}"'
     assert Path(game.steam_entries[0]["artwork"][0]).read_bytes() == b"\x89PNGnew"
 
 
