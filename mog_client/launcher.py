@@ -264,6 +264,25 @@ _BUNDLE_ENV = (
 )
 
 
+def _bundle_roots() -> tuple[str, ...]:
+    """Where this build's own libraries live: the PyInstaller directory, the AppImage mount and any other
+    AppImage mount (an earlier instance of this client, before an update restarted it)."""
+    roots = [os.environ.get("APPDIR"), getattr(sys, "_MEIPASS", None)]
+    if getattr(sys, "frozen", False):
+        roots.append(str(Path(sys.executable).resolve().parent))
+    return tuple(r.rstrip("/") for r in roots if r)
+
+
+def _outside_bundle(path_list: str) -> str:
+    roots = _bundle_roots()
+    keep = [
+        p
+        for p in path_list.split(":")
+        if p and not re.match(r"/tmp/\.mount_[^/]+(/|$)", p) and not any(p == r or p.startswith(r + "/") for r in roots)
+    ]
+    return ":".join(keep)
+
+
 def host_environ() -> dict[str, str]:
     """This process's environment as the host system's programs should see it."""
     env = dict(os.environ)
@@ -272,6 +291,9 @@ def host_environ() -> dict[str, str]:
         env["LD_LIBRARY_PATH"] = original
     elif getattr(sys, "frozen", False):
         env.pop("LD_LIBRARY_PATH", None)
+    # A restart after an update hands the old bundle's directories on as the "original" path.
+    if env.get("LD_LIBRARY_PATH"):
+        env["LD_LIBRARY_PATH"] = _outside_bundle(env["LD_LIBRARY_PATH"])
     if not env.get("LD_LIBRARY_PATH"):
         env.pop("LD_LIBRARY_PATH", None)
     for key in _BUNDLE_ENV:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mog_client import net
+from mog_client.launcher import host_environ
 from mog_client.version import UPDATE_METHOD, __version__
 
 REPO = "MOG-My-Own-Games/MOG-Client"
@@ -163,4 +164,5 @@ def relaunch(target: Path) -> None:
         env = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
         subprocess.Popen([str(target)], env=env, close_fds=True)
         os._exit(0)
-    os.execv(str(target), [str(target)])
+    # The new build must not inherit this one's bundled library path.
+    os.execve(str(target), [str(target)], host_environ())

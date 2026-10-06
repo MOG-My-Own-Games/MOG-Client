@@ -281,3 +281,12 @@ def test_the_launch_script_runs_the_save_hooks_then_execs_the_game(monkeypatch, 
 def test_the_launch_script_still_starts_the_game_when_the_client_is_gone(monkeypatch, tmp_path):
     _, done = _run_script(monkeypatch, tmp_path, tmp_path / "no-such-client")
     assert done.returncode == 0 and done.stdout.strip() == "game started" and done.stderr == ""
+
+
+def test_host_environ_drops_bundle_directories_handed_on_as_the_original_path(monkeypatch):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/.mount_MOG-Cabc/usr/bin/_internal:/usr/local/lib")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/tmp/.mount_MOG-Cold/usr/bin/_internal:/tmp/.mount_MOG-Cold/usr/lib:/opt/x")
+    monkeypatch.setattr(sys, "_MEIPASS", "/somewhere/_internal", raising=False)
+    assert launcher.host_environ()["LD_LIBRARY_PATH"] == "/opt/x"
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/somewhere/_internal:/somewhere/_internal/lib")
+    assert "LD_LIBRARY_PATH" not in launcher.host_environ()
