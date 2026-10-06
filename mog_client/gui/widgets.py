@@ -4,19 +4,44 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QTabBar, QTabWidget
+from PySide6.QtWidgets import QCheckBox, QPushButton, QTabBar, QTabWidget
 
-ACCENT_STOPS = ((0.0, "#7fa8ff"), (0.55, "#5b8def"), (1.0, "#3c64c4"))
-ACCENT_HOVER_STOPS = ((0.0, "#94b7ff"), (0.55, "#709cf2"), (1.0, "#4d75d4"))
+ACCENT_STOPS = ((0.0, "#9e3bf7"), (1.0, "#2859f9"))
+ACCENT_HOVER_STOPS = ((0.0, "#aa53f8"), (1.0, "#426dfa"))
 
 
 def accent_qss(stops=ACCENT_STOPS) -> str:
     parts = ", ".join(f"stop:{pos} {color}" for pos, color in stops)
-    return f"qlineargradient(x1:0, y1:0, x2:1, y2:1, {parts})"
+    return f"qlineargradient(x1:0, y1:0, x2:1, y2:0, {parts})"
+
+
+def scrollbar_qss(alpha: int = 140, hover_alpha: int = 255) -> str:
+    """Slim round scrollbars with a transparent track, the accent gradient half see-through until hovered: the
+    same as MOG-Server's, which follows RomM's."""
+
+    def stops(a: int, vertical: bool) -> str:
+        axis = "x1:0, y1:0, x2:0, y2:1" if vertical else "x1:0, y1:0, x2:1, y2:0"
+        parts = ", ".join(f"stop:{pos} rgba({int(c[1:3], 16)}, {int(c[3:5], 16)}, {int(c[5:7], 16)}, {a})" for pos, c in ACCENT_STOPS)
+        return f"qlineargradient({axis}, {parts})"
+
+    out = []
+    for orientation, vertical in (("vertical", True), ("horizontal", False)):
+        size, long = ("width", "min-height") if vertical else ("height", "min-width")
+        out.append(
+            f"QScrollBar:{orientation} {{ background: transparent; {size}: 12px; margin: 0; border: none; }}\n"
+            f"QScrollBar::handle:{orientation} {{ background: {stops(alpha, vertical)}; border-radius: 4px; {long}: 32px; margin: 2px; }}\n"
+            f"QScrollBar::handle:{orientation}:hover, QScrollBar::handle:{orientation}:pressed {{ background: {stops(hover_alpha, vertical)}; }}\n"
+        )
+    out.append(
+        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; background: none; border: none; }\n"
+        "QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }\n"
+    )
+    return "".join(out)
 
 
 def accent_gradient(x0: float, y0: float, x1: float, y1: float) -> QLinearGradient:
-    grad = QLinearGradient(x0, y0, x1, y1)
+    middle = (y0 + y1) / 2  # left to right, whatever the shape it fills
+    grad = QLinearGradient(x0, middle, x1, middle)
     for pos, color in ACCENT_STOPS:
         grad.setColorAt(pos, QColor(color))
     return grad
@@ -112,3 +137,42 @@ class FocusTabs(QTabWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setTabBar(FocusTabBar())
+
+
+class BadgeButton(QPushButton):
+    """A button with a red dot and a number on its top-right corner, as MOG-Server's bell has (an unread count).
+    The dot is drawn over the button's own edge, so the style leaves OVERHANG pixels of room on the right
+    (`#bellButton` in the stylesheet)."""
+
+    DIAMETER = 22
+    OVERHANG = 8
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._count = 0
+
+    def set_count(self, count: int) -> None:
+        self._count = max(0, count)
+        self.update()
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def paintEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().paintEvent(e)
+        if not self._count:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        d = self.DIAMETER
+        dot = QRectF(self.width() - d, 1, d, d)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#e2574c"))
+        painter.drawEllipse(dot)
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(14 if self._count < 100 else 11)
+        painter.setFont(font)
+        painter.drawText(dot, Qt.AlignCenter, "99+" if self._count > 99 else str(self._count))

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from mog_client import logstore
+from mog_client import installdirs, logstore
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import detect_launcher, effective_launcher
 from mog_client.saves import devices, prefix as prefixes, sync
@@ -381,7 +381,9 @@ class SaveSync:
         if self._checked or not settings.sync_saves or not settings.sync_on_start or not settings.configured:
             return
         self._checked = True
-        games = [r for r in load_library().values() if r.state == "installed" and r.executable and self.enabled(r)]
+        games = [
+            r for r in load_library().values() if r.state == "installed" and r.executable and installdirs.present(r) and self.enabled(r)
+        ]
         if not games:
             return
 

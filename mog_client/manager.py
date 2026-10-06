@@ -12,6 +12,7 @@ from typing import Callable
 from mog_client import logstore, steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, save_library
+from mog_client.installdirs import default_root, present
 from mog_client.launcher import (
     create_desktop_entry,
     desktop_file_path,
@@ -22,6 +23,7 @@ from mog_client.launcher import (
     shortcut_lnk_path,
     write_directory_file,
 )
+from mog_client.saves import installed as ledger
 from mog_client.saves.state import forget_game, save_install_manifest
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
@@ -57,20 +59,25 @@ def run_install(
     on_session: Callable[[dict], None],
     on_bytes: Callable[[int, int], None],
     installer: dict | None = None,
+    root: Path | None = None,
+    extract_only: bool = False,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
 
     `installer` is one of the server's candidates (path and kind) to run instead of
-    the one it would pick itself.
+    the one it would pick itself. `root` is the install folder a new game goes into (the first one
+    with room when not given); a game already begun stays where it is. `extract_only` unpacks the game's
+    archive as it is into the install cache instead of running an installer from it, and is remembered
+    for the game.
 
     Blocks until done, failed, stopped or the server needs a manual pick
     (raises RuntimeError with a message in the last two cases)."""
     gid = game["id"]
     lib = load_library()
     rec = lib.get(gid) or InstalledGame(
-        game_id=gid, name=game["name"], install_dir=str(settings.games_path / safe_dirname(game["name"]))
+        game_id=gid, name=game["name"], install_dir=str((root or default_root(settings)) / safe_dirname(game["name"]))
     )
-    _update(rec, state="installing")
+    _update(rec, state="installing", **({"extract_only": True} if extract_only else {}))
     out_dir = Path(rec.install_dir)
 
     existing = client.get_session(gid)
@@ -83,6 +90,7 @@ def run_install(
             None,
             None,
             source_path=installer["path"] if archive else None,
+            extract_only=rec.extract_only,
         )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":
@@ -105,6 +113,7 @@ def run_install(
 
     watcher = threading.Thread(target=watch_server, daemon=True)
     watcher.start()
+    before = ledger.begin(gid, out_dir)  # what was there before this install, to tell it from what it adds
     # The download, not the server's installer, decides when we're finished.
     _, finished = download_all_files(
         client, gid, out_dir, stop, session_id, log=log, warn=log, on_bytes=on_bytes, server_done=server_done,
@@ -126,6 +135,7 @@ def run_install(
         warn=log,
         on_manifest=lambda files: save_install_manifest(gid, files),
     )
+    ledger.finish(gid, out_dir, before)  # whatever the server's list missed, the folder itself shows
     _update(rec, state="awaiting_executable")
     return rec
 
@@ -165,7 +175,7 @@ def finish_setup(
                 Path(stale).unlink(missing_ok=True)
 
     kept, steam_changed, pending = _sync_steam_entries(rec, steam_user, command, art)
-    prefix = None if sys.platform == "win32" else str(pfx_dir(rec))
+    prefix = None if sys.platform == "win32" or rec.native else str(pfx_dir(rec))  # a native game has no prefix
     _update(
         rec,
         executable=executable,
@@ -266,7 +276,7 @@ def settle_steam_shortcuts(client: MogClient, preference: str = "auto") -> list[
         return []
     done = []
     for rec in load_library().values():
-        if not (rec.steam_pending and rec.state == "installed" and rec.executable):
+        if not (rec.steam_pending and rec.state == "installed" and rec.executable and present(rec)):
             continue
         try:
             refresh_metadata(rec, client, preference)

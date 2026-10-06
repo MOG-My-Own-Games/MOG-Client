@@ -38,9 +38,22 @@ class SoundPlayer:
         self.enabled, self.factory, self.clock = enabled, factory, clock
         self._effects: dict[str, object | None] = {}
         self._last: dict[str, float] = {}
+        self._closed = False
+
+    def close(self) -> None:
+        """Silence what is playing or still queued in the audio buffer and play nothing more. Called as the
+        window closes: a sound left to its destructor finishes in the audio server after the client is gone."""
+        self._closed = True
+        for effect in self._effects.values():
+            for action in ("stop", "deleteLater"):
+                try:
+                    getattr(effect, action)()
+                except Exception:  # noqa: BLE001, S110 - a fake or an already deleted effect
+                    pass
+        self._effects.clear()
 
     def play(self, name: str) -> None:
-        if not self.enabled():
+        if self._closed or not self.enabled():
             return
         now = self.clock()
         if now - self._last.get(name, -1e9) < DEBOUNCE.get(name, 0.0):

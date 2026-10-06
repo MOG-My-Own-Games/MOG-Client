@@ -233,11 +233,32 @@ class MogClient:
     def __init__(self, c: Client):
         self.c = c
 
-    def candidates(self, game_id: int) -> dict:
-        status, data = self.c.get_json(f"/api/games/{game_id}/install/candidates")
+    def candidates(self, game_id: int, source: str | None = None) -> dict:
+        """The installers the server finds for a game, or, with `source` (an archive of the game's own), what is
+        inside that archive (`extract_suggested` is then true when it looks like a game that needs no installer)."""
+        path = f"/api/games/{game_id}/install/candidates"
+        if source is not None:
+            path += f"?source={urllib.parse.quote(source, safe='')}"
+        status, data = self.c.get_json(path)
         if status != 200:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
+
+    def portable_archive(self, game_id: int, installer: dict | None = None) -> str | None:
+        """The name of the archive that would be installed when it holds a game with no installer in it, so that
+        the user can be asked about extracting it as it is. None when it is not an archive, has an installer, or
+        the server cannot say (an older one, or an error: asking is a nicety, never a reason to stop)."""
+        try:
+            pick = installer
+            if pick is None:
+                found = self.candidates(game_id).get("candidates", [])
+                pick = next((c for c in found if c.get("category", "game") == "game"), None)
+            if not pick or pick.get("kind") not in ("disc image", "archive"):
+                return None
+            listing = self.candidates(game_id, pick["path"])
+        except (RuntimeError, KeyError, TypeError):
+            return None
+        return pick.get("file_name") or pick["path"] if listing.get("extract_suggested") else None
 
     def start_session(
         self,
@@ -248,10 +269,13 @@ class MogClient:
         auto_mode: bool | None = None,
         manual_mode: bool | None = None,
         source_path: str | None = None,
+        extract_only: bool = False,
     ) -> dict:
         body = {"installer_path": installer_path, "proton_build": proton_build}
         if source_path is not None:
             body["source_path"] = source_path
+        if extract_only:
+            body["extract_only"] = True  # the archive is unpacked as it is, nothing is run
         if auto_mode is not None:
             body["auto_mode"] = auto_mode
         if manual_mode is not None:

@@ -62,10 +62,18 @@ def manifest_path(game_id: int) -> Path:
     return data_dir() / "manifests" / f"{game_id}.json"
 
 
+def baseline_path(game_id: int) -> Path:
+    return data_dir() / "manifests" / f"{game_id}.baseline.json"
+
+
 def save_install_manifest(game_id: int, files: list[dict]) -> None:
-    """The server's list of what the installer produced ({path, size_bytes, sha1}), kept so the
-    game's own files can later be told apart from what the game wrote."""
-    _write_json(manifest_path(game_id), {e["path"]: [e["size_bytes"], e["sha1"]] for e in files})
+    """Add what an installer produced ({path, size_bytes, sha1}) to what is kept of the game's own files, so
+    they can later be told apart from what the game wrote. It adds to the list and never replaces it: a game's
+    files come from every installer run into it (a patch, a DLC, a reinstall), and a later list that only
+    names the new ones must not make the earlier ones look like saves. A file named again takes the new entry."""
+    kept = load_install_manifest(game_id) or {}
+    kept.update({e["path"]: (e["size_bytes"], e["sha1"]) for e in files})
+    _write_json(manifest_path(game_id), {path: list(entry) for path, entry in kept.items()})
 
 
 def load_install_manifest(game_id: int) -> dict[str, tuple[int, str]] | None:
@@ -78,5 +86,5 @@ def load_install_manifest(game_id: int) -> dict[str, tuple[int, str]] | None:
 def forget_game(game_id: int) -> None:
     """Drop what is kept about a game that is no longer installed. The backups of files a restore
     replaced stay: they are the user's, and small."""
-    for path in (state_path(game_id), manifest_path(game_id)):
+    for path in (state_path(game_id), manifest_path(game_id), baseline_path(game_id)):
         path.unlink(missing_ok=True)

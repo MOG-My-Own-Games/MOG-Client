@@ -63,13 +63,25 @@ def _names(items) -> str:
     return ", ".join(i["name"] for i in items or [] if i.get("name"))
 
 
+MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)  # fixed, so the date reads the same whatever the machine's locale
+
+
+def long_date(timestamp: float) -> str:
+    """A Unix timestamp as a date in words, e.g. "10 October 1994" (UTC, as IGDB gives release dates)."""
+    day = datetime.fromtimestamp(timestamp, timezone.utc)
+    return f"{day.day} {MONTHS[day.month - 1]} {day.year}"
+
+
 def metadata_lines(game: dict) -> list[tuple[str, str]]:
     """(label, value) rows for the details page; rows with no data are skipped."""
     meta = game.get("igdb_metadata") or {}
     companies = meta.get("involved_companies") or []
     release = meta.get("first_release_date")
     rows = [
-        ("Released", datetime.fromtimestamp(release, timezone.utc).strftime("%Y-%m-%d") if release else ""),
+        ("Released", long_date(release) if release else ""),
         ("Genres", _names(meta.get("genres"))),
         ("Developer", ", ".join(c["company"]["name"] for c in companies if c.get("developer") and c.get("company"))),
         ("Publisher", ", ".join(c["company"]["name"] for c in companies if c.get("publisher") and c.get("company"))),

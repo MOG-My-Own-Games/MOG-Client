@@ -26,23 +26,52 @@ _REDIST_DIRS = re.compile(r"(redist|directx|dotnet|vcredist|_commonredist|__inst
 PREFIX_DIR = "pfx"  # the prefix folder inside a game's folder (see pfx_dir)
 
 
+# What a GOG Linux installer leaves beside the game that is not the game: its support and uninstall scripts and
+# the bundled dialog tool (yad). "preuninst" and "reuninst" are the same script as it is spelled in the wild.
+_NOT_A_SCRIPT = re.compile(r"^(gog-system-report|postinst|preuninst|reuninst|yad|uninstall-.*)\.sh$", re.IGNORECASE)
+_INSTALLER_DATA_DIRS = (".mojosetup",)
+
+
+def _is_game_script(rel: Path) -> bool:
+    return (
+        rel.suffix.lower() == ".sh"
+        and not _NOT_A_SCRIPT.match(rel.name)
+        and not any(_REDIST_DIRS.search(p) or p in _INSTALLER_DATA_DIRS for p in rel.parts[:-1])
+    )
+
+
 def list_executables(install_dir: Path) -> list[Path]:
-    """Candidate game executables under install_dir, largest first (the game
-    binary is nearly always the biggest .exe that isn't a redistributable)."""
+    """Candidate game executables under install_dir. The game's own start script comes first (the `start.sh`
+    GOG's Linux games have at the top), then the .exe files, the biggest first (the game binary is nearly always
+    the biggest one that isn't a redistributable), then any other script, shallowest first. Scripts are Linux's
+    way to start a game and are not offered on Windows."""
     found = []
     for dirpath, dirnames, filenames in os.walk(install_dir):
         here = Path(dirpath)
         if here == install_dir:
             dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]  # the prefix is full of Windows executables
+        dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
             path = here / name
-            if path.suffix.lower() != ".exe" or not path.is_file():
+            if not path.is_file():
                 continue
             rel = path.relative_to(install_dir)
-            if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
+            if path.suffix.lower() == ".exe":
+                if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
+                    continue
+            elif sys.platform == "win32" or not _is_game_script(rel):
                 continue
             found.append(path)
-    found.sort(key=lambda p: p.stat().st_size, reverse=True)
+
+    def rank(path: Path) -> tuple[int, int, int]:
+        rel = path.relative_to(install_dir)
+        if path.suffix.lower() == ".exe":
+            return 1, 0, -path.stat().st_size
+        if rel.name.lower() == "start.sh" and len(rel.parts) == 1:
+            return 0, 0, 0
+        return 2, len(rel.parts), 0
+
+    found.sort(key=lambda p: (*rank(p), p.name.lower()))
     return found
 
 
@@ -172,12 +201,25 @@ def pfx_dir(game: InstalledGame) -> Path:
     return Path(game.install_dir) / PREFIX_DIR
 
 
+def ensure_executable(path: str) -> None:
+    """Give a script the executable bit it may have lost on the way (a download keeps no modes)."""
+    try:
+        mode = Path(path).stat().st_mode
+        if not mode & 0o100:
+            Path(path).chmod(mode | 0o755)
+    except OSError:
+        pass  # the launch itself will say so
+
+
 def launch_command(
     game: InstalledGame, preference: str = "auto", require_umu: bool = True
 ) -> tuple[list[str], dict[str, str]]:
     """Command + extra environment that runs the game's chosen executable."""
     if not game.executable:
         raise RuntimeError("no executable chosen for this game")
+    if game.native:
+        ensure_executable(game.executable)
+        return [game.executable], {}  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")

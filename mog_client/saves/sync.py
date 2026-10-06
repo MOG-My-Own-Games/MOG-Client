@@ -54,6 +54,8 @@ class Context:
 
 
 def enabled(rec: InstalledGame, settings: Settings) -> bool:
+    if rec.native:
+        return False  # saves are found through the Wine prefix, which a native game does not have
     return settings.sync_saves if rec.save_sync is None else rec.save_sync
 
 

@@ -39,12 +39,18 @@ def _write_json(path: Path, data, private: bool = False) -> None:
     tmp.replace(path)
 
 
+def default_install_root() -> Path:
+    return data_dir() / "games"
+
+
 @dataclass
 class Settings:
     base: str = ""
     user: str = ""
     password: str = ""
-    games_dir: str = ""
+    # Where games are installed, in order of priority: the first that is connected and has room wins.
+    # Empty means the default folder inside the client's data directory.
+    install_dirs: list[str] = field(default_factory=list)
     # "auto", "faugus", "umu", "wine" (Linux) or "native" (Windows)
     launcher: str = "auto"
     # Look for a newer release at startup (only in builds that can self-update).
@@ -62,8 +68,8 @@ class Settings:
     sync_saves: bool = True
 
     @property
-    def games_path(self) -> Path:
-        return Path(self.games_dir) if self.games_dir else data_dir() / "games"
+    def install_roots(self) -> list[Path]:
+        return [Path(d) for d in self.install_dirs] or [default_install_root()]
 
     @property
     def configured(self) -> bool:
@@ -77,11 +83,19 @@ def settings_path() -> Path:
 def load_settings() -> Settings:
     raw = _read_json(settings_path(), {})
     known = Settings.__dataclass_fields__
+    if raw.get("games_dir") and not raw.get("install_dirs"):  # the single folder of older versions
+        raw["install_dirs"] = [raw["games_dir"]]
     return Settings(**{k: v for k, v in raw.items() if k in known})
 
 
 def save_settings(s: Settings) -> None:
     _write_json(settings_path(), asdict(s), private=True)
+
+
+def is_native_executable(path: str | Path | None) -> bool:
+    """Whether an executable is a Linux program (a script, as GOG's Linux games start with one) that runs as it is,
+    not a Windows .exe that needs Proton or Wine."""
+    return bool(path) and str(path).lower().endswith(".sh")
 
 
 @dataclass
@@ -101,10 +115,18 @@ class InstalledGame:
     launcher: str = "auto"
     # None follows Settings.sync_saves; True or False overrides it for this game.
     save_sync: bool | None = None
+    # Chosen when the install began: the game's archive is extracted as it is (it holds a game that needs no
+    # installer), so a restarted session does the same.
+    extract_only: bool = False
     # The Steam user folder this game's shortcut belongs in, if it should have one.
     steam_user: str | None = None
     # A change to the shortcut waited for Steam to be closed: it rewrites its shortcuts file when it quits.
     steam_pending: bool = False
+
+    @property
+    def native(self) -> bool:
+        """The chosen executable runs as it is: no launcher, no Wine prefix, no save sync (which reads the prefix)."""
+        return is_native_executable(self.executable)
 
 
 def library_path() -> Path:

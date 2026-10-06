@@ -2,7 +2,8 @@
 Type=Application
 Name=MOG Client
 Comment=Browse, install and launch games from a MOG-Server
-Exec=mog-client
+Exec=mog-client %u
 Icon=mog-client
 Categories=Game;
 Terminal=false
+MimeType=x-scheme-handler/mog;

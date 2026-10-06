@@ -68,3 +68,12 @@ def test_an_unreachable_provider_leaves_the_server_artwork_alone(monkeypatch):
     fetch(monkeypatch, urls_ok=False)
     assert scrape.fetch_artwork(GAME, Server(cover=b"c")) == {"portrait": b"c", "icon": b"c"}
     assert scrape.fetch_artwork({"id": 2, "name": "X"}, None) == {}
+
+
+def test_the_release_date_is_written_out_in_english_whatever_the_locale():
+    from mog_client.scrape import long_date, metadata_lines
+
+    assert long_date(782_956_800) == "24 October 1994"
+    assert long_date(865_036_800) == "31 May 1997"
+    assert long_date(1_704_067_200) == "1 January 2024"  # no zero-padded day
+    assert metadata_lines({"igdb_metadata": {"first_release_date": 782_956_800}}) == [("Released", "24 October 1994")]

@@ -16,6 +16,12 @@ class FakeEffect:
     def play(self):
         self.plays += 1
 
+    def stop(self):
+        self.stopped = True
+
+    def deleteLater(self):  # noqa: N802 - Qt's name
+        self.deleted = True
+
 
 def player(enabled=True, factory=None, clock=None):
     made: list[FakeEffect] = []
@@ -99,3 +105,22 @@ def test_sounds_are_on_by_default(tmp_path):
     from mog_client.config import Settings
 
     assert Settings().sounds is True
+
+
+def test_closing_stops_what_is_playing_and_plays_nothing_more():
+    p, made, clock = player()
+    p.play(sounds.NAVIGATE)
+    p.close()
+    assert made[0].stopped and made[0].deleted
+    clock[0] += 1
+    p.play(sounds.NAVIGATE)
+    p.play(sounds.PLAY)
+    assert len(made) == 1 and made[0].plays == 1  # nothing new, and nothing loaded again
+
+
+def test_closing_a_player_that_never_played_or_cannot_is_harmless():
+    p, _, _ = player()
+    p.close()
+    broken, _, _ = player(factory=lambda path, volume: object())  # an effect without stop()
+    broken.play(sounds.PLAY)
+    broken.close()
