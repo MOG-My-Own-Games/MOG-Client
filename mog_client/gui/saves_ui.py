@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mog_client import installdirs, logstore
 from mog_client.config import InstalledGame, load_library
-from mog_client.launcher import detect_launcher, effective_launcher
+from mog_client.launcher import detect_launcher, effective_launcher, pfx_dir
 from mog_client.saves import devices, prefix as prefixes, sync
 from mog_client.saves.state import load_state
 
@@ -151,12 +151,14 @@ class SaveSync:
     def choose_prefix(self, rec: InstalledGame, then: Callable[[], None] | None = None, skip: Callable[[], None] | None = None) -> None:
         """Ask where the game's Wine prefix is. This only tells save sync where to look; it does not
         change how the game is started."""
-        found = prefixes.candidate_prefixes()
-        options: list[tuple[str, object]] = [(str(p), p) for p in found]
+        own = pfx_dir(rec)
+        options: list[tuple[str, object]] = [("Game's Folder (Default)", own)]
+        options += [(str(p), p) for p in prefixes.candidate_prefixes() if p.resolve() != own.resolve()]
         options.append(("Another folder...", "browse"))
 
         def store(path: Path) -> None:
-            if not prefixes.is_prefix(path):
+            # The game's own folder is taken as it is: the prefix is made there when the game first runs.
+            if path != own and not prefixes.is_prefix(path):
                 self.win.message(f"{path} does not look like a Wine prefix (no drive_c inside)", "error")
                 return
             sync.remember_prefix(rec.game_id, path, prefixes.FROM_USER)
@@ -175,8 +177,9 @@ class SaveSync:
 
         self.win.choose(
             "Where is this game's Wine prefix?",
-            f"MOG could not find the Wine prefix {rec.name} runs in (it is normally the pfx folder inside the game's "
-            "own folder, once the game has been started from MOG). If you start it some other way, pick the prefix it uses.",
+            f"MOG could not find the Wine prefix {rec.name} runs in. The default is the pfx folder inside the game's "
+            "own folder. If you start the game some other way, pick the prefix it uses. This is kept on this "
+            "computer only; the server is never told.",
             options,
             chosen,
             skip="Not now" if skip is not None else None,

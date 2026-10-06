@@ -10,6 +10,7 @@ from fakes import FakeServer
 from mog_client.config import InstalledGame, Settings, save_library
 from mog_client.gui import saves_ui
 from mog_client.gui.saves_ui import SaveSync
+from mog_client.launcher import pfx_dir
 from mog_client.saves import sync
 from mog_client.saves import prefix as prefixes
 from mog_client.saves.devices import DeviceRecord, save_device
@@ -195,7 +196,8 @@ def test_picking_the_prefix_tells_sync_where_to_look_without_touching_how_the_ga
     done = []
     ui.ui.choose_prefix(ui.rec, then=lambda: done.append(1))
     title, options, answer = ui.win.choices[0]
-    assert title == "Where is this game's Wine prefix?" and options[0][1] == prefix and options[-1][1] == "browse"
+    assert title == "Where is this game's Wine prefix?" and options[1][1] == prefix and options[-1][1] == "browse"
+    assert options[0] == ("Game's Folder (Default)", pfx_dir(ui.rec))
     assert ui.win.skips[0] is None  # nothing to skip: the question was asked on purpose
 
     answer(prefix)
@@ -331,3 +333,18 @@ def test_labels_name_the_machine_the_time_and_the_size(ui):
     )
     assert label.startswith("karasu: 2026-10-04") or label.startswith("karasu: 2026-10-05")
     assert label.endswith("(quit, 1 file)")
+
+
+def test_the_games_folder_is_the_first_choice_and_is_taken_even_before_the_prefix_exists(ui):
+    done = []
+    ui.ui.choose_prefix(ui.rec, then=lambda: done.append(1))
+    _, options, answer = ui.win.choices[0]
+    own = pfx_dir(ui.rec)
+    assert options[0][0] == "Game's Folder (Default)" and not own.exists()
+
+    answer(options[0][1])
+
+    state = load_state(7)
+    assert (state.prefix, state.prefix_source) == (str(own), "chosen") and done == [1]
+    ctx = sync.Context(ui.rec, Settings(), None, None, "faugus")
+    assert sync.find_prefix(ctx, state).prefix == own
