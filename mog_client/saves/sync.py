@@ -7,6 +7,7 @@ A restore never replaces a file without first copying it to a backup archive.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -246,16 +247,26 @@ def decline(ctx: Context, version_id: int) -> None:
     save_state(ctx.rec.game_id, state)
 
 
+_restore_locks: dict[int, threading.Lock] = {}
+_restore_locks_guard = threading.Lock()
+
+
+def _restore_lock(game_id: int) -> threading.Lock:
+    """One lock per game: overlapping restores would download and unpack the same archive path at once."""
+    with _restore_locks_guard:
+        return _restore_locks.setdefault(game_id, threading.Lock())
+
+
 def restore(ctx: Context, version_id: int) -> RestoreResult:
     """Put a server version back on this machine, keeping what it replaces in a backup archive.
     When the archive holds profile files and the prefix is not known yet, it is kept to be applied
     once the prefix is found (see apply_pending)."""
     rec = ctx.rec
-    state = load_state(rec.game_id)
-    folder = saves_dir(rec.game_id)
-    archive = folder / f"version-{version_id}.zip"
-    ctx.client.download_save(version_id, archive)
-    return _apply(ctx, state, archive, version_id)
+    with _restore_lock(rec.game_id):
+        state = load_state(rec.game_id)
+        archive = saves_dir(rec.game_id) / f"version-{version_id}.zip"
+        ctx.client.download_save(version_id, archive)
+        return _apply(ctx, state, archive, version_id)
 
 
 def _apply(

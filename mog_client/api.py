@@ -147,7 +147,8 @@ class Client:
     def download_to(self, path: str, dest: Path, timeout: float = 600.0) -> int:
         """GET a file straight to `dest` (replaced atomically); returns the HTTP status."""
         req = urllib.request.Request(self.base + path, headers=self._headers({"Accept": "*/*"}))
-        part = dest.with_name(dest.name + ".part")
+        # Unique per call: two downloads of one file must not share (and then rename away) the same temp file.
+        part = dest.with_name(f"{dest.name}.{uuid.uuid4().hex[:8]}.part")
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             with net.urlopen(req, timeout=timeout) as resp, open(part, "wb") as out:

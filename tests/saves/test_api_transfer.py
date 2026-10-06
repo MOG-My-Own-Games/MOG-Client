@@ -76,3 +76,23 @@ def test_a_version_is_downloaded_to_a_file_and_a_missing_one_leaves_nothing(serv
     with pytest.raises(RuntimeError, match="404"):
         server.download_save("missing", tmp_path / "out" / "nope.zip")
     assert not (tmp_path / "out" / "nope.zip").exists() and not list(dest.parent.glob("*.part"))
+
+
+def test_two_downloads_of_one_file_do_not_trip_over_each_other(server, tmp_path):
+    import threading
+
+    dest = tmp_path / "out" / "v.zip"
+    errors = []
+
+    def run():
+        try:
+            server.download_save(3, dest)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors and dest.is_file() and not list(dest.parent.glob("*.part"))
