@@ -16,6 +16,7 @@ from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, Q
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
+    QImage,
     QKeyEvent,
     QPainter,
     QPainterPath,
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from mog_client import crashlog, gameplay, logstore, manager, steam, trace, updater
+from mog_client import installdirs, protocol
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
@@ -58,12 +60,15 @@ from mog_client.stopactions import StopActions
 from mog_client.config import (
     InstalledGame,
     data_dir,
+    default_install_root,
     load_library,
     load_settings,
     save_settings,
 )
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui.about import AboutTab
+from mog_client.gui.headerart import HeaderArt
+from mog_client.gui.instance import Listener, send_to_running
 from mog_client.gui.logview import LogView
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
 from mog_client.gui.overlay import MessageOverlay
@@ -72,9 +77,10 @@ from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
 from mog_client.saves import runner, sync
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, FocusTabs, Toggle, accent_gradient, accent_qss, bell_icon
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, BadgeButton, FocusTabs, Toggle, accent_gradient, accent_qss, bell_icon, scrollbar_qss
 from mog_client.launcher import (
     available_launchers,
+    client_command,
     detect_launcher,
     ensure_scanned,
     launch,
@@ -128,9 +134,13 @@ QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; bord
 #overlayCard[level="error"] { border-color: #e2574c; }
 #overlayCard[level="warning"] { border-color: #e8c547; }
 #overlayTitle { font-size: 22px; font-weight: bold; }
+#bellButton { padding: 12px 16px; margin: 0 8px 0 0; }
+#metaKey { color: #8b94a3; font-size: 13px; font-weight: bold; padding-top: 4px; }
+#metaValue { color: #ffffff; font-size: 19px; }
+#summary { color: #c3c8d2; padding-top: 12px; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
 QProgressBar::chunk { background: {accent}; border-radius: 6px; }
-""".replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss())
+""".replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()
 
 def steam_outcome(rec: InstalledGame, done: str) -> tuple[str, str]:
     """(level, text) for what was done, with a note when Steam's own shortcut had to wait: Steam is
@@ -171,6 +181,7 @@ class Bridge(QObject):
     note = Signal(str)  # only the log
     cover = Signal(int, bytes)
     image = Signal(str, bytes)  # url, bytes (screenshots)
+    header_art = Signal(int, bytes)  # game id, the hero or banner behind its page's header
     progress = Signal(int, int, int, str)  # game, written, total, state text
     log = Signal(int, str)
     finished = Signal(int, str)  # game, error text ("" on success)
@@ -203,6 +214,7 @@ class App:
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
+        self.sizes: dict[int, int] = {}  # bytes each game takes on the server, once asked
         self.after_stop = StopActions()  # runs once that install has stopped
 
     def client(self):
@@ -303,6 +315,23 @@ class App:
 
         self.run_bg(work, on_error=lambda _m: None)
 
+    def fetch_header_art(self, game: dict) -> None:
+        """The hero (else the banner) the server chose for the game, for the page's header."""
+
+        def work() -> None:
+            media = game.get("media") or {}
+            for kind in ("hero", "banner"):
+                url = (media.get(kind) or {}).get("url")
+                if not url:
+                    continue
+                cache = data_dir() / "art" / f"{game['id']}-{kind}-{hashlib.sha1(url.encode()).hexdigest()[:10]}.img"
+                blob = self._image(cache, f"/api/games/{game['id']}/media/{kind}", url, self.client())
+                if blob is not None:
+                    self.bridge.header_art.emit(game["id"], blob)
+                    return
+
+        self.run_bg(work, on_error=lambda _m: None)
+
     def set_games(self, games: list[dict]) -> None:
         self.games = {g["id"]: g for g in games}
         self.group_of = {g["id"]: group for group in group_games(games) for g in group.members}
@@ -322,6 +351,7 @@ class App:
         def work():
             size = self.client().game_size(game_id)
             if size is not None:
+                self.sizes[game_id] = size
                 self.bridge.game_size.emit(game_id, size)
 
         threading.Thread(target=work, daemon=True).start()
@@ -336,7 +366,9 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def start_install(self, game: dict, installer: dict | None = None) -> None:
+    def start_install(
+        self, game: dict, installer: dict | None = None, root: Path | None = None, extract_only: bool = False
+    ) -> None:
         gid = game["id"]
         if gid in self.installs:
             return
@@ -374,7 +406,12 @@ class App:
             if s.get("auto_status") == "needs_manual" and not server_state.get("warned"):
                 server_state["warned"] = True
                 server_state["label"] = "auto mode needs you: open the installer display"
-                bridge.message.emit("warning", f"{game['name']}: auto mode cannot continue, finish the installer by hand")
+                bridge.message.emit(
+                    "warning",
+                    f"{game['name']}: the installer needs you, auto mode cannot go on. Finish it by hand: open the "
+                    "game's page and choose \"Open installer display\" (it opens in your browser). The server has "
+                    "also sent you a notification.",
+                )
             written, total, _ = self.progress.get(gid, (0, 0, ""))
             report(written, total)
 
@@ -384,7 +421,7 @@ class App:
                 manager.run_install(
                     self.client(), game, self.settings, stop,
                     lambda m: bridge.log.emit(gid, m), on_session,
-                    report, installer,
+                    report, installer, root, extract_only,
                 )
             except Exception as e:  # noqa: BLE001
                 err = str(e)
@@ -476,16 +513,16 @@ class ConfirmPage(Page):
     def __init__(self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False):
         super().__init__()
         self.title = title
-        label = QLabel(text)
-        label.setWordWrap(True)
-        self.no, yes = QPushButton("No"), QPushButton("Yes")
-        yes.setProperty("danger", danger)
+        self.text_label = QLabel(text)
+        self.text_label.setWordWrap(True)
+        self.no, self.yes = QPushButton("No"), QPushButton("Yes")
+        self.yes.setProperty("danger", danger)
         self.no.clicked.connect(win.back)
-        yes.clicked.connect(lambda: (win.back(), on_yes()))
+        self.yes.clicked.connect(lambda: (win.back(), on_yes()))
         lay = QVBoxLayout(self)
         lay.addStretch()
-        lay.addWidget(label)
-        lay.addLayout(_centered_row(self.no, yes))
+        lay.addWidget(self.text_label)
+        lay.addLayout(_centered_row(self.no, self.yes))
         lay.addStretch()
 
     def focus_default(self) -> None:
@@ -522,6 +559,7 @@ class UpdatePage(Page):
 
     def on_ready(self, target: str) -> None:
         self.label.setText("Restarting...")
+        self.win.sounds.close()
         updater.relaunch(Path(target))
 
     def on_failed(self, error: str) -> None:
@@ -623,7 +661,7 @@ class OptionsPage(Page):
             lay.addWidget(button, 0, Qt.AlignHCenter)
             self.first = self.first or button
 
-        if rec and rec.state == "installed":
+        if rec and rec.state == "installed" and installdirs.present(rec):
             if sys.platform != "win32":
                 engine = f"{launcher_label(rec.launcher)} (this game)" if rec.launcher != "auto" else "default"
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
@@ -973,8 +1011,9 @@ class SettingsPage(Page):
         self.user = MenuLineEdit(s.user)
         self.password = MenuLineEdit(s.password)
         self.password.setEchoMode(QLineEdit.Password)
-        self.games_dir = MenuLineEdit(s.games_dir)
-        self.games_dir.setPlaceholderText(str(s.games_path))
+        self.install_dirs = list(s.install_dirs)
+        self.folders_button = QPushButton("Edit install dirs")
+        self.folders_button.clicked.connect(self.edit_install_dirs)
         self.launcher = MenuCombo()
         self.fill_launchers(s.launcher)
         self.sync_saves_box = Toggle()
@@ -1097,14 +1136,15 @@ class SettingsPage(Page):
             )
         )
         menu.section("Games")
-        browse_games = QPushButton("Browse...")
-        browse_games.clicked.connect(self.browse_games_dir)
-        folder = QWidget()
-        folder_lay = QHBoxLayout(folder)
-        folder_lay.setContentsMargins(0, 0, 0, 0)
-        folder_lay.addWidget(self.games_dir, 1)
-        folder_lay.addWidget(browse_games)
-        menu.add(OptionRow("Games folder", "Where the games are installed.", folder, wide=True))
+        self._folders_row = menu.add(
+            OptionRow(
+                "Install folders",
+                "Where games are installed, in order of priority: the first folder that is connected and has room is "
+                "used. Games in any of them show in the library.",
+                self.folders_button,
+            )
+        )
+        self._update_folders_row()
         menu.add(
             OptionRow(
                 "Launcher",
@@ -1193,11 +1233,23 @@ class SettingsPage(Page):
             else "No launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine."
         )
 
-    def browse_games_dir(self) -> None:
-        start = Path(self.games_dir.text().strip() or str(self.win.app.settings.games_path))
-        while not start.is_dir() and start.parent != start:
-            start = start.parent
-        self.win.push(BrowsePage(self.win, start, self.games_dir.setText, folders=True))
+    def edit_install_dirs(self) -> None:
+        self.win.push(InstallDirsPage(self.win, self.install_dirs, self._folders_changed))
+
+    def _folders_changed(self) -> None:
+        """The folders are kept as soon as they change: that page has no Save of its own."""
+        settings = self.win.app.settings
+        settings.install_dirs = list(self.install_dirs)
+        save_settings(settings)
+        self._update_folders_row()
+
+    def _update_folders_row(self) -> None:
+        count = len(self.install_dirs)
+        self._folders_row.set_status(
+            f"{count} folder{'s' if count != 1 else ''}, {sum(installdirs.reachable(Path(d)) for d in self.install_dirs)} connected"
+            if count
+            else f"None listed: games go into {default_install_root()}"
+        )
 
     def check_updates(self) -> None:
         self.update_status.setText("Checking...")
@@ -1227,7 +1279,7 @@ class SettingsPage(Page):
             base=self.base.text().strip(),
             user=self.user.text().strip(),
             password=self.password.text(),
-            games_dir=self.games_dir.text().strip(),
+            install_dirs=list(self.install_dirs),
             # "auto" keeps following the preference order (Faugus first) as launchers come and go.
             launcher="auto" if self.launcher.currentData() == detect_launcher() else self.launcher.currentData() or "auto",
             check_updates=self.check_updates_box.isChecked(),
@@ -1238,6 +1290,116 @@ class SettingsPage(Page):
         save_settings(self.win.app.settings)
         self.win.back()
         self.win.app.refresh()
+
+
+class InstallDirsPage(Page):
+    """The install folders in order of priority: + adds one, - removes the selected one (the games in it stay
+    on disk), and the arrows beside them change which is tried first. `dirs` is edited in place."""
+
+    title = "Install folders"
+
+    def __init__(self, win: "MainWindow", dirs: list[str], changed) -> None:
+        super().__init__()
+        self.win, self.dirs, self.changed = win, dirs, changed
+        note = QLabel(
+            "A new game goes into the first folder that is connected and has room; when an earlier one is full you "
+            "are asked before the next is used. A folder whose drive is not connected is passed over, and its games "
+            "stay in the library, greyed."
+        )
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        self.list.installEventFilter(self)
+        self.list.currentRowChanged.connect(self._sync_buttons)
+        self.add_button, self.remove_button = QPushButton("+"), QPushButton("-")
+        self.remove_button.setProperty("danger", True)
+        self.up_button, self.down_button = QPushButton("Move up"), QPushButton("Move down")
+        for button in (self.add_button, self.remove_button):
+            button.setFixedWidth(72)
+        self.add_button.setToolTip("Add an install dir")
+        self.remove_button.setToolTip("Remove the selected install dir from the list")
+        self.add_button.clicked.connect(self.add)
+        self.remove_button.clicked.connect(self.remove)
+        self.up_button.clicked.connect(lambda: self.move(-1))
+        self.down_button.clicked.connect(lambda: self.move(1))
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list, 1)
+        lay.addLayout(_centered_row(self.add_button, self.remove_button, self.up_button, self.down_button))
+        self._fill()
+
+    def focus_default(self) -> None:
+        (self.list if self.dirs else self.add_button).setFocus()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
+        """Down from the last folder (or from an empty list) reaches the buttons below."""
+        if obj is self.list and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Down:
+            if self.list.currentRow() >= len(self.dirs) - 1:
+                self.add_button.setFocus()
+                return True
+        return False
+
+    def _fill(self, keep: int = 0) -> None:
+        self.list.clear()
+        if not self.dirs:
+            item = QListWidgetItem(f"None listed: games go into {default_install_root()}")
+            item.setFlags(Qt.NoItemFlags)
+            self.list.addItem(item)
+        for i, folder in enumerate(self.dirs):
+            self.list.addItem(f"{i + 1}.  [{installdirs.status(Path(folder))}]  {folder}")
+        if self.dirs:
+            self.list.setCurrentRow(min(max(keep, 0), len(self.dirs) - 1))
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        row, count = (self.list.currentRow() if self.dirs else -1), len(self.dirs)
+        self.remove_button.setEnabled(row >= 0)
+        self.up_button.setEnabled(row > 0)
+        self.down_button.setEnabled(0 <= row < count - 1)
+
+    def add(self) -> None:
+        start = Path(self.dirs[-1]).parent if self.dirs else Path.home()
+        while not start.is_dir() and start.parent != start:
+            start = start.parent
+        self.win.push(BrowsePage(self.win, start, self._added, folders=True))
+
+    def _added(self, folder: str) -> None:
+        folder = str(Path(folder).expanduser())
+        if folder not in self.dirs:
+            self.dirs.append(folder)
+        self.changed()
+        self._fill(self.dirs.index(folder))
+        self.add_button.setFocus()
+
+    def remove(self) -> None:
+        row = self.list.currentRow()
+        if not self.dirs or row < 0:
+            return
+        folder = self.dirs[row]
+        self.win.ask(
+            f"Remove {folder} from the install folders? The games in it stay on disk, and show greyed in the library.",
+            lambda: self._remove(folder),
+            danger=True,
+        )
+
+    def _remove(self, folder: str) -> None:
+        if folder not in self.dirs:
+            return
+        row = self.dirs.index(folder)
+        del self.dirs[row]
+        self.changed()
+        self._fill(row)
+        self.focus_default()
+
+    def move(self, step: int) -> None:
+        row = self.list.currentRow()
+        target = row + step
+        if not self.dirs or not 0 <= row < len(self.dirs) or not 0 <= target < len(self.dirs):
+            return
+        self.dirs[row], self.dirs[target] = self.dirs[target], self.dirs[row]
+        self.changed()
+        self._fill(target)
+        button = self.down_button if step > 0 else self.up_button
+        (button if button.isEnabled() else self.list).setFocus()
 
 
 class BrowsePage(Page):
@@ -1466,22 +1628,38 @@ class GamePage(Page):
         # Some desktop styles keep a field at its size hint, and a word-wrapped label's hint is a
         # narrow guess: the text then wraps early and its row is cut off.
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(28)
+        form.setVerticalSpacing(8)
+
+        def row(label: str, widget: QLabel) -> None:
+            key = QLabel(label.upper())  # the name small, dim and capitalised, its value large and bright
+            key.setObjectName("metaKey")
+            key.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            widget.setObjectName("metaValue")
+            form.addRow(key, widget)
+
         for label, value in metadata_lines(game):
             val = QLabel(value)
             val.setWordWrap(True)
             val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            form.addRow(label, val)
+            row(label, val)
         self.size_label = QLabel("...")
-        form.addRow("Size on server", self.size_label)
+        row("Size on server", self.size_label)
         info_col.addLayout(form)
         text = game.get("summary") or (game.get("igdb_metadata") or {}).get("summary") or ""
         summary = QLabel(text if len(text) < 700 else text[:700].rsplit(" ", 1)[0] + "...")
+        summary.setObjectName("summary")
         summary.setWordWrap(True)
         info_col.addWidget(summary)
         info_col.addStretch()
         head = QHBoxLayout()
+        head.setContentsMargins(14, 14, 14, 14)
+        head.setSpacing(24)
         head.addWidget(self.cover)
         head.addLayout(info_col, 1)
+        self.header = HeaderArt()
+        self.header.setLayout(head)
 
         self.shots = StripList()
         self.shots.setFixedHeight(SHOT_SIZE.height() + 30)
@@ -1495,7 +1673,7 @@ class GamePage(Page):
         self.buttons = QHBoxLayout()
         self.first: QPushButton | None = None
         lay = QVBoxLayout(self)
-        lay.addLayout(head)
+        lay.addWidget(self.header)
         lay.addWidget(self.shots)
         for w in (self.status, self.bar):
             lay.addWidget(w)
@@ -1506,8 +1684,10 @@ class GamePage(Page):
         b.finished.connect(self._on_finished)
         b.image.connect(self._on_image)
         b.game_size.connect(self._on_size)
+        b.header_art.connect(self._on_header_art)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.covers.get(gid)))
         self.app.fetch_images(self.shot_urls, game["id"])
+        self.app.fetch_header_art(game)
         self._update_version_label()
         self.app.load_size(game["id"])
         self.rebuild()
@@ -1515,6 +1695,11 @@ class GamePage(Page):
     def _on_size(self, gid: int, size: int) -> None:
         if gid == self.game["id"]:
             self.size_label.setText(fmt_bytes(size))
+
+    def _on_header_art(self, gid: int, blob: bytes) -> None:
+        pix = QPixmap()
+        if gid == self.game["id"] and pix.loadFromData(blob):
+            self.header.set_image(pix)
 
     def _set_cover(self, pix: QPixmap | None) -> None:
         if pix:
@@ -1539,15 +1724,14 @@ class GamePage(Page):
         self._set_cover(self.win.covers.get(game["id"]))
         self._update_version_label()
         self.size_label.setText("...")
+        self.header.set_image(None)
+        self.app.fetch_header_art(game)
         self.app.load_size(game["id"])
         self.rebuild()
 
     def start_with(self, version: dict, installer: dict | None) -> None:
         self.switch_version(version)
-        self.app.start_install(version, installer)
-        self.rebuild()
-        if self.first:
-            self.first.setFocus()
+        self.win.install_game(version, installer, self._installing)
 
     def _on_image(self, url: str, blob: bytes) -> None:
         pix = QPixmap()
@@ -1599,6 +1783,12 @@ class GamePage(Page):
             else:
                 self.win.message(f"{self.game['name']} finished installing: open it to choose the executable", "info")
 
+    def _check_again(self) -> None:
+        self.rebuild()
+        self.win.library.update_presence()
+        if self.first:
+            self.first.setFocus()
+
     def _button(self, text: str, fn, default: bool = False, danger: bool = False) -> QPushButton:
         btn = QPushButton(text)
         btn.setProperty("danger", danger)
@@ -1633,7 +1823,13 @@ class GamePage(Page):
             self._button("Cancel local install", self.cancel_local, danger=True)
             self._button("Cancel server install", self.cancel_server, danger=True)
             return
-        if rec and rec.state == "installed":
+        if rec and rec.state in ("installed", "awaiting_executable") and not installdirs.present(rec):
+            self.status.setText(f"Not available: {rec.install_dir} is not connected")
+            self.bar.setRange(0, 1)
+            self.bar.setValue(1)
+            self.first = self._button("Check again", self._check_again, True)
+            self._button("Options", lambda: self.show_options(rec))
+        elif rec and rec.state == "installed":
             self.status.setText("Installed")
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
@@ -1657,7 +1853,9 @@ class GamePage(Page):
         if group is not None and len(group.versions) > 1 and fresh:
             self.win.push(InstallerPickerPage(self.win, self, group))
             return
-        self.app.start_install(self.game)
+        self.win.install_game(self.game, None, self._installing)
+
+    def _installing(self) -> None:
         self.rebuild()
         if self.first:
             self.first.setFocus()
@@ -1826,7 +2024,17 @@ class GamePage(Page):
         )
 
 
-ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER = Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3, Qt.UserRole + 4
+ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER, ROLE_ABSENT = (Qt.UserRole + n for n in range(1, 6))
+_GREY: dict[int, QPixmap] = {}  # a cover's grey twin, by the cover's cache key
+
+
+def greyed(pix: QPixmap | None) -> QPixmap | None:
+    """The cover without its colour, for a game whose folder is not there."""
+    if pix is None or pix.isNull():
+        return pix
+    if pix.cacheKey() not in _GREY:
+        _GREY[pix.cacheKey()] = QPixmap.fromImage(pix.toImage().convertToFormat(QImage.Format_Grayscale8))
+    return _GREY[pix.cacheKey()]
 BADGE_SIZE = 56
 
 
@@ -1906,13 +2114,16 @@ class CoverDelegate(QStyledItemDelegate):
             painter.fillRect(bar, QColor(0, 0, 0, 170))
             filled = bar.adjusted(0, 0, int((progress - 1000) * bar.width() / 1000), 0)
             painter.fillRect(filled, accent_gradient(bar.left(), bar.top(), bar.right(), bar.bottom()))
+        absent = bool(index.data(ROLE_ABSENT))
+        if absent:
+            painter.fillRect(cover, QColor(14, 16, 20, 150))
         painter.setClipRect(cover)
         if index.data(ROLE_INSTALLED):
             paint_installed_badge(painter, cover)
         if state := index.data(ROLE_CORNER):
             paint_state_badge(painter, cover, state)
         painter.setClipping(False)
-        painter.setPen(QColor("#e8eaed"))
+        painter.setPen(QColor("#6b7380" if absent else "#e8eaed"))
         text = QRect(cell.left() + 4, cover.bottom() + 6, cell.width() - 8, cell.bottom() - cover.bottom() - 6)
         painter.drawText(text, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, index.data(Qt.DisplayRole))
         painter.restore()
@@ -1942,15 +2153,19 @@ class LibraryPage(Page):
         self.libs = EdgeList()
         self.libs.currentRowChanged.connect(self._library_chosen)
         self.installs = EdgeList()
-        self.installs.setMaximumHeight(170)
         self.installs.itemActivated.connect(self._open_install)
         self.installs.itemClicked.connect(self._open_install)
+        # Running installs sit above the libraries, and the section is only there while one runs.
+        self.installs_box = QWidget()
+        box = QVBoxLayout(self.installs_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(self._heading("Active installs"))
+        box.addWidget(self.installs)
         side = QVBoxLayout(self.sidebar)
         side.setContentsMargins(0, 0, 0, 0)
+        side.addWidget(self.installs_box)
         side.addWidget(self._heading("Libraries"))
         side.addWidget(self.libs, 1)
-        side.addWidget(self._heading("Active installs"))
-        side.addWidget(self.installs)
         self.sidebar.setVisible(win.app.settings.show_sidebar)
 
         lay = QHBoxLayout(self)
@@ -2008,7 +2223,7 @@ class LibraryPage(Page):
         written, total, _ = self.win.app.progress.get(gid, (0, 0, ""))
         return 1000 * written // total if total else 0
 
-    def label(self, gid: int, rec: InstalledGame | None, versions: int = 1) -> str:
+    def label(self, gid: int, rec: InstalledGame | None, versions: int = 1, absent: bool = False) -> str:
         name = self.win.app.games[gid]["name"]
         badges = []
         if versions > 1:
@@ -2019,15 +2234,33 @@ class LibraryPage(Page):
         progress = self._progress(gid)
         if progress is not None:
             badge = f"Installing {progress // 10}%"
+        if absent:
+            badge = "Not available"
         if badge:
             badges.append(badge)
         return name + (f"\n[{' | '.join(badges)}]" if badges else "")
 
+    def _absent(self, group: Group, lib: dict) -> bool:
+        """Installed, but its folder is not there now (a drive that is not connected)."""
+        recs = [lib[m["id"]] for m in group.members if lib.get(m["id"]) and lib[m["id"]].state in ("installed", "awaiting_executable")]
+        return bool(recs) and not any(installdirs.present(r) for r in recs) and not any(m["id"] in self.win.app.installs for m in group.members)
+
+    def update_presence(self) -> None:
+        """Grey out the games whose folder went away, and bring back those whose drive came back."""
+        lib = load_library()
+        for item in {id(i): i for i in self.items.values()}.values():
+            group = self.win.app.group_of.get(item.data(Qt.UserRole))
+            if group is not None and self._absent(group, lib) != bool(item.data(ROLE_ABSENT)):
+                self._fill_item(item, group, lib)
+        self.grid.viewport().update()
+
     def _fill_item(self, item: QListWidgetItem, group: Group, lib: dict) -> None:
         gid = self.win.app.active_version(group)["id"]
-        item.setText(self.label(gid, lib.get(gid), len(group.versions)))
+        absent = self._absent(group, lib)
+        item.setText(self.label(gid, lib.get(gid), len(group.versions), absent))
         item.setData(Qt.UserRole, gid)
-        item.setData(ROLE_COVER, self.win.covers.get(gid))
+        item.setData(ROLE_ABSENT, absent)
+        item.setData(ROLE_COVER, greyed(self.win.covers.get(gid)) if absent else self.win.covers.get(gid))
         item.setData(ROLE_PROGRESS, self._progress(gid))
         item.setData(ROLE_INSTALLED, any(lib.get(g["id"]) and lib[g["id"]].state == "installed" for g in group.members))
         item.setData(ROLE_CORNER, corner_state(self.win.app.active_version(group)))
@@ -2047,12 +2280,13 @@ class LibraryPage(Page):
             item = QListWidgetItem(f"{self.win.app.games[gid]['name']}: {(self._progress(gid) or 0) // 10}%")
             item.setData(Qt.UserRole, gid)
             self.installs.addItem(item)
-        if not running:
-            none = QListWidgetItem("None")
-            none.setFlags(Qt.NoItemFlags)
-            self.installs.addItem(none)
-        elif row >= 0:
+        if running and row >= 0:
             self.installs.setCurrentRow(min(row, len(running) - 1))
+        if not running and self.installs_box.isAncestorOf(QApplication.focusWidget()):
+            self.libs.setFocus()  # the list the focus was in is about to go
+        rows = self.installs.sizeHintForRow(0) if running else 0
+        self.installs.setFixedHeight(min(170, rows * len(running) + 12))  # as tall as its rows, up to a limit
+        self.installs_box.setVisible(bool(running))
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
@@ -2112,9 +2346,12 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText("Search")
         self.search.textChanged.connect(self.refresh_items)
         self.reload_btn, self.settings_btn = QPushButton("Refresh"), QPushButton("Settings")
-        self.notif_btn = QPushButton(" Notifications")
+        self.notif_btn = BadgeButton()  # just the bell, with its unread count on the corner
+        self.notif_btn.setObjectName("bellButton")
         self.notif_btn.setIcon(bell_icon(26))
         self.notif_btn.setIconSize(QSize(26, 26))
+        self.notif_btn.setToolTip("Notifications")
+        self.notif_btn.setAccessibleName("Notifications")
         self.notif_btn.clicked.connect(self.open_notifications)
         self.notifications: list[dict] = []
         self.seen_notification_id: int | None = None
@@ -2138,6 +2375,8 @@ class MainWindow(QMainWindow):
         self.legend.setAlignment(Qt.AlignCenter)
         self.legend.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # never makes the window wider
         self.pad_family: str | None = None
+        self._pending_link: str | None = None  # a mog:// link that arrived before the games were loaded
+        self._link_refreshed_for: str | None = None  # the link the games were reloaded for, once
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addLayout(top)
@@ -2158,9 +2397,10 @@ class MainWindow(QMainWindow):
         self.sounds = SoundPlayer(lambda: app.settings.sounds)
         self.nav_sounds = NavigationSounds(self.sounds)
         QApplication.instance().installEventFilter(self.nav_sounds)
+        QApplication.instance().aboutToQuit.connect(self.sounds.close)
         b.games.connect(self.set_games)
         b.error.connect(lambda text: self.message(text, "error"))
-        b.message.connect(self.message)
+        b.message.connect(lambda level, text: self.message(text, level))  # the signal says level first
         b.note.connect(self.notify)
         b.cover.connect(self.set_cover)
         b.finished.connect(lambda *_: self.refresh_items())
@@ -2180,6 +2420,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         self.pad_stop.set()
+        self.sounds.close()
         super().closeEvent(e)
 
     def current_page(self) -> Page:
@@ -2192,7 +2433,7 @@ class MainWindow(QMainWindow):
         self.search.setVisible(page.searchable)
         self.reload_btn.setVisible(on_library)
         self.settings_btn.setVisible(on_library)
-        self.notif_btn.setVisible(on_library)
+        self.notif_btn.setVisible(on_library or isinstance(page, GamePage))  # a game's page keeps the bell
         self.logo.setVisible(on_library)
         self.title.setVisible(not on_library)
         self.title.setText(page.title)
@@ -2255,6 +2496,110 @@ class MainWindow(QMainWindow):
         page = ConfirmPage(self, text, on_yes, danger=danger)
         page.no.clicked.connect(no)
         self.push(page)
+
+    def install_game(self, game: dict, installer: dict | None = None, then=None) -> None:
+        """Start installing `game`. One that was begun carries on where it is (its drive has to be back); a new
+        one goes into the first install folder that is connected and has room, and when an earlier folder is
+        full the user is asked, folder by folder, before it goes into a later one. `then` runs once started."""
+        gid = game["id"]
+        if gid in self.app.installs:
+            return
+        rec = load_library().get(gid)
+        if rec and not installdirs.resumable(rec):
+            self.message(f"{rec.name} was being installed in {rec.install_dir}, which is not available now. Connect it and try again.")
+            return
+
+        def go(root: Path | None = None, extract: bool = False) -> None:
+            self.app.start_install(game, installer, root, extract)
+            if then:
+                then()
+
+        if rec and rec.extract_only:
+            go()  # decided when it began
+            return
+
+        def place(extract: bool) -> None:
+            self._place(game, self.app.sizes.get(gid) or 0, lambda root=None: go(root, extract))
+
+        def size_then_place(extract: bool) -> None:
+            if gid in self.app.sizes:
+                place(extract)
+                return
+
+            def ask_size() -> None:
+                size = self.app.client().game_size(gid)
+                if size is not None:
+                    self.app.sizes[gid] = size
+                self.app.bridge.call.emit(lambda: place(extract))
+
+            self.app.run_bg(ask_size, on_error=lambda _m: self.app.bridge.call.emit(lambda: place(extract)))
+
+        # A game that was begun is asked too when its session is not running (an attempt that failed
+        # leaves its record behind, and starting it again would only fail the same way).
+        self._ask_extraction(game, installer, (lambda extract: go(None, extract)) if rec else size_then_place)
+
+    def _ask_extraction(self, game: dict, installer: dict | None, proceed) -> None:
+        """A game that is an archive with no installer in it (one that needs none) can be extracted as it is and
+        taken as the install, nothing run. The server says whether an archive looks like that; when it does the user
+        is asked, and `proceed(extract)` goes on with their answer. The lookup never gets in the way: when it fails
+        the install goes on as usual."""
+
+        def work() -> None:
+            client = self.app.client()
+            try:
+                session = client.get_session(game["id"]) or {}
+            except Exception:  # noqa: BLE001 - no session, or the server cannot say: look at the archive
+                session = {}
+            # A session that is running, or finished, already settled how this game is installed.
+            live = session.get("state") in ("detecting", "installing", "streaming", "done")
+            name = None if live else client.portable_archive(game["id"], installer)
+            self.app.bridge.call.emit(lambda: self._extraction_answer(name, proceed))
+
+        self.app.run_bg(work, on_error=lambda _m: self.app.bridge.call.emit(lambda: proceed(False)))
+
+    def _extraction_answer(self, name: str | None, proceed) -> None:
+        if name is None:
+            proceed(False)
+            return
+        self.ask(
+            f"No installer was found in {name}: it looks like a game that needs none. Extract its contents and use "
+            "them as they are? Yes unpacks them as the install, with nothing run. No still tries to install it "
+            "by running what it finds inside.",
+            lambda: proceed(True),
+            lambda: proceed(False),
+        )
+
+    def _place(self, game: dict, needed: int, go) -> None:
+        plan = installdirs.choose(self.app.settings.install_roots, needed)
+        for slot in plan.slots:
+            if slot.state == "unavailable":
+                logstore.info(f"Install folder {slot.path} is not available, skipped")
+        ready = plan.ready
+        if not ready:
+            self.message(
+                f"No install folder has room for {game['name']} ({fmt_bytes(needed)}). Free some space, connect a drive "
+                "or add a folder in Settings."
+            )
+            return
+        full = plan.blocked_by
+        if full is None:
+            go(ready[0].path)
+            return
+
+        def offer(i: int) -> None:
+            slot = ready[i]
+            lead = (
+                f"{full.path} has {fmt_bytes(full.free)} free and {game['name']} needs {fmt_bytes(needed)}. "
+                if i == 0
+                else ""
+            )
+            self.ask(
+                f"{lead}Install it in {slot.path} instead? ({fmt_bytes(slot.free)} free)",
+                lambda: go(slot.path),
+                (lambda: offer(i + 1)) if i + 1 < len(ready) else None,
+            )
+
+        offer(0)
 
     def on_update_checked(self, info, error: str, manual: bool) -> None:
         if error and not manual:
@@ -2502,6 +2847,9 @@ class MainWindow(QMainWindow):
         self.refresh_items()
         self.saves.check_all()
         self.settle_steam()
+        if self._pending_link:
+            link, self._pending_link = self._pending_link, None
+            self.handle_link(link)
 
     def set_cover(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()
@@ -2509,11 +2857,71 @@ class MainWindow(QMainWindow):
             self.covers[gid] = pix.scaled(COVER_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             item = self.library.items.get(gid)
             if item is not None:
-                item.setData(ROLE_COVER, self.covers[gid])
+                item.setData(ROLE_COVER, greyed(self.covers[gid]) if item.data(ROLE_ABSENT) else self.covers[gid])
                 self.library.grid.viewport().update()
+
+    def handle_link(self, text: str) -> None:
+        """What a later start, or the system, handed this one: a `mog://install/<id>` link from the web UI (or
+        nothing, which only brings the window forward). A link for a game waits for the games to be loaded."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if not text:
+            return
+        link = protocol.parse(text)
+        if link is None:
+            self.message(f"This link is not one MOG understands: {text[:200]}", "warning")
+            return
+        settings = self.app.settings
+        if not settings.configured:
+            self.message("Set up the server in Settings first, then open the link again.", "warning")
+            self.open_settings()
+            return
+        if not self.app.games:
+            self._pending_link = text
+            return
+        game = self.app.games.get(link.game_id)
+        if game is None and self._link_refreshed_for != text:
+            # The library may have changed since it was loaded (a game added on the server, which the web page
+            # already shows): look again before saying it is not there.
+            self._link_refreshed_for = text
+            self._pending_link = text
+            logstore.info(f"Game {link.game_id} is not in the list yet, refreshing it")
+            self.app.refresh()
+            return
+        self._link_refreshed_for = None
+        if game is None:
+            self.message(f"Game {link.game_id} is not on {settings.base}.", "error")
+            return
+        if link.server and not protocol.same_server(link.server, settings.base):
+            # The same server under another name is common (a host name here, an address there), so ask.
+            self.ask(
+                f"The link came from {link.server}, but MOG is connected to {settings.base}. "
+                f"Install {game['name']} from {settings.base}?",
+                lambda: self._install_from_link(game),
+            )
+            return
+        self._install_from_link(game)
+
+    def _install_from_link(self, game: dict) -> None:
+        self.show_game(game["id"])
+        rec = load_library().get(game["id"])
+        if game["id"] in self.app.installs:
+            return  # already on its way
+        if rec and rec.state == "installed":
+            self.message(f"{game['name']} is already installed.", "info")
+            return
+        page = self.current_page()
+        if isinstance(page, GamePage):
+            page.install()
 
     def refresh_items(self) -> None:
         self.library.populate(self.search.text().lower())
+
+    def changeEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().changeEvent(e)
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self.library.update_presence()  # a drive may have been connected or removed meanwhile
 
     def open_game(self, item: QListWidgetItem) -> None:
         self.show_game(item.data(Qt.UserRole))
@@ -2540,7 +2948,7 @@ class MainWindow(QMainWindow):
         self.seen_notification_id = newest
         self.notifications = items
         unread = data["unread"]
-        self.notif_btn.setText(f" Notifications ({unread})" if unread else " Notifications")
+        self.notif_btn.set_count(unread)
         page = self.current_page()
         if isinstance(page, NotificationsPage):
             page.populate()
@@ -2560,7 +2968,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1000, self.app.poll_notifications)
 
 
-def run_gui() -> int:
+def run_gui(link: str | None = None) -> int:
+    """Open the client. `link` is a `mog://` URL it was started with; when a client is already running the link
+    is handed to that one, which comes forward, and this start exits."""
+    if send_to_running(link or ""):
+        return 0
     osk.prefer_xcb()
     qapp = QApplication(sys.argv[:1])
     qapp.setStyleSheet(STYLE)
@@ -2574,15 +2986,26 @@ def run_gui() -> int:
     app = App()
     ensure_scanned(app.settings)
     win = MainWindow(app)
+    listener = Listener()
+    if listener.listen():
+        listener.received.connect(win.handle_link)
     win.osk.install(qapp)
+    try:
+        protocol.register(client_command())  # so the web UI's Install button finds this client
+    except (OSError, ImportError) as e:
+        logstore.warning(f"Could not register the mog:// handler: {e}")
     if is_deck():
         win.showFullScreen()
     else:
         win.show()
     if updater.enabled() and app.settings.check_updates:
         app.check_update()
+    if link:
+        win._pending_link = link
     if app.settings.configured:
         app.refresh()
     else:
         win.open_settings()
+        if link:
+            win.handle_link(link)
     return qapp.exec()
