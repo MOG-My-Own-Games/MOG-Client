@@ -248,6 +248,9 @@ class SaveSync:
         if sync.find_prefix(ctx, state) is None:
             self.choose_prefix(rec, then=lambda: self.before_launch(rec, go), skip=go)
             return
+        if not sync.prefix_ready(ctx, state):
+            go()  # the game makes its prefix on this start; the saves go in at the next one
+            return
 
         def run() -> None:
             result = sync.apply_pending(ctx, only_if_free=True)
@@ -296,10 +299,19 @@ class SaveSync:
         elif result.status == "needs-prefix":
             def apply() -> None:
                 def work() -> None:
-                    sync.apply_pending(ctx)
-                    self.say(f"Saves of {rec.name} restored", "info")
+                    if sync.apply_pending(ctx):
+                        self.say(f"Saves of {rec.name} restored", "info")
+                    else:
+                        self.say(f"Saves of {rec.name} are kept and go in once the game has made its prefix")
+                    if then:
+                        self.gui(then)
 
-                self.app.run_bg(work, on_error=lambda m: self.say(f"Could not restore: {m}", "error"))
+                def failed(m: str) -> None:
+                    self.say(f"Could not restore: {m}", "error")
+                    if then:
+                        self.gui(then)
+
+                self.app.run_bg(work, on_error=failed)
 
             def skip() -> None:
                 self.win.notify("They stay downloaded until the prefix is known")

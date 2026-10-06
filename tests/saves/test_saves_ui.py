@@ -348,3 +348,27 @@ def test_the_games_folder_is_the_first_choice_and_is_taken_even_before_the_prefi
     assert (state.prefix, state.prefix_source) == (str(own), "chosen") and done == [1]
     ctx = sync.Context(ui.rec, Settings(), None, None, "faugus")
     assert sync.find_prefix(ctx, state).prefix == own
+
+
+def test_use_it_then_the_games_folder_starts_the_game_and_never_asks_again(ui):
+    version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
+    started = []
+
+    ui.ui.before_launch(ui.rec, lambda: started.append(1))
+    ui.win.choices[0][2]("use")  # "A newer save exists" -> Use it
+    title, options, answer = ui.win.choices[1]
+    assert title == "Where is this game's Wine prefix?"
+    answer(options[0][1])  # Game's Folder (Default), which the game has not made yet
+
+    assert started == [1] and not pfx_dir(ui.rec).exists()
+    assert load_state(7).pending_restore and load_state(7).seen_version_id == version["id"]
+
+    # The next start: not offered again, not asked again, and the game still starts.
+    ui.ui.before_launch(ui.rec, lambda: started.append(2))
+    assert len(ui.win.choices) == 2 and started == [1, 2]
+
+    # Once the game has made its prefix, the waiting save goes in.
+    (pfx_dir(ui.rec) / "drive_c/users/steamuser").mkdir(parents=True)
+    ui.ui.before_launch(ui.rec, lambda: started.append(3))
+    assert started == [1, 2, 3] and len(ui.win.choices) == 2
+    assert (pfx_dir(ui.rec) / "drive_c/users/steamuser/Saved Games/s.sav").read_bytes() == b"theirs"

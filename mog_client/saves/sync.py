@@ -86,6 +86,11 @@ def find_prefix(ctx: Context, state: SaveState) -> prefixes.Found | None:
     return prefixes.resolve_prefix(ctx.rec, ctx.engine, state.prefix, state.prefix_source)
 
 
+def prefix_ready(ctx: Context, state: SaveState) -> bool:
+    """The prefix is known and exists; one that is chosen but not made yet (the game never ran) is not."""
+    return _drive_c(find_prefix(ctx, state)) is not None
+
+
 def remember_prefix(game_id: int, prefix: Path, source: str) -> None:
     """Keep where the game's prefix is. A different prefix, or one the user just picked, makes what
     was tracked and confirmed before no longer apply."""
@@ -277,6 +282,8 @@ def _apply(
     drive_c = _drive_c(find_prefix(ctx, state))
     if drive_c is None and any(not k.startswith(f"{GAME_KEY}/") for k in keys):
         state.pending_restore = str(archive)
+        if version_id is not None:  # downloaded and kept: it is not "newer" any more, it only waits
+            state.seen_version_id = max(state.seen_version_id or 0, version_id)
         save_state(rec.game_id, state)
         return RestoreResult("needs-prefix")
 
