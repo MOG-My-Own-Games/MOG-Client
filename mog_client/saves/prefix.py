@@ -131,6 +131,9 @@ def resolve_prefix(
         return Found(Path(rec.prefix), FROM_GAME if in_game_folder else FROM_USER)
     if remembered and remembered_source == FROM_USER:
         return Found(Path(remembered), FROM_USER)  # picked for the sync only: it does not change how the game starts
+    own = _own_prefix(rec)
+    if own is not None and drive_c_of(own) is not None:
+        return Found(own, FROM_GAME)  # the game has run in it, whether or not its record says so
     if rec.executable:
         if prefix := faugus_prefix_for(rec.executable):
             return Found(prefix, FROM_FAUGUS)
@@ -140,7 +143,18 @@ def resolve_prefix(
         return Found(Path(remembered), remembered_source or FROM_STATE)
     if (prefix := engine_default_prefix(engine)) is not None and is_prefix(prefix):
         return Found(prefix, FROM_ENGINE)
+    if own is not None:
+        return Found(own, FROM_GAME)  # made but never run in: nothing to save yet, and nothing to ask the user about
     return None
+
+
+def _own_prefix(rec: InstalledGame) -> Path | None:
+    """The `pfx` folder MOG hands the engine, inside the game's own folder, when it is there. A game whose record
+    does not name it (one installed by an earlier version) still runs in it. A native game has no prefix."""
+    if rec.native:
+        return None
+    path = Path(rec.install_dir) / PREFIX_DIR
+    return path if path.is_dir() else None
 
 
 def _resolved(path: str) -> str:

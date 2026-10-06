@@ -175,7 +175,8 @@ class SaveSync:
 
         self.win.choose(
             "Where is this game's Wine prefix?",
-            f"MOG did not choose a prefix for {rec.name} and cannot tell which one it runs in. Pick the one it uses.",
+            f"MOG could not find the Wine prefix {rec.name} runs in (it is normally the pfx folder inside the game's "
+            "own folder, once the game has been started from MOG). If you start it some other way, pick the prefix it uses.",
             options,
             chosen,
             skip="Not now" if skip is not None else None,

@@ -138,3 +138,69 @@ def test_both_layouts_an_engine_may_leave_in_the_prefix_folder_are_understood(tm
     proton_style = _prefix(tmp_path / "proton", "pfx")  # STEAM_COMPAT_DATA_PATH=pfx: pfx/drive_c inside
     assert prefixes.drive_c_of(wine_style) == wine_style / "drive_c"
     assert prefixes.drive_c_of(proton_style) == proton_style / "pfx/drive_c"
+
+
+def _installed(tmp_path, **kw) -> InstalledGame:
+    folder = tmp_path / "Games" / "G"
+    folder.mkdir(parents=True)
+    return InstalledGame(game_id=7, name="G", install_dir=str(folder), executable=str(folder / "game.exe"), **kw)
+
+
+@pytest.fixture
+def no_launchers(monkeypatch):
+    monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [])
+    monkeypatch.setattr(prefixes, "steam_roots", lambda: [])
+
+
+@pytest.mark.parametrize("layout", ["", "pfx"])
+def test_the_pfx_in_the_games_folder_is_used_even_when_the_record_does_not_name_it(tmp_path, no_launchers, layout):
+    game = _installed(tmp_path)  # prefix None: an install from before the record kept it
+    _prefix(Path(game.install_dir) / "pfx", layout)  # Wine's layout, and Proton's
+    found = resolve_prefix(game, "faugus")
+    assert (found.prefix, found.source) == (Path(game.install_dir) / "pfx", prefixes.FROM_GAME)
+
+
+def test_a_pfx_that_exists_but_has_not_been_run_in_yet_means_no_question(tmp_path, no_launchers):
+    game = _installed(tmp_path)
+    (Path(game.install_dir) / "pfx").mkdir()
+    found = resolve_prefix(game, "faugus")
+    assert found is not None and found.source == prefixes.FROM_GAME and prefixes.drive_c_of(found.prefix) is None
+
+
+def test_with_no_pfx_in_the_folder_and_nothing_else_the_user_is_still_asked(tmp_path, no_launchers):
+    assert resolve_prefix(_installed(tmp_path), "faugus") is None
+
+
+def test_a_pfx_that_was_run_in_beats_what_faugus_and_steam_record(tmp_path, monkeypatch):
+    game = _installed(tmp_path)
+    _prefix(Path(game.install_dir) / "pfx", "pfx")
+    faugus = tmp_path / "faugus_games.json"
+    faugus.write_text(json.dumps([{"path": game.executable, "prefix": str(tmp_path / "faugus-prefix")}]))
+    monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [faugus])
+    monkeypatch.setattr(prefixes, "steam_roots", lambda: [])
+    assert resolve_prefix(game, "faugus").source == prefixes.FROM_GAME
+
+
+def test_a_pfx_that_was_never_run_in_gives_way_to_the_prefix_faugus_records(tmp_path, monkeypatch):
+    game = _installed(tmp_path)
+    (Path(game.install_dir) / "pfx").mkdir()  # empty
+    faugus = tmp_path / "faugus_games.json"
+    faugus.write_text(json.dumps([{"path": game.executable, "prefix": str(tmp_path / "faugus-prefix")}]))
+    monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [faugus])
+    monkeypatch.setattr(prefixes, "steam_roots", lambda: [])
+    found = resolve_prefix(game, "faugus")
+    assert (found.prefix, found.source) == (tmp_path / "faugus-prefix", FROM_FAUGUS)
+
+
+def test_a_prefix_the_user_picked_for_the_sync_still_wins_over_the_games_pfx(tmp_path, no_launchers):
+    game = _installed(tmp_path)
+    _prefix(Path(game.install_dir) / "pfx", "pfx")
+    found = resolve_prefix(game, "faugus", remembered="/picked", remembered_source=FROM_USER)
+    assert (found.prefix, found.source) == (Path("/picked"), FROM_USER)
+
+
+def test_a_native_game_has_no_prefix_to_look_for(tmp_path, no_launchers):
+    game = _installed(tmp_path)
+    game.executable = str(Path(game.install_dir) / "start.sh")
+    (Path(game.install_dir) / "pfx").mkdir()  # a leftover
+    assert resolve_prefix(game, "faugus") is None
