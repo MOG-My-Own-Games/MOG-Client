@@ -83,12 +83,14 @@ def main() -> int:
         ("sync", "Back up a game's saves now"),
     ):
         parser.add_argument(f"--save-{action}", type=int, metavar="GAME_ID", default=None, help=text)
+    parser.add_argument("url", nargs="?", help="A mog:// link from the web UI to open in the graphical client")
     parser.add_argument("--gui", action="store_true", help="Open the graphical client (default when no other action is given)")
     parser.add_argument("--out", type=Path, default=None, help="Output directory (default: ./<game name>)")
     parser.add_argument("--installer-path", default=None, help="Specific installer file to run, instead of auto-pick")
     parser.add_argument("--proton-build", default=None)
     parser.add_argument("--ttl", type=int, default=None, help="Install cache TTL in seconds (<=0 means unlimited)")
     parser.add_argument("--auto-mode", action=argparse.BooleanOptionalAction, default=None, help="Force auto mode on/off for this install (default: the server's own Settings)")
+    parser.add_argument("--extract-only", action="store_true", help="Extract the game's archive as it is into the install cache instead of running an installer from it")
     parser.add_argument("--manual-mode", action="store_true", help="Force manual pick even if a candidate was auto-detected")
     parser.add_argument("--no-download", action="store_true", help="Just start/watch the install, don't stream files")
     parser.add_argument("--cancel", action="store_true", help="Cancel the running session for this game and exit")
@@ -107,10 +109,15 @@ def main() -> int:
                 warn("save sync needs the server settings saved from the GUI")
                 return 1
             return run_command(action, game_id, saved, MogClient(Client(args.base, args.user, args.password)))
-    if args.gui or (args.game_id is None and not args.list):
+    if args.url:
+        from mog_client.protocol import SCHEME
+
+        if not args.url.lower().startswith(f"{SCHEME}://"):
+            parser.error(f"{args.url!r} is not a {SCHEME}:// link")
+    if args.gui or args.url or (args.game_id is None and not args.list):
         from mog_client.gui.app import run_gui
 
-        return run_gui()
+        return run_gui(args.url)
 
     if not (args.base and args.user and args.password):
         parser.error("--base, --user and --pass are required (or save them from the GUI settings)")
@@ -143,7 +150,10 @@ def main() -> int:
         except RuntimeError as e:
             warn(str(e))
 
-        session = client.start_session(args.game_id, args.installer_path, args.proton_build, args.ttl, args.auto_mode, args.manual_mode or None)
+        session = client.start_session(
+            args.game_id, args.installer_path, args.proton_build, args.ttl, args.auto_mode, args.manual_mode or None,
+            extract_only=args.extract_only,
+        )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":
             poll_session(client, args.game_id, session_id=session_id)
@@ -155,6 +165,9 @@ def main() -> int:
         poll_session(client, args.game_id, timeout=args.timeout, session_id=session_id)
         return 0
 
+    from mog_client.saves import installed as ledger
+
+    before = ledger.begin(args.game_id, out_dir)
     stop_event = threading.Event()
     server_done = threading.Event()
     outcome: dict = {}
@@ -187,6 +200,7 @@ def main() -> int:
             warn("download did not complete: re-run the same command to resume")
             return 1
         verify_and_repair(client, args.game_id, out_dir, session_id=session_id)
+        ledger.finish(args.game_id, out_dir, before)
         log(f"done: {out_dir}")
         return 0
     if final_session.get("state") == "failed":
