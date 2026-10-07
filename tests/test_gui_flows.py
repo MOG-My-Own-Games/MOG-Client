@@ -463,7 +463,7 @@ def test_on_the_logs_tab_up_goes_to_the_tabs_and_the_log_scrolls_before_handing_
 def test_settings_opens_from_the_button_that_had_the_focus(qapp, win):
     """Hiding the focused settings button hands the focus on while the page is shown; the tab bar can
     take it, and must not restyle itself from that focus event (some system styles loop forever)."""
-    win.settings_btn.setFocus()
+    win.user_btn.setFocus()
     win.open_settings()
     qapp.processEvents()
     page = win.current_page()
@@ -582,9 +582,14 @@ def test_saying_no_to_every_offer_installs_nothing(win, qapp, monkeypatch):
     assert started == [] and done == []
 
 
-def test_no_room_anywhere_says_so(win, qapp, monkeypatch):
+def test_when_the_figure_says_no_room_the_install_is_offered_anyway_in_the_roomiest_folder(win, qapp, monkeypatch):
     started, _ = _install(win, qapp, monkeypatch, ["/a"], {"/a": 1024**3})
-    assert started == [] and win.overlay.showing and "No install folder has room" in win.overlay.body.text()
+    # The size counts the game's whole folder on the server, so a folder that looks too small is not a refusal.
+    page = win.current_page()
+    assert started == [] and isinstance(page, gui.ConfirmPage)
+    assert "/a has 1.0 GiB free" in page.text_label.text() and "anyway?" in page.text_label.text()
+    page.yes.click()
+    assert started == [Path("/a")]
 
 
 def test_resuming_waits_for_the_drive_the_download_was_on(win, qapp, monkeypatch, tmp_path):
@@ -749,9 +754,9 @@ def test_the_game_page_names_each_detail_apart_from_its_value_and_gets_its_art(w
     page._on_header_art(10, bytes(data))  # another game's art is ignored
 
 
-def test_unread_notifications_are_a_red_dot_with_the_number_on_the_bell_corner(win, qapp):
-    button = win.notif_btn
-    assert button.text() == "" and button.toolTip() == "Notifications"  # only the bell, like the server's
+def test_unread_notifications_are_a_red_dot_with_the_number_on_the_user_button_corner(win, qapp):
+    button = win.user_btn
+    assert not hasattr(win, "notif_btn")  # no bell of its own: the count is on the user's button
     win.on_notifications({"notifications": [], "unread": 0})
     pump(qapp)
     quiet = button.grab().toImage()
@@ -764,9 +769,10 @@ def test_unread_notifications_are_a_red_dot_with_the_number_on_the_bell_corner(w
     dot = img.pixelColor(img.width() - 5, 12)  # inside the dot, in the corner
     assert dot.red() > 200 and dot.green() < 120 and img != quiet
 
+    assert win.notifications_action.text() == "Notifications (2)"
     win.on_notifications({"notifications": [], "unread": 0})
     pump(qapp)
-    assert button.count == 0 and button.grab().toImage() == quiet
+    assert button.count == 0 and button.grab().toImage() == quiet and win.notifications_action.text() == "Notifications"
 
 
 # --- mog:// links from the web UI --------------------------------------------------------------
@@ -1075,26 +1081,237 @@ def test_an_error_from_the_bridge_is_an_error(win, qapp):
     assert win.overlay.body.text() == "boom" and win.overlay.title.text() == "Something went wrong"
 
 
-def test_the_notifications_button_is_on_a_games_page_too(win, qapp, monkeypatch):
+def test_the_user_button_with_the_notification_count_is_on_a_games_page_too(win, qapp, monkeypatch):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
     win.app.set_games([{"id": 41, "name": "Eta", "library_id": None}])
-    assert win.notif_btn.isVisibleTo(win)  # the library has it
+    assert win.user_btn.isVisibleTo(win)  # the library has it
     win.show_game(41)
     pump(qapp)
-    assert isinstance(win.current_page(), gui.GamePage) and win.notif_btn.isVisibleTo(win)
-    assert not win.settings_btn.isVisibleTo(win) and not win.reload_btn.isVisibleTo(win)  # only the bell joins it
+    assert isinstance(win.current_page(), gui.GamePage) and win.user_btn.isVisibleTo(win)
 
     win.on_notifications({"notifications": [{"id": 1, "title": "x", "read": False}], "unread": 1})
-    assert win.notif_btn.count == 1  # and it counts there as well
-    win.notif_btn.click()
+    assert win.user_btn.count == 1  # and it counts there as well
+    win.notifications_action.trigger()
     pump(qapp)
     assert isinstance(win.current_page(), gui.NotificationsPage)
     win.back()
     assert isinstance(win.current_page(), gui.GamePage)  # back to the game
 
 
-def test_the_other_pages_do_not_show_the_bell(win, qapp):
+def test_the_other_pages_do_not_show_the_user_button(win, qapp):
     win.open_settings()
     pump(qapp)
-    assert not win.notif_btn.isVisibleTo(win)
+    assert not win.user_btn.isVisibleTo(win)
+
+
+def test_the_library_puts_installed_games_first_and_not_the_ones_only_waiting_for_an_executable(win, qapp, monkeypatch, tmp_path):
+    games = [{"id": i, "name": name, "igdb_id": None} for i, name in ((1, "Alpha"), (2, "Bravo"), (3, "Charlie"), (4, "Delta"))]
+    win.app.set_games(games)
+    states = {2: "installed", 1: "awaiting_executable", 3: "installed"}
+    recs = {gid: config.InstalledGame(game_id=gid, name="x", install_dir=str(tmp_path), state=state) for gid, state in states.items()}
+    monkeypatch.setattr(gui, "load_library", lambda: recs)
+    win.library.populate("")
+    names = [win.library.grid.item(i).text().split("\n")[0] for i in range(win.library.grid.count())]
+    assert names == ["Bravo", "Charlie", "Alpha", "Delta"]  # Alpha is "Setup needed": no better than Delta
+
+    recs[1] = config.InstalledGame(game_id=1, name="x", install_dir=str(tmp_path), state="installed")
+    win.library.update_label(1)
+    qapp.processEvents()
+    names = [win.library.grid.item(i).text().split("\n")[0] for i in range(win.library.grid.count())]
+    assert names == ["Alpha", "Bravo", "Charlie", "Delta"]  # finishing the setup moves it into the installed ones
+
+
+def test_saves_syncing_after_a_game_closes_show_in_the_sidebar_like_an_install(win, qapp, tmp_path):
+    rec = _installed(tmp_path)
+    win.app.set_games([{"id": 1, "name": "Jazz Jackrabbit 2", "igdb_id": None}])
+    win.begin_play(rec, None, poll=0.05, linger=0.05, appear_timeout=0.1)  # puts the message up
+    assert win.playing.showing
+
+    win._sync_started(rec)  # the game closed: the message goes, the sync is shown beside the library
+    assert not win.playing.showing
+    assert not win.library.installs_box.isHidden() and win.library.installs.count() == 1
+    assert win.library.installs.item(0).text() == "Jazz Jackrabbit 2\nSyncing saves..."
+
+    win._play_ended(rec, None, True, False, None)
+    assert win.library.installs.count() == 0 and win.library.installs_box.isHidden()
+
+
+def test_the_search_has_a_cross_that_empties_it_and_pad_and_keyboard_do_the_same(win, qapp):
+    box = win.search
+    cross = box._clear
+    assert not cross.isVisible()  # nothing to clear yet
+    box.setText("zelda")
+    assert cross.isVisible()
+
+    cross.trigger()
+    assert box.text() == "" and not cross.isVisible()
+
+    box.setText("mario")
+    win.on_pad(gamepad.TRIGGER_R)  # R2 on the library
+    assert box.text() == ""
+
+    box.setText("sonic")
+    box.setFocus()
+    box.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Backspace, Qt.ControlModifier))  # not "delete a word"
+    assert box.text() == ""
+
+
+def test_the_guide_announces_clearing_the_search():
+    from mog_client.gui import legend
+
+    entry = next(e for e in legend.LEGENDS[legend.LIBRARY] if e.label == "Clear search")
+    assert entry.pad == ("trigger_r",) and entry.keys == ("ctrl", "backspace")
+
+
+def _menu_texts(win):
+    return [a.text() for a in win.user_menu.actions() if not a.isSeparator()]
+
+
+def test_the_user_icon_is_the_last_thing_on_the_right_and_opens_a_menu(win, qapp):
+    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "Sign out"]
+    assert win.user_btn.x() + win.user_btn.width() > win.search.x() + win.search.width()  # at the far right
+
+    win.user_btn.click()  # looked at before events run: the offscreen display closes a popup that has no focus
+    assert win.user_menu.isVisible() and win.user_menu.activeAction().text() == "Settings"
+    win.user_menu.hide()
+
+
+def test_select_on_the_pad_and_ctrl_u_open_the_user_menu_and_the_same_again_closes_it(win, qapp):
+    win.on_pad(gamepad.ACCOUNT)
+    assert win.user_menu.isVisible()
+    win.on_pad(gamepad.ACCOUNT)
+    assert not win.user_menu.isVisible()
+
+    win.open_user_menu()
+    assert win.user_menu.isVisible()
+    win.user_menu.hide()
+
+    win.open_settings()
+    win.on_pad(gamepad.ACCOUNT)  # not on the settings page: the button is not there
+    assert not win.user_menu.isVisible()
+
+
+def test_the_menu_rows_do_what_they_say(win, qapp, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(win.app, "refresh", lambda: refreshed.append(1))
+    assert win.user_menu.actions()[2].text() == "Refresh library"
+    win.user_menu.actions()[2].trigger()
+    assert refreshed == [1]
+    win.user_menu.actions()[1].trigger()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.NotificationsPage)
+    win.back()
+    win.user_menu.actions()[0].trigger()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.SettingsPage)
+
+
+def test_signing_out_asks_first_then_forgets_the_password_and_opens_settings(win, qapp):
+    win.sign_out()
+    page = win.current_page()
+    assert isinstance(page, gui.ConfirmPage) and win.app.settings.password == "p"  # nothing yet
+    page.yes.click()
+    pump(qapp)
+    assert load_settings().password == "" and load_settings().base == "http://server:5000"
+    assert not win.user_btn.isVisibleTo(win) and isinstance(win.current_page(), gui.SettingsPage)
+
+
+def test_start_and_ctrl_comma_open_the_user_menu_on_its_first_row_and_the_guide_says_so(win, qapp):
+    from mog_client.gui import legend
+
+    win.on_pad(gamepad.MENU)  # Start
+    assert win.user_menu.isVisible() and win.user_menu.activeAction().text() == "Settings"
+    win.user_menu.hide()
+
+    win._shortcut_menu()  # what Ctrl+, and Ctrl+U run
+    assert win.user_menu.isVisible() and win.user_menu.activeAction().text() == "Settings"
+    win.user_menu.hide()
+
+    entry = next(e for e in legend.LEGENDS[legend.LIBRARY] if e.label == "Menu")
+    assert entry.pad == ("start",) and entry.keys == ("ctrl", "comma")
+    assert not any(e.label == "Settings" for e in legend.LEGENDS[legend.LIBRARY])
+
+
+def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):
+    win.user_btn.setVisible(False)
+    win.on_pad(gamepad.MENU)
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.SettingsPage)
+
+
+def _game_page_with_mods(win, qapp, monkeypatch, mods):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    game = {"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}
+    win.app.set_games([game])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    page._on_mods(41, mods)
+    return page, game
+
+
+def _buttons(page):
+    return [b.text() for b in page.findChildren(QPushButton)]
+
+
+def test_a_game_with_mods_has_a_mods_button_that_lists_them_and_one_without_has_none(win, qapp, monkeypatch):
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    assert "Mods" not in _buttons(page)
+
+    win.app.mods[41] = [{"name": "mod1", "kind": "folder", "size_bytes": 2048, "file_count": 2}, {"name": "mod2.zip", "kind": "archive", "size_bytes": 10, "file_count": 1}]
+    page._on_mods(41, win.app.mods[41])
+    pump(qapp)
+    assert "Mods" in _buttons(page)
+
+    page.open_mods()
+    pump(qapp)
+    listing = win.current_page()
+    assert isinstance(listing, gui.ModsPage) and listing.list.count() == 2
+    assert listing.list.item(0).text().startswith("mod1\nfolder, zipped on download")
+    assert listing.list.item(1).text().startswith("mod2.zip\narchive")
+
+
+def test_choosing_a_mod_starts_its_download_and_the_sidebar_shows_the_progress(win, qapp, monkeypatch):
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    mod = {"name": "mod1", "kind": "folder", "size_bytes": 1, "file_count": 1}
+    win.app.mods[41] = [mod]
+    started = []
+    monkeypatch.setattr(win.app, "download_mod", lambda g, m: started.append((g["id"], m["name"])))
+    page.open_mods()
+    listing = win.current_page()
+
+    listing.fetch(listing.list.item(0))
+    assert started == [(41, "mod1")]
+
+    win.app.mod_jobs[(41, "mod1")] = ("Zipping", 40)
+    win.library.update_active()
+    assert win.library.installs.count() == 1 and not win.library.installs_box.isHidden()
+    assert win.library.installs.item(0).text() == "Eta\nMod mod1: Zipping... 40%"
+
+    win.app.mod_jobs[(41, "mod1")] = ("Downloading", 70)
+    win.library.update_active()
+    assert win.library.installs.item(0).text() == "Eta\nMod mod1: Downloading... 70%"
+    win.app.mod_jobs.clear()
+    win.library.update_active()
+    assert win.library.installs.count() == 0 and win.library.installs_box.isHidden()
+
+
+def test_a_finished_mod_job_tells_the_user_where_it_went_and_leaves_the_sidebar(win, qapp, monkeypatch, tmp_path):
+    from mog_client import mods as mods_module
+
+    monkeypatch.setattr(win.app, "client", lambda: object())
+    monkeypatch.setattr(mods_module, "download_dir", lambda name: tmp_path)
+    monkeypatch.setattr(mods_module, "fetch", lambda client, gid, mod, dest, progress, **k: (progress("Zipping", 10), tmp_path / "mod1.zip")[1])
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    messages = []
+    win.app.bridge.message.connect(lambda level, text: messages.append((level, text)))
+
+    win.app.download_mod(win.app.games[41], {"name": "mod1", "kind": "folder"})
+    pump(qapp)
+
+    assert messages == [("info", f"Mod mod1 of Eta downloaded: {tmp_path / 'mod1.zip'}")]
+    assert win.app.mod_jobs == {}

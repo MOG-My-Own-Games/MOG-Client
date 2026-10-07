@@ -12,8 +12,9 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QDesktopServices,
     QImage,
@@ -40,11 +41,13 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMainWindow,
     QPlainTextEdit,
     QProgressBar,
     QSizePolicy,
     QPushButton,
+    QStackedLayout,
     QStackedWidget,
     QStyle,
     QVBoxLayout,
@@ -52,7 +55,9 @@ from PySide6.QtWidgets import (
 )
 
 from mog_client import crashlog, gameplay, logstore, manager, steam, trace, updater
-from mog_client import installdirs, protocol
+from mog_client import installdirs, ordering, protocol, snapshot
+from mog_client import mods as mods_download
+from mog_client import played as played_at
 from mog_client.api import fetch_url, fmt_bytes
 from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
@@ -73,11 +78,14 @@ from mog_client.gui.logview import LogView
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
 from mog_client.gui.overlay import MessageOverlay
 from mog_client.gui.playing import PlayingOverlay
+from mog_client.gui import saves_ui as sync_ui
+from mog_client.gui.loading import LoadingPanel
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
 from mog_client.saves import runner, sync
+from mog_client.saves.state import load_state
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, BadgeButton, FocusTabs, Toggle, accent_gradient, accent_qss, bell_icon, scrollbar_qss
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, FocusTabs, Toggle, accent_gradient, accent_qss, avatar_icon, clear_icon, scrollbar_qss
 from mog_client.launcher import (
     available_launchers,
     client_command,
@@ -88,7 +96,7 @@ from mog_client.launcher import (
     launcher_label,
     list_executables,
 )
-from mog_client.scrape import artwork_urls, metadata_lines, screenshot_urls
+from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.version import __version__
 
 ASSETS = Path(__file__).parent / "assets"
@@ -134,7 +142,11 @@ QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; bord
 #overlayCard[level="error"] { border-color: #e2574c; }
 #overlayCard[level="warning"] { border-color: #e8c547; }
 #overlayTitle { font-size: 22px; font-weight: bold; }
-#bellButton { padding: 12px 16px; margin: 0 8px 0 0; }
+#userButton { padding: 8px 18px 8px 10px; margin: 0 8px 0 0; }  /* room on the right for the unread dot */
+QMenu { background: #1e2733; color: #e8eaed; border: 1px solid #343c49; border-radius: 12px; padding: 6px; }
+QMenu::item { padding: 12px 34px 12px 18px; border-radius: 8px; font-size: 18px; }
+QMenu::item:selected { background: {accent}; color: white; }
+QMenu::separator { height: 1px; background: #343c49; margin: 6px 10px; }
 #metaKey { color: #8b94a3; font-size: 13px; font-weight: bold; padding-top: 4px; }
 #metaValue { color: #ffffff; font-size: 19px; }
 #summary { color: #c3c8d2; padding-top: 12px; }
@@ -157,6 +169,7 @@ COVER_SIZE = QSize(200, 270)
 TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
+ACTIVE_ICON = QSize(32, 32)
 IMAGE_WORKERS = 6
 
 
@@ -181,8 +194,10 @@ class Bridge(QObject):
     note = Signal(str)  # only the log
     cover = Signal(int, bytes)
     image = Signal(str, bytes)  # url, bytes (screenshots)
+    user = Signal(str, object)  # who is signed in: user name, avatar bytes (or None)
+    icon = Signal(int, bytes)  # game id, its small icon (the active installs list)
     header_art = Signal(int, bytes)  # game id, the hero or banner behind its page's header
-    progress = Signal(int, int, int, str)  # game, written, total, state text
+    progress = Signal(int, object, object, str)  # game, written, total (bytes, past 2 GiB: not a 32-bit int), state text
     log = Signal(int, str)
     finished = Signal(int, str)  # game, error text ("" on success)
     pad = Signal(str)
@@ -190,9 +205,13 @@ class Bridge(QObject):
     notifications = Signal(object)  # {"notifications": [...], "unread": n}
     libraries = Signal(list)
     installers = Signal(int, object, str)  # game id, candidates (None on error), error
-    game_size = Signal(int, int)  # game id, bytes on the server
+    game_size = Signal(int, object)  # game id, bytes on the server (not a 32-bit int)
+    activity = Signal()  # something started, moved on or ended in the background: the sidebar's rows follow
+    mods_loaded = Signal(int, object)  # game id, its mods ({name, kind, size_bytes, file_count})
+    game_sizes = Signal(int, object)  # game id, {"installer", "cache", "saves", "total"} bytes the server holds
+    played = Signal(int)  # a game was played and its saves looked at: its page shows it
     update_checked = Signal(object, str, bool)  # UpdateInfo or None, error text, user asked
-    update_progress = Signal(int, int)  # written, total
+    update_progress = Signal(object, object)  # written, total bytes
     update_ready = Signal(str)  # path of the replaced build, to relaunch
     update_failed = Signal(str)
     call = Signal(object)  # a callable to run on the GUI thread
@@ -214,6 +233,11 @@ class App:
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
+        self._icons_asked: set[int] = set()
+        self.mods: dict[int, list[dict]] = {}  # each game's mods, once asked
+        self.mod_jobs: dict[tuple[int, str], tuple[str, int]] = {}  # (game, mod) -> (stage, percent) while it is fetched
+        self.revision: str | None = None  # the server's library revision at the last load
+        self.refreshing = False
         self.sizes: dict[int, int] = {}  # bytes each game takes on the server, once asked
         self.after_stop = StopActions()  # runs once that install has stopped
 
@@ -264,16 +288,110 @@ class App:
     def refresh(self) -> None:
         def work():
             client = self.client()
+            self.revision = client.games_revision()  # before the list, so a change meanwhile shows as a difference
+            libraries: list[dict] = []
             try:
-                self.bridge.libraries.emit(client.list_libraries())
+                libraries = client.list_libraries()
+                self.bridge.libraries.emit(libraries)
             except RuntimeError:
                 pass  # an older server without the endpoint just has no library filter
+            self._load_user(client)
             games = client.list_games()
             self.bridge.games.emit(games)
+            try:
+                snapshot.save_library(self.settings.base, games, libraries)
+            except OSError as e:
+                logstore.warning(f"Could not keep the library for the next start: {e}")
             with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
                 list(pool.map(lambda g: self._load_cover(g, client), games))
 
+        def done() -> None:
+            self.refreshing = False
+
+        self.refreshing = True
+        self.run_bg(lambda: (work(), done()), on_error=lambda m: (done(), self.bridge.error.emit(m)))
+
+    def load_mods(self, game_id: int) -> None:
+        """Ask for the game's mods; the answer comes as `mods_loaded`."""
+
+        def work() -> None:
+            found = self.client().mods(game_id)
+            self.mods[game_id] = found
+            self.bridge.mods_loaded.emit(game_id, found)
+
+        self.run_bg(work, on_error=lambda _m: None)
+
+    def download_mod(self, game: dict, mod: dict) -> None:
+        """Fetch a mod to the Downloads folder (the server zips a folder first), with its progress in the sidebar."""
+        key = (game["id"], mod["name"])
+        if key in self.mod_jobs:
+            return
+        bridge = self.bridge
+        self.mod_jobs[key] = ("Preparing", 0)
+
+        def changed() -> None:
+            bridge.activity.emit()
+
+        def progress(stage: str, percent: int) -> None:
+            self.mod_jobs[key] = (stage, percent)
+            changed()
+
+        def work() -> None:
+            try:
+                saved = mods_download.fetch(self.client(), game["id"], mod, mods_download.download_dir(game["name"]), progress)
+            except Exception as e:  # noqa: BLE001 - told to the user
+                bridge.message.emit("error", f"Mod {mod['name']} of {game['name']}: {e}")
+            else:
+                bridge.message.emit("info", f"Mod {mod['name']} of {game['name']} downloaded: {saved}")
+            finally:
+                self.mod_jobs.pop(key, None)
+                changed()
+
+        changed()
         self.run_bg(work)
+
+    def poll_library(self) -> None:
+        """Ask the server whether the library changed (a scan, a scrape, an edit) and, if so, load it again."""
+        if not self.settings.configured or self.refreshing or self.revision is None:
+            return
+
+        def work() -> None:
+            current = self.client().games_revision()
+            if current is not None and current != self.revision and not self.refreshing:
+                logstore.info("The library changed on the server, refreshing it")
+                self.refresh()
+
+        self.run_bg(work, on_error=lambda _m: None)
+
+    def load_cached_covers(self, games: list[dict]) -> None:
+        """The covers already on disk, for the library shown from the snapshot before the network answers."""
+
+        def work() -> None:
+            for game in games:
+                url = artwork_urls(game).get("portrait")
+                if not url:
+                    continue
+                cache = data_dir() / "covers" / f"{game['id']}-{hashlib.sha1(url.encode()).hexdigest()[:10]}.img"
+                try:
+                    self.bridge.cover.emit(game["id"], cache.read_bytes())
+                except OSError:
+                    continue
+
+        self.run_bg(work, on_error=lambda _m: None)
+
+    def _load_user(self, client) -> None:
+        """Who this client is signed in as, and their picture, for the corner of the window."""
+        try:
+            me = client.me()
+        except RuntimeError:
+            return
+        avatar = me.get("avatar_path")
+        name, picture = me.get("username") or self.settings.user, client.get_image(avatar) if avatar else None
+        self.bridge.user.emit(name, picture)
+        try:
+            snapshot.save_user(self.settings.base, name, picture)
+        except OSError as e:
+            logstore.warning(f"Could not keep the user for the next start: {e}")
 
     def _image(self, cache: Path, server_path: str, url: str, client) -> bytes | None:
         """Cached image: from the MOG-Server first (it caches and shrinks them, so a
@@ -315,6 +433,21 @@ class App:
 
         self.run_bg(work, on_error=lambda _m: None)
 
+    def fetch_icon(self, game: dict) -> None:
+        """The small icon the server has for the game, once per game."""
+        url = ((game.get("media") or {}).get("icon") or {}).get("url")
+        if not url or game["id"] in self._icons_asked:
+            return
+        self._icons_asked.add(game["id"])
+
+        def work() -> None:
+            cache = data_dir() / "art" / f"{game['id']}-icon-{hashlib.sha1(url.encode()).hexdigest()[:10]}.img"
+            blob = self._image(cache, f"/api/games/{game['id']}/media/icon", url, self.client())
+            if blob is not None:
+                self.bridge.icon.emit(game["id"], blob)
+
+        self.run_bg(work, on_error=lambda _m: None)
+
     def fetch_header_art(self, game: dict) -> None:
         """The hero (else the banner) the server chose for the game, for the page's header."""
 
@@ -349,7 +482,13 @@ class App:
 
     def load_size(self, game_id: int) -> None:
         def work():
-            size = self.client().game_size(game_id)
+            client = self.client()
+            held = client.game_sizes(game_id)
+            if held is not None:
+                self.sizes[game_id] = held["installer"]
+                self.bridge.game_sizes.emit(game_id, held)
+                return
+            size = client.game_size(game_id)
             if size is not None:
                 self.sizes[game_id] = size
                 self.bridge.game_size.emit(game_id, size)
@@ -639,6 +778,46 @@ class NotificationsPage(Page):
 
     def clear_all(self) -> None:
         self.win.delete_notification(None)
+
+
+class ModsPage(Page):
+    """A game's mods, one row each; Enter downloads the one on it (the server zips a folder first). Mods are
+    only fetched, never installed."""
+
+    title = "Mods"
+
+    def __init__(self, win: "MainWindow", game: dict, mods: list[dict]):
+        super().__init__()
+        self.win, self.game = win, game
+        note = QLabel(
+            "Pick a mod to download it. Nothing is installed: the file is saved in "
+            f"{mods_download.download_dir(game['name'])}. A folder is zipped by the server first; its progress is in the sidebar."
+        )
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        for mod in mods:
+            what = "folder, zipped on download" if mod.get("kind") == "folder" else mod.get("kind", "file")
+            item = QListWidgetItem(f"{mod['name']}\n{what}, {fmt_bytes(mod.get('size_bytes') or 0)}")
+            item.setData(Qt.UserRole, mod)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemActivated.connect(self.fetch)
+        self.list.itemClicked.connect(self.fetch)
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list, 1)
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def fetch(self, item: QListWidgetItem) -> None:
+        mod = item.data(Qt.UserRole)
+        if (self.game["id"], mod["name"]) in self.win.app.mod_jobs:
+            self.win.notify(f"{mod['name']} is already being fetched")
+            return
+        self.win.app.download_mod(self.game, mod)
+        self.win.notify(f"Fetching the mod {mod['name']}")
 
 
 class OptionsPage(Page):
@@ -1123,7 +1302,7 @@ class SettingsPage(Page):
         menu.add(
             OptionRow(
                 "Back up saves",
-                "Keep each game's saves on the server, one copy per machine, so two PCs never overwrite each other's.",
+                "Keep each game's saves on the server and bring a newer save from another machine over, so you can continue a game on any PC.",
                 self.sync_saves_box,
             )
         )
@@ -1527,6 +1706,30 @@ class ExecutablePage(Page):
 SHOT_SIZE = QSize(224, 126)
 
 
+class SearchBox(QLineEdit):
+    """The search field: a cross in its corner empties it, and so does Ctrl+Backspace (which would otherwise delete a
+    word), the keyboard's way of the pad's R2."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._clear = QAction(clear_icon(), "Clear the search", self)
+        self._clear.triggered.connect(self.empty)
+        self.addAction(self._clear, QLineEdit.TrailingPosition)
+        self._clear.setVisible(False)
+        self.textChanged.connect(lambda text: self._clear.setVisible(bool(text)))
+
+    def empty(self) -> None:
+        self.clear()
+        self.setFocus()
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802 - Qt's name
+        if e.key() == Qt.Key_Backspace and e.modifiers() & Qt.ControlModifier:
+            self.clear()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+
 class EdgeList(QListWidget):
     """A list that hands focus on past its first and last row, so a pad can walk through a stack of lists."""
 
@@ -1639,13 +1842,19 @@ class GamePage(Page):
             widget.setObjectName("metaValue")
             form.addRow(key, widget)
 
-        for label, value in metadata_lines(game):
+        for label, value in [*metadata_lines(game), *hltb_lines(game)]:
             val = QLabel(value)
             val.setWordWrap(True)
             val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             row(label, val)
         self.size_label = QLabel("...")
         row("Size on server", self.size_label)
+        self.played_label = QLabel()
+        row("Last played", self.played_label)
+        self.sync_label = QLabel()
+        self.sync_label.setWordWrap(True)
+        row("Last save sync", self.sync_label)
+        self.sync_key = form.labelForField(self.sync_label)
         info_col.addLayout(form)
         text = game.get("summary") or (game.get("igdb_metadata") or {}).get("summary") or ""
         summary = QLabel(text if len(text) < 700 else text[:700].rsplit(" ", 1)[0] + "...")
@@ -1684,17 +1893,56 @@ class GamePage(Page):
         b.finished.connect(self._on_finished)
         b.image.connect(self._on_image)
         b.game_size.connect(self._on_size)
+        b.game_sizes.connect(self._on_sizes)
+        b.mods_loaded.connect(self._on_mods)
+        b.played.connect(self._on_played)
         b.header_art.connect(self._on_header_art)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.covers.get(gid)))
         self.app.fetch_images(self.shot_urls, game["id"])
         self.app.fetch_header_art(game)
         self._update_version_label()
         self.app.load_size(game["id"])
+        self.app.load_mods(game["id"])
+        self._show_play_rows()
         self.rebuild()
+
+    def _on_mods(self, gid: int, found: list) -> None:
+        if gid == self.game["id"] and found:  # the Mods button appears; a game with none changes nothing
+            had_focus = self.first is not None and self.first.hasFocus()
+            self.rebuild()
+            if had_focus and self.first:
+                self.first.setFocus()
+
+    def open_mods(self) -> None:
+        self.win.push(ModsPage(self.win, self.game, self.app.mods.get(self.game["id"], [])))
 
     def _on_size(self, gid: int, size: int) -> None:
         if gid == self.game["id"]:
             self.size_label.setText(fmt_bytes(size))
+
+    def _on_sizes(self, gid: int, held: dict) -> None:
+        if gid == self.game["id"]:
+            parts = [f"{name} {fmt_bytes(held[key])}" for name, key in (("Installer", "installer"), ("Cache", "cache"), ("Saves", "saves"))]
+            self.size_label.setText(f"{fmt_bytes(held['total'])} ({', '.join(parts)})")
+
+    def _on_played(self, gid: int) -> None:
+        group = self._group()
+        if gid == self.game["id"] or (group is not None and any(m["id"] == gid for m in group.members)):
+            self._show_play_rows()
+
+    def _show_play_rows(self) -> None:
+        """When this machine last started the game, and whether its saves were synced when it was closed."""
+        gid = self.game["id"]
+        group = self._group()
+        members = group.members if group else [self.game]
+        played = ordering.last_played(Group(members=members, versions=members), played_at.history())
+        self.played_label.setText(sync_ui.when_epoch(played) if played else "Never")
+        rec = load_library().get(gid)
+        enabled = bool(rec) and sync.enabled(rec, self.app.settings)
+        self.sync_key.setVisible(enabled)
+        self.sync_label.setVisible(enabled)
+        if enabled:
+            self.sync_label.setText(sync_ui.describe_check(load_state(gid)))
 
     def _on_header_art(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()
@@ -1727,6 +1975,8 @@ class GamePage(Page):
         self.header.set_image(None)
         self.app.fetch_header_art(game)
         self.app.load_size(game["id"])
+        self.app.load_mods(game["id"])
+        self._show_play_rows()
         self.rebuild()
 
     def start_with(self, version: dict, installer: dict | None) -> None:
@@ -1845,6 +2095,8 @@ class GamePage(Page):
             self.bar.setValue(0)
             self.first = self._button("Resume" if rec else "Install", self.install, True)
             self._button("Options", lambda: self.show_options(rec))
+        if self.app.mods.get(gid):
+            self._button("Mods", self.open_mods)
 
     def install(self) -> None:
         group = self._group()
@@ -2153,6 +2405,7 @@ class LibraryPage(Page):
         self.libs = EdgeList()
         self.libs.currentRowChanged.connect(self._library_chosen)
         self.installs = EdgeList()
+        self.installs.setIconSize(ACTIVE_ICON)
         self.installs.itemActivated.connect(self._open_install)
         self.installs.itemClicked.connect(self._open_install)
         # Running installs sit above the libraries, and the section is only there while one runs.
@@ -2161,16 +2414,30 @@ class LibraryPage(Page):
         box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self._heading("Active installs"))
         box.addWidget(self.installs)
+        self.sorts = EdgeList()
+        self.sorts.setItemDelegate(OptionDelegate(self.sorts))
+        self.sorts.itemActivated.connect(self._sort_chosen)
+        self.sorts.itemClicked.connect(self._sort_chosen)
         side = QVBoxLayout(self.sidebar)
         side.setContentsMargins(0, 0, 0, 0)
         side.addWidget(self.installs_box)
         side.addWidget(self._heading("Libraries"))
         side.addWidget(self.libs, 1)
+        side.addWidget(self._heading("Sort by"))
+        side.addWidget(self.sorts)
+        self._ranks: dict[int, tuple[bool, bool]] = {}
+        self.syncing: set[int] = set()  # games whose saves are being backed up after they closed
+        self._fill_sorts()
+        self.installs_box.setVisible(False)  # only while an install runs (see update_active)
         self.sidebar.setVisible(win.app.settings.show_sidebar)
 
+        self.loading = LoadingPanel()
+        self.shelf = QStackedLayout()  # the grid, or Mog at work while the games are being fetched
+        self.shelf.addWidget(self.grid)
+        self.shelf.addWidget(self.loading)
         lay = QHBoxLayout(self)
         lay.addWidget(self.sidebar)
-        lay.addWidget(self.grid, 1)
+        lay.addLayout(self.shelf, 1)
         self._fill_libraries()
 
     @staticmethod
@@ -2196,6 +2463,50 @@ class LibraryPage(Page):
         self.libraries = libraries
         self._fill_libraries()
 
+    def _rank(self, group: Group, lib: dict) -> tuple[bool, bool]:
+        """(being installed, installed): what puts a title ahead in the order. A game that is only waiting for its
+        executable to be chosen has its files but is not playable, so it does not count as installed here."""
+        installing = any(m["id"] in self.win.app.installs for m in group.members)
+        installed = any(lib.get(m["id"]) and lib[m["id"]].state == "installed" for m in group.members)
+        return installing, bool(installed)
+
+    def _fill_sorts(self) -> None:
+        """Two switches (last played first, installed first) and the orders, one of which is the chosen one."""
+        settings = self.win.app.settings
+        row = max(self.sorts.currentRow(), 0)
+        self.sorts.blockSignals(True)
+        self.sorts.clear()
+        switches = (("last_played", "Last played first", settings.sort_last_played), ("installed", "Installed first", settings.sort_installed_first))
+        for key, text, on in switches:
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, ("switch", key))
+            item.setData(ROLE_KIND, "switch")
+            item.setData(ROLE_ON, on)
+            self.sorts.addItem(item)
+        for number, (key, text) in enumerate(ordering.ORDERS.items()):
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, ("order", key))
+            item.setData(ROLE_KIND, "radio")
+            item.setData(ROLE_ON, settings.sort_order == key)
+            item.setData(ROLE_DIVIDER, number == 0)
+            self.sorts.addItem(item)
+        self.sorts.setCurrentRow(min(row, self.sorts.count() - 1))
+        self.sorts.blockSignals(False)
+        self.sorts.setFixedHeight(self.sorts.sizeHintForRow(0) * self.sorts.count() + 12)
+
+    def _sort_chosen(self, item: QListWidgetItem) -> None:
+        kind, key = item.data(Qt.UserRole)
+        settings = self.win.app.settings
+        if kind == "switch" and key == "last_played":
+            settings.sort_last_played = not settings.sort_last_played
+        elif kind == "switch":
+            settings.sort_installed_first = not settings.sort_installed_first
+        else:
+            settings.sort_order = key
+        save_settings(settings)
+        self._fill_sorts()
+        self.populate(self.win.search.text().lower())
+
     def _open_install(self, item: QListWidgetItem) -> None:
         gid = item.data(Qt.UserRole)
         if gid is not None:
@@ -2204,6 +2515,11 @@ class LibraryPage(Page):
     def _library_chosen(self, row: int) -> None:
         self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
         self.populate(self.win.search.text().lower())
+
+    def show_loading(self, loading: bool) -> None:
+        self.shelf.setCurrentWidget(self.loading if loading else self.grid)
+        if not loading and self.isVisible():
+            self.grid.setFocus()
 
     def toggle_sidebar(self) -> None:
         shown = not self.sidebar.isVisible()
@@ -2270,23 +2586,41 @@ class LibraryPage(Page):
         group = self.win.app.group_of.get(gid)
         if item is not None and group is not None:
             self._fill_item(item, group, load_library())
+            now = self._rank(group, load_library())
+            if self._ranks.get(id(group), now) != now:
+                # Started or finished installing, or removed: the game belongs elsewhere in the order.
+                QTimer.singleShot(0, lambda: self.populate(self.win.search.text().lower()))
         self.update_active()
 
     def update_active(self) -> None:
-        running = [gid for gid in self.win.app.installs if gid in self.win.app.games]
+        """What is going on in the background, one row each: installs, saves being synced and mods being fetched."""
+        app = self.win.app
+        installing = [gid for gid in app.installs if gid in app.games]
+        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%") for gid in installing]
+        rows += [(gid, "Syncing saves...") for gid in sorted(self.syncing) if gid in app.games and gid not in installing]
+        rows += [
+            (gid, f"Mod {name}: {stage}... {pct}%")
+            for (gid, name), (stage, pct) in app.mod_jobs.items()
+            if gid in app.games
+        ]
         row = self.installs.currentRow()
         self.installs.clear()
-        for gid in running:
-            item = QListWidgetItem(f"{self.win.app.games[gid]['name']}: {(self._progress(gid) or 0) // 10}%")
+        for gid, doing in rows:
+            game = app.games[gid]
+            item = QListWidgetItem(f"{game['name']}\n{doing}")
             item.setData(Qt.UserRole, gid)
+            if gid in self.win.icons:
+                item.setIcon(QIcon(self.win.icons[gid]))
+            else:
+                app.fetch_icon(game)
             self.installs.addItem(item)
-        if running and row >= 0:
-            self.installs.setCurrentRow(min(row, len(running) - 1))
-        if not running and self.installs_box.isAncestorOf(QApplication.focusWidget()):
+        if rows and row >= 0:
+            self.installs.setCurrentRow(min(row, len(rows) - 1))
+        if not rows and self.installs_box.isAncestorOf(QApplication.focusWidget()):
             self.libs.setFocus()  # the list the focus was in is about to go
-        rows = self.installs.sizeHintForRow(0) if running else 0
-        self.installs.setFixedHeight(min(170, rows * len(running) + 12))  # as tall as its rows, up to a limit
-        self.installs_box.setVisible(bool(running))
+        height = self.installs.sizeHintForRow(0) if rows else 0
+        self.installs.setFixedHeight(min(170, height * len(rows) + 12))  # as tall as its rows, up to a limit
+        self.installs_box.setVisible(bool(rows))
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
@@ -2303,17 +2637,21 @@ class LibraryPage(Page):
         for game in shown:
             group = self.win.app.group_of[game["id"]]
             groups[id(group)] = group  # a title shows once, with all its versions
-        def order(group: Group) -> tuple[int, str]:
-            """Installing first, then installed, then the rest; alphabetical within each."""
-            if any(m["id"] in self.win.app.installs for m in group.members):
-                rank = 0
-            elif any(lib.get(m["id"]) and lib[m["id"]].state in ("installed", "awaiting_executable") for m in group.members):
-                rank = 1
-            else:
-                rank = 2
-            return rank, group.game["name"].lower()
+        settings = self.win.app.settings
+        played = played_at.history()
 
-        for group in sorted(groups.values(), key=order):
+        ordered = ordering.sort_groups(
+            list(groups.values()),
+            order=settings.sort_order,
+            installing=lambda g: self._rank(g, lib)[0],
+            installed=lambda g: self._rank(g, lib)[1],
+            played=lambda g: ordering.last_played(g, played),
+            last_played_first=settings.sort_last_played,
+            installed_first=settings.sort_installed_first,
+        )
+        self._ranks = {id(g): self._rank(g, lib) for g in ordered}
+
+        for group in ordered:
             item = QListWidgetItem()
             self._fill_item(item, group, lib)
             self.grid.addItem(item)
@@ -2342,30 +2680,33 @@ class MainWindow(QMainWindow):
         self.title.setStyleSheet("font-size: 24px; font-weight: bold;")
         self.logo = QLabel()
         self.logo.setPixmap(asset_pixmap("title.png", 44))
-        self.search = QLineEdit()
+        self.search = SearchBox()
         self.search.setPlaceholderText("Search")
         self.search.textChanged.connect(self.refresh_items)
-        self.reload_btn, self.settings_btn = QPushButton("Refresh"), QPushButton("Settings")
-        self.notif_btn = BadgeButton()  # just the bell, with its unread count on the corner
-        self.notif_btn.setObjectName("bellButton")
-        self.notif_btn.setIcon(bell_icon(26))
-        self.notif_btn.setIconSize(QSize(26, 26))
-        self.notif_btn.setToolTip("Notifications")
-        self.notif_btn.setAccessibleName("Notifications")
-        self.notif_btn.clicked.connect(self.open_notifications)
+        # Who is signed in, with their picture, as on MOG-Server; the unread notifications count on its corner.
+        self.user_btn = BadgeButton(app.settings.user)
+        self.user_btn.setObjectName("userButton")
+        self.user_btn.setIcon(avatar_icon(None, app.settings.user))
+        self.user_btn.setIconSize(QSize(28, 28))
+        self.user_btn.setToolTip("Settings, notifications, refresh and sign out")
+        self.user_btn.setAccessibleName("Account")
+        self.user_btn.clicked.connect(self.open_user_menu)
+        self.user_btn.setVisible(bool(app.settings.user))
+        self.user_menu = QMenu(self)
+        self.user_menu.addAction("Settings", self.open_settings)
+        self.notifications_action = self.user_menu.addAction("Notifications", self.open_notifications)
+        self.user_menu.addAction("Refresh library", lambda: self.app.refresh())
+        self.user_menu.addSeparator()
+        self.user_menu.addAction("Sign out", self.sign_out)
         self.notifications: list[dict] = []
         self.seen_notification_id: int | None = None
-        self.reload_btn.clicked.connect(app.refresh)
-        self.settings_btn.clicked.connect(self.open_settings)
         top = QHBoxLayout()
         top.addWidget(self.back_btn)
         top.addWidget(self.logo)
         top.addWidget(self.title)
         top.addWidget(self.search, 1)
         top.addStretch(1)
-        top.addWidget(self.reload_btn)
-        top.addWidget(self.notif_btn)
-        top.addWidget(self.settings_btn)
+        top.addWidget(self.user_btn)
         self.stack = QStackedWidget()
         self.library = LibraryPage(self)
         self.stack.addWidget(self.library)
@@ -2389,6 +2730,7 @@ class MainWindow(QMainWindow):
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
         self.overlay.changed.connect(self.refresh_legend)
         self.covers: dict[int, QPixmap] = {}
+        self.icons: dict[int, QPixmap] = {}
         b = app.bridge
         b.call.connect(lambda fn: fn())
         self._steam_settled = False
@@ -2399,10 +2741,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self.nav_sounds)
         QApplication.instance().aboutToQuit.connect(self.sounds.close)
         b.games.connect(self.set_games)
-        b.error.connect(lambda text: self.message(text, "error"))
+        b.error.connect(self._on_error)
         b.message.connect(lambda level, text: self.message(text, level))  # the signal says level first
         b.note.connect(self.notify)
         b.cover.connect(self.set_cover)
+        b.icon.connect(self.set_icon)
+        b.user.connect(self.set_user)
+        b.activity.connect(self.library.update_active)
         b.finished.connect(lambda *_: self.refresh_items())
         b.progress.connect(lambda gid, *_: self.library.update_label(gid))
         b.pad.connect(self.on_pad_event)
@@ -2416,7 +2761,29 @@ class MainWindow(QMainWindow):
         self.osk = osk.OnScreenKeyboard(self.open_keyboard)
         self._add_shortcuts()
         self.pad_stop = gamepad.start(b.pad.emit, b.pad_connected.emit)
+        self.library.show_loading(app.settings.configured)
+        self._show_snapshot()
+        self.library_timer = QTimer(self)
+        self.library_timer.timeout.connect(app.poll_library)
+        self.library_timer.start(20000)
         self._show(self.library)
+
+    def _show_snapshot(self) -> None:
+        """What the server last sent, so the window shows the library and the user at once, before the real list
+        arrives (and is the same when nothing changed)."""
+        settings = self.app.settings
+        if not settings.configured:
+            return
+        games, libraries = snapshot.load_library(settings.base)
+        if games:
+            self.app.set_games(games)
+            self.library.set_libraries(libraries)
+            self.library.show_loading(False)
+            self.refresh_items()
+            self.app.load_cached_covers(games)
+        user = snapshot.load_user(settings.base)
+        if user:
+            self.set_user(*user)
 
     def closeEvent(self, e):
         self.pad_stop.set()
@@ -2431,9 +2798,7 @@ class MainWindow(QMainWindow):
         on_library = page is self.library
         self.back_btn.setVisible(not on_library)
         self.search.setVisible(page.searchable)
-        self.reload_btn.setVisible(on_library)
-        self.settings_btn.setVisible(on_library)
-        self.notif_btn.setVisible(on_library or isinstance(page, GamePage))  # a game's page keeps the bell
+        self.user_btn.setVisible(bool(self.app.settings.user) and (on_library or isinstance(page, GamePage)))
         self.logo.setVisible(on_library)
         self.title.setVisible(not on_library)
         self.title.setText(page.title)
@@ -2572,13 +2937,22 @@ class MainWindow(QMainWindow):
     def _place(self, game: dict, needed: int, go) -> None:
         plan = installdirs.choose(self.app.settings.install_roots, needed)
         for slot in plan.slots:
-            if slot.state == "unavailable":
-                logstore.info(f"Install folder {slot.path} is not available, skipped")
+            logstore.info(f"Install folder {slot.path}: {slot.state}, {fmt_bytes(slot.free)} free, {game['name']} needs about {fmt_bytes(needed)}")
         ready = plan.ready
         if not ready:
-            self.message(
-                f"No install folder has room for {game['name']} ({fmt_bytes(needed)}). Free some space, connect a drive "
-                "or add a folder in Settings."
+            full = [slot for slot in plan.slots if slot.state == "full"]
+            if not full:
+                self.message(
+                    f"No install folder is available for {game['name']}. Connect a drive or add a folder in Settings."
+                )
+                return
+            # The figure is the size of the game's whole folder on the server (every installer, version and extra),
+            # which can be well above what this install writes, so a folder that looks too small is offered anyway.
+            best = max(full, key=lambda slot: slot.free)
+            self.ask(
+                f"{game['name']} takes about {fmt_bytes(needed)} on the server (all of its folder), and {best.path} has "
+                f"{fmt_bytes(best.free)} free. The install itself may need less. Install it there anyway?",
+                lambda: go(best.path),
             )
             return
         full = plan.blocked_by
@@ -2611,6 +2985,11 @@ class MainWindow(QMainWindow):
             lambda: self.push(UpdatePage(self, info)),
         )
 
+    def _shortcut_menu(self) -> None:
+        page = self.current_page()
+        if page is self.library or isinstance(page, GamePage):
+            self.open_menu()
+
     def _add_shortcuts(self) -> None:
         def on_library(action):
             return lambda: action() if self.current_page() is self.library else None
@@ -2619,11 +2998,13 @@ class MainWindow(QMainWindow):
             ("F5", self.app.refresh),
             ("Ctrl+F", self.search.setFocus),
             ("Ctrl+B", self.library.toggle_sidebar),
+            ("Ctrl+Backspace", self.search.clear),
             ("Ctrl+N", self.open_notifications),
-            ("Ctrl+,", self.open_settings),
         ):
             QShortcut(QKeySequence(keys), self, on_library(action))
+        QShortcut(QKeySequence("Ctrl+,"), self, self._shortcut_menu)
         QShortcut(QKeySequence("Ctrl+Q"), self, self.quit_app)
+        QShortcut(QKeySequence("Ctrl+U"), self, self._shortcut_menu)
 
     def set_pad(self, connected: bool, family: str) -> None:
         self.pad_family = family if connected else None
@@ -2728,6 +3109,8 @@ class MainWindow(QMainWindow):
                 self.library.toggle_sidebar()
             return
         if name == gamepad.TRIGGER_R:
+            if page is self.library:
+                self.search.clear()
             return
         if name in (gamepad.REFRESH, gamepad.SEARCH):
             if self.current_page() is self.library:
@@ -2738,9 +3121,9 @@ class MainWindow(QMainWindow):
                     if self.osk.enabled:
                         self.osk.request(self.search)
             return
-        if name == gamepad.MENU:
-            if self.current_page() is self.library:
-                self.open_settings()
+        if name in (gamepad.MENU, gamepad.ACCOUNT):  # Start, and Select as well: the user menu
+            if page is self.library or isinstance(page, GamePage):
+                self.open_menu()
             return
         popup = QApplication.activePopupWidget()
         focus = QApplication.focusWidget()
@@ -2782,6 +3165,48 @@ class MainWindow(QMainWindow):
         for kind in (QEvent.KeyPress, QEvent.KeyRelease):
             QApplication.postEvent(target, QKeyEvent(kind, key, Qt.NoModifier))
 
+    def open_menu(self) -> None:
+        """The user menu, whose first row (Settings) is ready for Enter; without a signed-in user there is no menu to
+        show, and the key goes straight to Settings so the server can be set up."""
+        if self.user_btn.isVisibleTo(self):
+            self.open_user_menu()
+        elif self.current_page() is self.library:
+            self.open_settings()
+
+    def open_user_menu(self) -> None:
+        """The menu under the user's picture, aligned to the window's right edge; the same again closes it."""
+        if not self.user_btn.isVisible():
+            return
+        if self.user_menu.isVisible():
+            self.user_menu.hide()
+            return
+        self.user_menu.adjustSize()
+        corner = self.user_btn.mapToGlobal(QPoint(self.user_btn.width() - self.user_menu.sizeHint().width(), self.user_btn.height()))
+        self.user_menu.popup(corner)
+        first = self.user_menu.actions()[0]
+        self.user_menu.setActiveAction(first)  # Enter (A) takes the first row at once, the arrows move on
+
+    def sign_out(self) -> None:
+        settings = self.app.settings
+        self.ask(
+            f"Sign out of {settings.base}? The saved password is forgotten and the library is emptied; the games "
+            "installed here stay where they are.",
+            self._signed_out,
+        )
+
+    def _signed_out(self) -> None:
+        settings = self.app.settings
+        settings.password = ""
+        save_settings(settings)
+        snapshot.forget()
+        self.app.set_games([])
+        self.library.set_libraries([])
+        self.refresh_items()
+        self.user_btn.setVisible(False)
+        self.user_btn.set_count(0)
+        self.notify("Signed out")
+        self.open_settings()
+
     def open_settings(self) -> None:
         self.push(SettingsPage(self))
 
@@ -2792,6 +3217,7 @@ class MainWindow(QMainWindow):
         self._playing = (rec, proc, stop)
         self.playing.show_game(rec.name, self.covers.get(rec.game_id))
         started_ns = time.time_ns()
+        played_at.record(rec.game_id)
 
         def work() -> None:
             ctx = None
@@ -2799,6 +3225,8 @@ class MainWindow(QMainWindow):
                 ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)
             recorder = runner.runtime_prefix_recorder(ctx) if ctx else None
             started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, **timing)
+            if started and ctx:
+                self.app.bridge.call.emit(lambda: self._sync_started(rec))
             result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None
             self.app.bridge.call.emit(lambda: self._play_ended(rec, proc, started, stop.is_set(), result))
 
@@ -2819,9 +3247,22 @@ class MainWindow(QMainWindow):
             target=lambda: gameplay.stop_game(Path(rec.install_dir), proc), daemon=True, name="stop-game"
         ).start()
 
+    def _sync_started(self, rec: InstalledGame) -> None:
+        """The game has closed and its saves are being backed up: the window is free again, and the sidebar shows
+        the sync the way it shows an install."""
+        self._playing = None
+        self.playing.end()
+        self.library.syncing.add(rec.game_id)
+        self.library.update_active()
+
     def _play_ended(self, rec: InstalledGame, proc, started: bool, stopped: bool, result) -> None:
         self._playing = None
         self.playing.end()
+        self.library.syncing.discard(rec.game_id)
+        self.library.update_active()
+        self.app.bridge.played.emit(rec.game_id)
+        if self.app.settings.sort_last_played:
+            self.library.populate(self.search.text().lower())
         if not started and not stopped:
             self.message(launch_failure(proc) or f"{rec.name} did not start", "error")
         if result is not None:
@@ -2840,7 +3281,13 @@ class MainWindow(QMainWindow):
 
         self.app.run_bg(work, on_error=lambda m: self.app.bridge.note.emit(f"Steam shortcuts: {m}"))
 
+    def _on_error(self, text: str) -> None:
+        self.message(text, "error")
+        if self.library.shelf.currentWidget() is self.library.loading:
+            self.library.show_loading(False)  # nothing is coming: do not leave Mog carrying boxes for good
+
     def set_games(self, games: list) -> None:
+        self.library.show_loading(False)
         self.app.set_games(games)
         self.app.poll_notifications()
         self.notify(f"{len(games)} games")
@@ -2850,6 +3297,18 @@ class MainWindow(QMainWindow):
         if self._pending_link:
             link, self._pending_link = self._pending_link, None
             self.handle_link(link)
+
+    def set_user(self, name: str, avatar: bytes | None) -> None:
+        self.user_btn.setText(name)
+        self.user_btn.setIcon(avatar_icon(avatar, name))
+        page = self.current_page()
+        self.user_btn.setVisible(bool(name) and (page is self.library or isinstance(page, GamePage)))
+
+    def set_icon(self, gid: int, blob: bytes) -> None:
+        pix = QPixmap()
+        if pix.loadFromData(blob):
+            self.icons[gid] = pix.scaled(ACTIVE_ICON, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.library.update_active()
 
     def set_cover(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()
@@ -2948,7 +3407,8 @@ class MainWindow(QMainWindow):
         self.seen_notification_id = newest
         self.notifications = items
         unread = data["unread"]
-        self.notif_btn.set_count(unread)
+        self.user_btn.set_count(unread)
+        self.notifications_action.setText(f"Notifications ({unread})" if unread else "Notifications")
         page = self.current_page()
         if isinstance(page, NotificationsPage):
             page.populate()
@@ -2975,6 +3435,8 @@ def run_gui(link: str | None = None) -> int:
         return 0
     osk.prefer_xcb()
     qapp = QApplication(sys.argv[:1])
+    logstore.write_to_file(data_dir() / "logs" / "client.log")  # what is logged survives the window closing
+    qapp.setDesktopFileName("mog-client")  # how the desktop finds the entry (and the icon) of this window
     qapp.setStyleSheet(STYLE)
     if crashlog.install():
         heartbeat = QTimer()

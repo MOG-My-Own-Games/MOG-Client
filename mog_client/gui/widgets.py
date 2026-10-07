@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QPushButton, QTabBar, QTabWidget
+from PySide6.QtWidgets import QCheckBox, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QTabWidget
 
 ACCENT_STOPS = ((0.0, "#9e3bf7"), (1.0, "#2859f9"))
 ACCENT_HOVER_STOPS = ((0.0, "#aa53f8"), (1.0, "#426dfa"))
@@ -87,6 +87,104 @@ class Toggle(QCheckBox):
             painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
 
 
+ROLE_KIND, ROLE_ON, ROLE_DIVIDER = Qt.UserRole + 20, Qt.UserRole + 21, Qt.UserRole + 22
+
+
+class OptionDelegate(QStyledItemDelegate):
+    """List rows drawn as settings: a small pill switch (kind "switch") or a round radio button (kind "radio") in
+    front of the text, the accent gradient when on, and a hairline above a row that starts a new group."""
+
+    ROW_H, MARK_W, MARK_H, PAD = 38, 34, 18, 12
+
+    def sizeHint(self, option, index) -> QSize:
+        return QSize(option.rect.width(), self.ROW_H)
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(option.rect).adjusted(2, 2, -2, -2)
+        if index.data(ROLE_DIVIDER):
+            painter.setPen(QColor("#2c333d"))
+            painter.drawLine(option.rect.left() + 8, option.rect.top(), option.rect.right() - 8, option.rect.top())
+        if option.state & QStyle.State_Selected:
+            painter.setPen(QPen(QColor("#4c8dff"), 3))
+            painter.setBrush(QColor("#1e2733"))
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 10, 10)
+        on = bool(index.data(ROLE_ON))
+        top = rect.top() + (rect.height() - self.MARK_H) / 2
+        left = rect.left() + self.PAD
+        if index.data(ROLE_KIND) == "switch":
+            track = QRectF(left, top, self.MARK_W, self.MARK_H)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(accent_gradient(track.left(), track.top(), track.right(), track.bottom()) if on else QColor("#2c333d"))
+            painter.drawRoundedRect(track, self.MARK_H / 2, self.MARK_H / 2)
+            knob = self.MARK_H - 6
+            painter.setBrush(QColor("white"))
+            painter.drawEllipse(QRectF(track.right() - knob - 3 if on else track.left() + 3, top + 3, knob, knob))
+            text_left = track.right() + self.PAD
+        else:
+            ring = QRectF(left + (self.MARK_W - self.MARK_H) / 2, top, self.MARK_H, self.MARK_H)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor("#4c8dff") if on else QColor("#59616e"), 2))
+            painter.drawEllipse(ring.adjusted(1, 1, -1, -1))
+            if on:
+                dot = ring.adjusted(5, 5, -5, -5)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(accent_gradient(dot.left(), dot.top(), dot.right(), dot.bottom()))
+                painter.drawEllipse(dot)
+            text_left = left + self.MARK_W + self.PAD
+        painter.setPen(QColor("#e8eaed") if on else QColor("#b8bfca"))
+        painter.drawText(QRectF(text_left, rect.top(), rect.right() - text_left - 4, rect.height()), Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        painter.restore()
+
+
+def clear_icon(size: int = 18) -> QIcon:
+    """A round grey button with a white cross, for the corner of a text field that empties it."""
+    ratio = 2
+    d = size * ratio
+    pix = QPixmap(d, d)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#59616e"))
+    painter.drawEllipse(QRectF(0, 0, d, d))
+    painter.setPen(QPen(QColor("white"), d * 0.1, Qt.SolidLine, Qt.RoundCap))
+    m = d * 0.32
+    painter.drawLine(m, m, d - m, d - m)
+    painter.drawLine(d - m, m, m, d - m)
+    painter.end()
+    return QIcon(pix)
+
+
+def avatar_icon(blob: bytes | None, name: str, size: int = 28) -> QIcon:
+    """The user's picture cut to a circle, or (without one) the accent gradient with their initial, as on MOG-Server."""
+    ratio = 2  # drawn at twice the size so the edge is smooth on a scaled display
+    d = size * ratio
+    pix = QPixmap(d, d)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    clip = QPainterPath()
+    clip.addEllipse(QRectF(0, 0, d, d))
+    painter.setClipPath(clip)
+    picture = QPixmap()
+    if blob and picture.loadFromData(blob):
+        side = min(picture.width(), picture.height())  # the middle square
+        painter.drawPixmap(QRectF(0, 0, d, d), picture, QRectF((picture.width() - side) / 2, (picture.height() - side) / 2, side, side))
+    else:
+        painter.fillRect(QRectF(0, 0, d, d), accent_gradient(0, 0, d, d))
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setPixelSize(int(d * 0.5))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, d, d), Qt.AlignCenter, (name[:1] or "?").upper())
+    painter.end()
+    return QIcon(pix)
+
+
 def bell_icon(size: int = 24) -> QIcon:
     """A white notification bell, same shape as MOG-Server's."""
     pix = QPixmap(size, size)
@@ -140,9 +238,9 @@ class FocusTabs(QTabWidget):
 
 
 class BadgeButton(QPushButton):
-    """A button with a red dot and a number on its top-right corner, as MOG-Server's bell has (an unread count).
+    """A button with a red dot and a number on its top-right corner, as MOG-Server's bell has (an unread count), here on the user's button.
     The dot is drawn over the button's own edge, so the style leaves OVERHANG pixels of room on the right
-    (`#bellButton` in the stylesheet)."""
+    (`#userButton` in the stylesheet)."""
 
     DIAMETER = 22
     OVERHANG = 8

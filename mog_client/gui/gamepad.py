@@ -19,8 +19,8 @@ import time
 from typing import Callable
 
 # Logical buttons handed to the callback.
-UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, SEARCH, TRIGGER_R, TRIGGER_L = (
-    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search", "trigger_r", "trigger_l"
+UP, DOWN, LEFT, RIGHT, ACCEPT, BACK, PAGE_PREV, PAGE_NEXT, MENU, QUIT, REFRESH, SEARCH, TRIGGER_R, TRIGGER_L, ACCOUNT = (
+    "up", "down", "left", "right", "accept", "back", "prev", "next", "menu", "quit", "refresh", "search", "trigger_r", "trigger_l", "account"
 )
 
 # The right stick as a stream of "scroll:<tilt>" events, tilt from -1 (up) to 1 (down).
@@ -58,6 +58,7 @@ BUTTON_FOR = {
     PAGE_PREV: SHOULDER_L,
     PAGE_NEXT: SHOULDER_R,
     MENU: START,
+    ACCOUNT: SELECT,
     TRIGGER_R: TRIGGER_R_GLYPH,
     TRIGGER_L: TRIGGER_L_GLYPH,
 }
@@ -143,29 +144,38 @@ class _Scroller:
 
 
 class _Combo:
-    """Start+Select quits; Start alone opens the menu once released, so the
-    menu does not flash up before the combo completes."""
+    """Start+Select quits. Start alone opens the menu and Select alone the user menu, each once released, so
+    neither flashes up before the combo completes."""
 
     def __init__(self, emit: Callable[[str], None]):
         self.emit = emit
-        self.start = self.select = self.used = False
+        self.start = self.select = False
+        self.start_used = self.select_used = False
 
     def set_start(self, down: bool) -> None:
         if down:
             self.start = True
             if self.select:
-                self.used = True
-                self.emit(QUIT)
+                self._quit()
         else:
-            if self.start and not self.used:
+            if self.start and not self.start_used:
                 self.emit(MENU)
-            self.start = self.used = False
+            self.start = self.start_used = False
 
     def set_select(self, down: bool) -> None:
-        self.select = down
-        if down and self.start and not self.used:
-            self.used = True
+        if down:
+            self.select = True
+            if self.start:
+                self._quit()
+        else:
+            if self.select and not self.select_used:
+                self.emit(ACCOUNT)
+            self.select = self.select_used = False
+
+    def _quit(self) -> None:
+        if not (self.start_used or self.select_used):
             self.emit(QUIT)
+        self.start_used = self.select_used = True
 
 
 class _Trigger:

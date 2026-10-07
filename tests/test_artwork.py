@@ -77,3 +77,27 @@ def test_the_release_date_is_written_out_in_english_whatever_the_locale():
     assert long_date(865_036_800) == "31 May 1997"
     assert long_date(1_704_067_200) == "1 January 2024"  # no zero-padded day
     assert metadata_lines({"igdb_metadata": {"first_release_date": 782_956_800}}) == [("Released", "24 October 1994")]
+
+
+def test_a_duration_is_minutes_under_an_hour_and_half_hours_above():
+    from mog_client.scrape import format_duration
+
+    assert [format_duration(s) for s in (1800, 2700, 3599, 3600, 36_000, 45_000, 43_200)] == [
+        "30m", "45m", "1h", "1h", "10h", "12.5h", "12h",
+    ]
+
+
+def test_howlongtobeat_rows_list_only_the_times_the_server_has():
+    from mog_client.scrape import hltb_lines
+
+    meta = {"main_story": 36_000, "main_plus_extra": 54_000, "completionist": 0, "all_styles": 50_000}
+    assert hltb_lines({"hltb_metadata": meta}) == [("Main Story", "10h"), ("Main + Extra", "15h")]
+
+
+def test_no_howlongtobeat_rows_without_times_or_from_an_older_server():
+    from mog_client.scrape import hltb_lines
+
+    assert hltb_lines({}) == []
+    assert hltb_lines({"hltb_metadata": None}) == []
+    assert hltb_lines({"hltb_id": 0, "hltb_metadata": {}}) == []
+    assert hltb_lines({"hltb_metadata": {"main_story": "n/a"}}) == []

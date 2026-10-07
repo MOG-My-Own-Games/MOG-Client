@@ -46,7 +46,7 @@ def test_the_guide_stays_on_one_line_by_shrinking_then_dropping_the_least_import
     height, entries = legend.fit(ctx, None, 40, 1100)  # a narrow window: the optional entries go, last first
     labels = [e.label for e in entries]
     assert legend.total_width(entries, None, height) <= 1100
-    assert "Notifications" not in labels and "Select" in labels and "Quit" in labels and "Settings" in labels
+    assert "Notifications" not in labels and "Select" in labels and "Quit" in labels and "Menu" in labels
     dropped = [e.label for e in legend.entries_for(ctx, None) if e.label not in labels]
     assert dropped == [e.label for e in legend.entries_for(ctx, None) if e.optional][-len(dropped) :]
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from mog_client import logstore
@@ -89,3 +90,22 @@ def metadata_lines(game: dict) -> list[tuple[str, str]]:
         ("Perspective", _names(meta.get("player_perspectives"))),
     ]
     return [(k, v) for k, v in rows if v]
+
+
+HLTB_STYLES = (("main_story", "Main Story"), ("main_plus_extra", "Main + Extra"), ("completionist", "Completionist"))
+
+
+def format_duration(seconds: float) -> str:
+    """Seconds as "45m" under an hour, else hours to the nearest half ("12.5h")."""
+    minutes = round(seconds / 60)
+    return f"{minutes}m" if minutes < 60 else f"{math.floor(seconds / 3600 * 2 + 0.5) / 2:g}h"
+
+
+def hltb_lines(game: dict) -> list[tuple[str, str]]:
+    """(label, time) rows from HowLongToBeat; none when the server has no times for the game (or predates them)."""
+    times = game.get("hltb_metadata") or {}
+    return [
+        (label, format_duration(times[key]))
+        for key, label in HLTB_STYLES
+        if isinstance(times.get(key), (int, float)) and times[key] > 0
+    ]

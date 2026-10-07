@@ -57,6 +57,10 @@ class Settings:
     check_updates: bool = True
     # The library page's left-hand sidebar (toggled with L2).
     show_sidebar: bool = True
+    # How the library is ordered (see ordering.py): last played first, installed first, then this order.
+    sort_last_played: bool = False
+    sort_installed_first: bool = True
+    sort_order: str = "newest"
     # The launchers found on this machine, in order of preference, and the MOG version that looked.
     launchers: list[str] = field(default_factory=list)
     launchers_scanned_for: str = ""

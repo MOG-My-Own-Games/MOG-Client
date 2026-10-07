@@ -31,11 +31,27 @@ def test_select_then_start_quits_without_menu():
     assert events == [gamepad.QUIT]
 
 
-def test_select_alone_does_nothing():
+def test_select_alone_opens_the_user_menu_on_release():
     combo, events = _combo()
     combo.set_select(True)
-    combo.set_select(False)
     assert events == []
+    combo.set_select(False)
+    assert events == [gamepad.ACCOUNT]
+
+
+def test_the_quit_combo_leaves_neither_the_menu_nor_the_user_menu_behind_and_each_works_again_after():
+    combo, events = _combo()
+    combo.set_select(True)
+    combo.set_start(True)
+    combo.set_select(False)
+    combo.set_start(False)
+    assert events == [gamepad.QUIT]
+
+    combo.set_select(True)
+    combo.set_select(False)
+    combo.set_start(True)
+    combo.set_start(False)
+    assert events == [gamepad.QUIT, gamepad.ACCOUNT, gamepad.MENU]
 
 
 def test_family_from_device_name():
