@@ -136,6 +136,24 @@ def backup(
 ) -> BackupResult:
     """Upload this game's saves if they changed. `since_ns` is when the session began, when known.
     With `upload=False` nothing is sent or remembered: "changed" says only that something differs here."""
+    try:
+        result = _backup(ctx, trigger, since_ns, force, upload)
+    except Exception:
+        if upload:
+            _record_check(ctx.rec.game_id, "failed", trigger)
+        raise
+    if upload:
+        _record_check(ctx.rec.game_id, result.status, trigger)
+    return result
+
+
+def _record_check(game_id: int, status: str, trigger: str) -> None:
+    state = load_state(game_id)
+    state.last_check_at, state.last_check_status, state.last_check_trigger = _now(), status, trigger
+    save_state(game_id, state)
+
+
+def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, upload: bool) -> BackupResult:
     rec = ctx.rec
     state = load_state(rec.game_id)
     found = find_prefix(ctx, state)

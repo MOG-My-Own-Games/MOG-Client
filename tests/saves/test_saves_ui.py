@@ -372,3 +372,10 @@ def test_use_it_then_the_games_folder_starts_the_game_and_never_asks_again(ui):
     ui.ui.before_launch(ui.rec, lambda: started.append(3))
     assert started == [1, 2, 3] and len(ui.win.choices) == 2
     assert (pfx_dir(ui.rec) / "drive_c/users/steamuser/Saved Games/s.sav").read_bytes() == b"theirs"
+
+
+def test_a_conflict_found_at_startup_is_only_logged_the_game_asks_when_it_is_opened(ui, monkeypatch):
+    monkeypatch.setattr(sync, "startup_check", lambda ctx: sync.StartupOutcome("conflict", from_device="steamdeck"))
+    ui.ui.check_all()
+    assert ui.win.messages == []
+    assert any("changed here and elsewhere" in n and "steamdeck" in n for n in ui.win.notes)

@@ -334,3 +334,38 @@ def test_a_preview_changes_nothing_and_sends_nothing(world, monkeypatch):
     assert result.status == "changed" and result.changed == ["users/USER/Saved Games/slot1.sav"]
     assert len(world.server.uploads) == uploads and load_state(7).tracked == tracked_before
     assert sync.backup(world.ctx, sync.SYNC).status == "uploaded"  # the real thing still sees the change
+
+
+def _game_with_a_save(world):
+    save_install_manifest(7, [{"path": "game.exe", "size_bytes": 3, "sha1": hashlib.sha1(b"exe").hexdigest()}])
+    write(world.install / "profile.sav", b"progress")
+
+
+def test_every_backup_leaves_a_note_of_when_and_how_it_went_even_when_nothing_changed(world):
+    _game_with_a_save(world)
+    assert load_state(7).last_check_at is None
+
+    sync.backup(world.ctx, sync.QUIT, since_ns=0)
+    first = load_state(7)
+    assert first.last_check_at and first.last_check_trigger == "quit" and first.last_check_status == "uploaded"
+
+    sync.backup(world.ctx, sync.SYNC)
+    again = load_state(7)
+    assert again.last_check_status == "unchanged" and again.last_check_trigger == "sync"
+
+    # A backup that only looks (nothing sent) is not a sync and leaves no note.
+    stamp = again.last_check_at
+    sync.backup(world.ctx, sync.SYNC, upload=False)
+    assert load_state(7).last_check_at == stamp
+
+
+def test_a_backup_that_fails_is_noted_as_failed(world, monkeypatch):
+    _game_with_a_save(world)
+
+    def boom(*a, **k):
+        raise RuntimeError("connection error")
+
+    monkeypatch.setattr(world.server, "upload_save", boom)
+    with pytest.raises(RuntimeError):
+        sync.backup(world.ctx, sync.QUIT, since_ns=0)
+    assert load_state(7).last_check_status == "failed"

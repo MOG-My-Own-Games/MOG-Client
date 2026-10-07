@@ -27,6 +27,31 @@ def when(iso: str) -> str:
         return iso
 
 
+def when_epoch(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
+
+
+_CHECK_RESULT = {
+    "uploaded": "saves uploaded",
+    "duplicate": "saves already on the server",
+    "unchanged": "up to date, nothing new",
+    "nothing": "no save files found",
+    "needs-prefix": "needs the prefix to be set",
+    "needs-confirmation": "needs the save folders to be confirmed",
+    "failed": "failed, the server could not be reached",
+}
+_CHECK_TRIGGER = {"quit": "after the game closed", "launch": "at start", "manual": "by hand", "sync": "at start", "uninstall": "on uninstall"}
+
+
+def describe_check(state) -> str:
+    """The last time this machine looked at a game's saves for a backup, and what came of it."""
+    if not state.last_check_at:
+        return "Not yet"
+    result = _CHECK_RESULT.get(state.last_check_status or "", state.last_check_status or "")
+    trigger = _CHECK_TRIGGER.get(state.last_check_trigger or "")
+    return f"{when(state.last_check_at)}: {result}" + (f" ({trigger})" if trigger else "")
+
+
 def version_label(version: dict, device: dict) -> str:
     count = version.get("file_count")
     files = f", {count} file{'' if count == 1 else 's'}" if count is not None else ""
@@ -423,9 +448,8 @@ class SaveSync:
                 "pending": "waiting for the prefix",
             }
             parts = [f"{labels[k]}: {', '.join(v)}" for k, v in groups.items() if v]
-            if parts:  # worth interrupting for only when something needs the user
-                needs = bool(groups["conflict"] or groups["setup"])
-                self.say("Saves: " + "; ".join(parts), "warning" if needs else None)
+            if parts:  # a window only for what needs the user now; a conflict is asked when the game is opened
+                self.say("Saves: " + "; ".join(parts), "warning" if groups["setup"] else None)
 
         first = games[0]
         self.with_context(first, run, ask=True, otherwise=lambda _reason: None)

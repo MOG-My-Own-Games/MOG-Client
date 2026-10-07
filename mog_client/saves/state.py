@@ -27,6 +27,11 @@ class SaveState:
     includes: list[str] | None = None
     last_version_id: int | None = None
     last_synced_at: str | None = None
+    # The last time the saves were looked at for a backup (also when nothing had changed), and what came of it,
+    # so the game's page can say whether a game's saves were synced when it was closed.
+    last_check_at: str | None = None
+    last_check_status: str | None = None
+    last_check_trigger: str | None = None
     # Newest server version, from any device, this machine already handled (applied or declined).
     seen_version_id: int | None = None
     # A downloaded archive waiting for a prefix to restore into.

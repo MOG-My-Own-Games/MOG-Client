@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from mog_client import played
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings, load_library
 from mog_client.launcher import detect_launcher, effective_launcher
@@ -88,6 +89,7 @@ def run_command(action: str, game_id: int, settings: Settings, client: MogClient
         return 1
     try:
         if action == "pre":
+            played.record(game_id)  # a start from a shortcut or Steam too, which is where plays are not seen otherwise
             pre_launch(rec, settings, client)
         elif action == "watch":
             watch_session(rec, settings, client, since_ns=time.time_ns())
