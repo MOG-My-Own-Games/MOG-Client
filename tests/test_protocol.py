@@ -49,7 +49,9 @@ def test_registering_on_linux_writes_the_handler_once(tmp_path, monkeypatch):
     assert protocol.register("/opt/MOG Client/mog.AppImage", "linux", tmp_path) is True
     entry = (tmp_path / ".local/share/applications" / protocol.DESKTOP_NAME).read_text()
     assert 'Exec="/opt/MOG Client/mog.AppImage" %u' in entry
-    assert "MimeType=x-scheme-handler/mog;" in entry and "NoDisplay=true" in entry
+    assert "MimeType=x-scheme-handler/mog;" in entry and "NoDisplay" not in entry and "Categories=Game;" in entry
+    icon = tmp_path / ".local/share/icons/hicolor/256x256/apps/mog-client.png"
+    assert icon.is_file() and f"Icon={icon}" in entry  # shown in the menu with its icon even from an AppImage
     assert ran == ["xdg-mime", "update-desktop-database"]
 
     ran.clear()
@@ -57,6 +59,15 @@ def test_registering_on_linux_writes_the_handler_once(tmp_path, monkeypatch):
     assert ran == []
     assert protocol.register("/home/me/MOG.AppImage", "linux", tmp_path) is True  # moved: written again
     assert "/home/me/MOG.AppImage" in (tmp_path / ".local/share/applications" / protocol.DESKTOP_NAME).read_text()
+
+
+def test_the_hidden_entry_of_an_earlier_version_is_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(protocol.subprocess, "run", lambda cmd, **kw: None)
+    old = tmp_path / ".local/share/applications" / protocol.OLD_DESKTOP_NAME
+    old.parent.mkdir(parents=True)
+    old.write_text("[Desktop Entry]\nNoDisplay=true\n")
+    protocol.register("/usr/bin/mog", "linux", tmp_path)
+    assert not old.exists()
 
 
 def test_a_missing_xdg_tool_does_not_get_in_the_way(tmp_path, monkeypatch):

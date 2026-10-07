@@ -14,7 +14,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
 SCHEME = "mog"
-DESKTOP_NAME = "mog-client-url.desktop"
+# The name KDE and GNOME look for from the window's own id, so the menu entry, the task manager and the
+# taskbar all show this one entry (and its icon) for the running client.
+DESKTOP_NAME = "mog-client.desktop"
+OLD_DESKTOP_NAME = "mog-client-url.desktop"  # an earlier version's entry, a hidden one without an icon
+ICON_SOURCE = Path(__file__).parent / "gui" / "assets" / "icon.png"
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
@@ -62,23 +66,38 @@ def same_server(a: str | None, b: str | None) -> bool:
     return left is not None and left == right
 
 
-def _desktop_entry(command: str) -> str:
+def _desktop_entry(command: str, icon: str | None = None) -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=MOG Client\n"
-        "Comment=Opens mog:// links from MOG-Server\n"
+        "Comment=Browse, install and launch games from a MOG-Server\n"
         f'Exec="{command}" %u\n'
-        "NoDisplay=true\n"
+        + (f"Icon={icon}\n" if icon else "")
+        + "Categories=Game;\n"
+        "StartupWMClass=mog-client\n"
         "Terminal=false\n"
         f"MimeType=x-scheme-handler/{SCHEME};\n"
     )
 
 
+def _install_icon(data: Path) -> str | None:
+    """Put the icon where the menu can find it (an AppImage has none installed), and return its path."""
+    target = data / "icons/hicolor/256x256/apps/mog-client.png"
+    try:
+        if not target.is_file() or target.read_bytes() != ICON_SOURCE.read_bytes():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(ICON_SOURCE.read_bytes())
+    except OSError:
+        return None
+    return str(target)
+
+
 def _register_linux(command: str, home: Path | None) -> bool:
     data = (home / ".local/share") if home else Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     target = data / "applications" / DESKTOP_NAME
-    text = _desktop_entry(command)
+    (data / "applications" / OLD_DESKTOP_NAME).unlink(missing_ok=True)
+    text = _desktop_entry(command, _install_icon(data))
     if target.is_file() and target.read_text() == text:
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
