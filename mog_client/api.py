@@ -144,16 +144,22 @@ class Client:
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
 
-    def download_to(self, path: str, dest: Path, timeout: float = 600.0) -> int:
-        """GET a file straight to `dest` (replaced atomically); returns the HTTP status."""
+    def download_to(self, path: str, dest: Path, timeout: float = 600.0, on_progress: Callable[[int, int], None] | None = None) -> int:
+        """GET a file straight to `dest` (replaced atomically); returns the HTTP status. `on_progress(written, total)`
+        is called as it arrives (total is 0 when the server does not say)."""
         req = urllib.request.Request(self.base + path, headers=self._headers({"Accept": "*/*"}))
         # Unique per call: two downloads of one file must not share (and then rename away) the same temp file.
         part = dest.with_name(f"{dest.name}.{uuid.uuid4().hex[:8]}.part")
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             with net.urlopen(req, timeout=timeout) as resp, open(part, "wb") as out:
+                total = int(resp.headers.get("Content-Length") or 0)
+                written = 0
                 while chunk := resp.read(STREAM_CHUNK):
                     out.write(chunk)
+                    written += len(chunk)
+                    if on_progress:
+                        on_progress(written, total)
                 status = resp.status
         except urllib.error.HTTPError as e:
             part.unlink(missing_ok=True)
@@ -450,6 +456,65 @@ class MogClient:
             return None
         size = data.get("size_bytes") if status == 200 and isinstance(data, dict) else None
         return size if isinstance(size, int) else None
+
+    def mods(self, game_id: int) -> list[dict]:
+        """The game's mods ({name, kind, size_bytes, file_count}), none when it has none or the server is older."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/mods")
+        except RuntimeError:
+            return []
+        found = data.get("mods") if status == 200 and isinstance(data, dict) else None
+        return [m for m in found if isinstance(m, dict) and m.get("name")] if isinstance(found, list) else []
+
+    @staticmethod
+    def _mod_path(game_id: int, name: str, action: str) -> str:
+        return f"/api/games/{game_id}/mods/{urllib.parse.quote(name, safe='')}/{action}"
+
+    def prepare_mod(self, game_id: int, name: str) -> dict:
+        """Ask the server to get a mod ready: a folder starts being zipped. Returns its state."""
+        status, data = self.c.post_json(self._mod_path(game_id, name, "prepare"), {})
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def mod_status(self, game_id: int, name: str) -> dict:
+        status, data = self.c.get_json(self._mod_path(game_id, name, "status"))
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def download_mod(self, game_id: int, name: str, dest: Path, on_progress: Callable[[int, int], None] | None = None) -> None:
+        status = self.c.download_to(self._mod_path(game_id, name, "download"), dest, timeout=3600.0, on_progress=on_progress)
+        if status != 200:
+            raise RuntimeError(f"the server refused the download of {name} (HTTP {status})")
+
+    def games_revision(self) -> str | None:
+        """A value that changes when the server's library does, or None (an older server)."""
+        try:
+            status, data = self.c.get_json("/api/games/revision")
+        except RuntimeError:
+            return None
+        revision = data.get("revision") if status == 200 and isinstance(data, dict) else None
+        return revision if isinstance(revision, str) else None
+
+    def game_sizes(self, game_id: int) -> dict | None:
+        """What the server holds for the game: {"installer", "cache", "saves", "total"} bytes, or None (an older
+        server). The server remembers the figures, so asking is cheap."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/sizes")
+        except RuntimeError:
+            return None
+        if status != 200 or not isinstance(data, dict):
+            return None
+        try:
+            return {
+                "installer": int(data["installer_bytes"]),
+                "cache": int(data["cache_bytes"]),
+                "saves": int(data["saves_bytes"]),
+                "total": int(data["total_bytes"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def register_device(
         self,

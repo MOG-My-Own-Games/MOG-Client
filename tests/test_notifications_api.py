@@ -46,3 +46,17 @@ def test_game_size_reads_the_servers_figure_or_none():
 
     assert MogClient(Ok()).game_size(5) == 123456
     assert MogClient(Old()).game_size(5) is None
+
+
+def test_game_sizes_reads_the_breakdown_or_none():
+    class Ok:
+        def get_json(self, path, **kw):
+            return 200, {"installer_bytes": 3_677_174_794, "cache_bytes": 5, "saves_bytes": 2, "total_bytes": 3_677_174_801}
+
+    class Old:
+        def get_json(self, path, **kw):
+            return 404, {"detail": "Not Found"}
+
+    held = MogClient(Ok()).game_sizes(5)
+    assert held == {"installer": 3_677_174_794, "cache": 5, "saves": 2, "total": 3_677_174_801}
+    assert MogClient(Old()).game_sizes(5) is None
