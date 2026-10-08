@@ -1589,19 +1589,12 @@ class SettingsPage(Page):
             self._update_row = row
         self.steam_button = QPushButton()
         self.steam_button.clicked.connect(self.toggle_steam_client)
-        self.steam_cancel = QPushButton("Cancel")
-        self.steam_cancel.clicked.connect(self.win.cancel_steam_request)
-        steam_controls = QWidget()
-        steam_layout = QHBoxLayout(steam_controls)
-        steam_layout.setContentsMargins(0, 0, 0, 0)
-        steam_layout.addWidget(self.steam_cancel)
-        steam_layout.addWidget(self.steam_button)
         self._steam_row = menu.add(
             OptionRow(
                 "MOG Client in Steam",
                 "Put MOG Client in Steam's library as a game of its own, with its artwork, so it opens from Steam and "
                 "from Game Mode.",
-                steam_controls,
+                self.steam_button,
             )
         )
         self.win.steam_changed.connect(self._update_steam_row)
@@ -1626,21 +1619,14 @@ class SettingsPage(Page):
         return menu
 
     def _update_steam_row(self) -> None:
-        settings = self.win.app.settings
-        self.steam_cancel.setVisible(False)
         if not selfsteam.available():
             self.steam_button.setText("Add to Steam")
             self.steam_button.setEnabled(False)
             self._steam_row.set_status("Steam was not found on this computer.")
-        elif settings.steam_client:
+        elif self.win.app.settings.steam_client:
             self.steam_button.setText("Remove from Steam")
             self.steam_button.setEnabled(True)
             self._steam_row.set_status("In your Steam library.")
-        elif settings.steam_client_pending:
-            self.steam_button.setText("Add now")
-            self.steam_button.setEnabled(True)
-            self.steam_cancel.setVisible(True)
-            self._steam_row.set_status("Waiting for Steam to close: it goes in the next time MOG starts without Steam.")
         else:
             self.steam_button.setText("Add to Steam")
             self.steam_button.setEnabled(True)
@@ -1650,7 +1636,7 @@ class SettingsPage(Page):
         if self.win.app.settings.steam_client:
             self.win.remove_client_from_steam()
         else:
-            self.win.add_client_to_steam()  # a request that was waiting is tried again: Steam may be closed by now
+            self.win.add_client_to_steam()
 
     def _server_tab(self) -> MenuView:
         menu = MenuView()
@@ -3973,73 +3959,24 @@ class MainWindow(QMainWindow):
         )
 
     def _add_client_for(self, user_dir: Path) -> None:
-        if selfsteam.running():
-            self._steam_is_open(user_dir)
-        else:
-            self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
+        self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
 
-    def _steam_is_open(self, user_dir: Path) -> None:
-        """Steam writes its shortcuts when it quits and would undo an entry added while it runs: offer to close it for the
-        user (and open it again), or to wait until they do."""
-        options: list[tuple[str, str]] = []
-        if selfsteam.can_close_steam():
-            options.append(("Close Steam, add it, and open Steam again", "close"))
-        options += [("I will close Steam myself: add it when MOG starts next", "wait"), ("Cancel", "cancel")]
-
-        def answered(answer: str | None) -> None:
-            if answer == "close":
-                self._close_steam_and_add(user_dir)
-            elif answer == "wait":
-                self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
-
-        self.choose(
-            "Steam is open",
-            "Steam would undo the change when it closes, so MOG Client can only go into its library while Steam is closed.",
-            options,
-            answered,
-        )
-
-    def _close_steam_and_add(self, user_dir: Path) -> None:
-        self.show_busy("Closing Steam", "MOG Client goes into its library, then Steam opens again")
-
-        def work() -> None:
-            closed = selfsteam.close_steam()
-            outcome = selfsteam.add(self.app.settings, user_dir) if closed else "still-open"
-            if closed:
-                selfsteam.start_steam()
-            self.app.bridge.call.emit(lambda: (self.hide_busy(), self._finish_steam_add(outcome, reopened=closed)))
-
-        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(lambda: (self.hide_busy(), self.message(f"Could not add MOG Client to Steam: {m}", "error"))))
-
-    def _finish_steam_add(self, outcome: str, reopened: bool = False) -> None:
+    def _finish_steam_add(self, outcome: str) -> None:
         if outcome == "added":
+            self.message(f"{selfsteam.NAME} is in your Steam library. Steam shows it the next time it starts.", "info")
+        elif outcome == "added-open":
             self.message(
-                "MOG Client is in your Steam library." + (" Steam is opening again." if reopened else " If Steam is open, restart it to see it."),
+                f"{selfsteam.NAME} is in your Steam library. Restart Steam to see it. If Steam undoes the change when it "
+                "closes, MOG puts it back the next time it starts.",
                 "info",
             )
-        elif outcome == "pending":
-            self.message(
-                "MOG Client goes into Steam's library the next time MOG starts with Steam closed (or press Add now in "
-                "Settings once you have closed it).",
-                "info",
-            )
-        elif outcome == "still-open":
-            self.message("Steam did not close. Close it yourself and press Add now in Settings > General > Application.", "warning")
         else:
             self.message("Steam was not found on this computer.", "warning")
         self.steam_changed.emit()
 
-    def cancel_steam_request(self) -> None:
-        settings = self.app.settings
-        settings.steam_client_pending = ""
-        save_settings(settings)
-        self.steam_changed.emit()
-
     def remove_client_from_steam(self) -> None:
         if selfsteam.remove(self.app.settings):
-            self.message("MOG Client is out of your Steam library. If Steam is open, restart it to see that.", "info")
-        else:
-            self.message("Close Steam first: it would put the entry back when it closes.", "warning")
+            self.message(f"{selfsteam.NAME} is out of your Steam library. If Steam is open, restart it to see that.", "info")
         self.steam_changed.emit()
 
     def offer_steam_client(self) -> None:

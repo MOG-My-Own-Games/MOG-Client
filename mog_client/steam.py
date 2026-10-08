@@ -271,6 +271,14 @@ def update_shortcut(
     return None
 
 
+def has_shortcut(record: dict) -> bool:
+    """Whether the shortcut `add_shortcut` made is still in Steam's file."""
+    path = Path(record["shortcuts_path"])
+    if not path.is_file():
+        return False
+    return any(e.get("appid", 0) & 0xFFFFFFFF == record["appid"] for e in load_shortcuts(path)["shortcuts"].values())
+
+
 def remove_shortcut(record: dict) -> None:
     path = Path(record["shortcuts_path"])
     if path.is_file():

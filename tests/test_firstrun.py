@@ -88,7 +88,7 @@ def test_the_settings_button_adds_and_removes_the_client(win, qapp, steam_world)
 
     page.steam_button.click()
     pump(qapp)
-    assert win.overlay.showing and "Steam library" in win.overlay.body.text()
+    assert win.overlay.showing and "My Own Games is in your Steam library" in win.overlay.body.text()
     assert page.steam_button.text() == "Remove from Steam" and win.app.settings.steam_client
     win.overlay.dismiss()
 
@@ -97,73 +97,22 @@ def test_the_settings_button_adds_and_removes_the_client(win, qapp, steam_world)
     assert page.steam_button.text() == "Add to Steam" and win.app.settings.steam_client is None
 
 
-def test_with_steam_open_the_user_is_asked_and_may_let_the_request_wait(win, qapp, steam_world, monkeypatch):
+def test_with_steam_open_the_client_is_added_at_once_and_the_message_says_what_to_do(win, qapp, steam_world):
     steam_world.state["running"] = True
-    monkeypatch.setattr(selfsteam, "can_close_steam", lambda: False)
     win.open_settings()
     page = win.current_page()
     page.steam_button.click()
     pump(qapp)
-    asked = win.current_page()
-    assert isinstance(asked, gui.ChoicePage) and asked.title == "Steam is open"
-    assert [asked.list.item(i).text() for i in range(asked.list.count())] == [
-        "I will close Steam myself: add it when MOG starts next",
-        "Cancel",
-    ]
-    asked.accept()  # wait
-    pump(qapp)
-    assert win.overlay.showing and "next time MOG starts" in win.overlay.body.text()
-    win.overlay.dismiss()
-    assert page.steam_button.text() == "Add now" and not page.steam_cancel.isHidden()
-    assert win.app.settings.steam_client is None and win.app.settings.steam_client_pending == str(steam_world.user)
-
-    steam_world.state["running"] = False  # closed since
-    page.steam_button.click()  # Add now
-    pump(qapp)
-    assert win.app.settings.steam_client and win.app.settings.steam_client_pending == ""
+    assert not isinstance(win.current_page(), gui.ChoicePage)  # nothing is asked: it is done
+    assert win.overlay.showing and "Restart Steam" in win.overlay.body.text()
+    assert win.app.settings.steam_client and win.app.settings.steam_client_verify is True
+    assert page.steam_button.text() == "Remove from Steam"
 
 
-def test_a_waiting_request_can_be_cancelled(win, qapp, steam_world):
-    win.app.settings.steam_client_pending = str(steam_world.user)
-    win.open_settings()
-    page = win.current_page()
-    assert page.steam_button.text() == "Add now" and not page.steam_cancel.isHidden()
-    page.steam_cancel.click()
-    assert win.app.settings.steam_client_pending == "" and page.steam_button.text() == "Add to Steam" and page.steam_cancel.isHidden()
-
-
-def test_steam_can_be_closed_for_the_user_and_opened_again(win, qapp, steam_world, monkeypatch):
-    steam_world.state["running"] = True
-    calls = []
-
-    def close():
-        calls.append("close")
-        steam_world.state["running"] = False
-        return True
-
-    monkeypatch.setattr(selfsteam, "can_close_steam", lambda: True)
-    monkeypatch.setattr(selfsteam, "close_steam", close)
-    monkeypatch.setattr(selfsteam, "start_steam", lambda: calls.append("start") or True)
+def test_the_message_is_shorter_when_steam_is_closed(win, qapp, steam_world):
     win.add_client_to_steam()
     pump(qapp)
-    asked = win.current_page()
-    assert asked.list.item(0).text().startswith("Close Steam")
-    asked.accept()  # the first answer
-    assert until(qapp, lambda: win.overlay.showing)
-    assert calls == ["close", "start"] and win.app.settings.steam_client
-    assert "Steam is opening again" in win.overlay.body.text() and not win.busy.showing
-
-
-def test_a_steam_that_will_not_close_is_said_so(win, qapp, steam_world, monkeypatch):
-    steam_world.state["running"] = True
-    monkeypatch.setattr(selfsteam, "can_close_steam", lambda: True)
-    monkeypatch.setattr(selfsteam, "close_steam", lambda: False)
-    monkeypatch.setattr(selfsteam, "start_steam", lambda: pytest.fail("Steam never closed, so it is not opened again"))
-    win.add_client_to_steam()
-    pump(qapp)
-    win.current_page().accept()
-    assert until(qapp, lambda: win.overlay.showing) and "did not close" in win.overlay.body.text()
-    assert win.app.settings.steam_client is None
+    assert "next time it starts" in win.overlay.body.text() and not win.app.settings.steam_client_verify
 
 
 def test_without_steam_the_button_says_so(win, qapp, steam_world):

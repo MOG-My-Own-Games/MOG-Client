@@ -45,13 +45,34 @@ def test_asking_twice_leaves_one_entry(world):
     assert len(entries(world.user)) == 1
 
 
-def test_with_steam_running_nothing_is_written_until_it_is_closed(world):
+def test_with_steam_running_the_entry_is_written_all_the_same(world):
     world.state["running"] = True
-    assert selfsteam.add(world.settings) == "pending"
-    assert not steam.shortcuts_path(world.user).exists() and world.settings.steam_client_pending == str(world.user)
-    assert selfsteam.settle(world.settings) is None  # still running
+    assert selfsteam.add(world.settings) == "added-open"
+    assert len(entries(world.user)) == 1 and world.settings.steam_client_verify is True
 
+
+def test_an_entry_steam_undid_when_it_quit_is_put_back_at_the_next_start(world):
+    world.state["running"] = True
+    selfsteam.add(world.settings)
+    assert selfsteam.settle(world.settings) is None  # still running: nothing to look at yet
+
+    steam.save_shortcuts(steam.shortcuts_path(world.user), {"shortcuts": {}})  # what Steam wrote when it quit
     world.state["running"] = False
+    assert selfsteam.settle(world.settings) == "added"
+    assert len(entries(world.user)) == 1 and world.settings.steam_client_verify is False
+
+
+def test_an_entry_steam_kept_is_left_alone_and_not_looked_at_again(world):
+    world.state["running"] = True
+    selfsteam.add(world.settings)
+    world.state["running"] = False
+    assert selfsteam.settle(world.settings) is None and world.settings.steam_client_verify is False
+    steam.save_shortcuts(steam.shortcuts_path(world.user), {"shortcuts": {}})
+    assert selfsteam.settle(world.settings) is None  # it was seen to stay once: not checked again
+
+
+def test_a_request_an_earlier_version_left_waiting_is_carried_out(world):
+    world.settings.steam_client_pending = str(world.user)
     assert selfsteam.settle(world.settings) == "added"
     assert len(entries(world.user)) == 1 and world.settings.steam_client_pending == ""
 
@@ -66,11 +87,9 @@ def test_a_client_that_moved_is_followed_by_its_shortcut(world, monkeypatch):
     assert entry["exe"] == '"/home/me/Games/mog.AppImage"' and entry["StartDir"] == '"/home/me/Games"'
 
 
-def test_the_client_can_be_taken_out_again_but_not_while_steam_runs(world):
+def test_the_client_can_be_taken_out_again(world):
     selfsteam.add(world.settings)
     world.state["running"] = True
-    assert selfsteam.remove(world.settings) is False and len(entries(world.user)) == 1
-    world.state["running"] = False
     assert selfsteam.remove(world.settings) is True
     assert entries(world.user) == [] and world.settings.steam_client is None
     assert selfsteam.remove(world.settings) is False
@@ -93,73 +112,6 @@ def test_the_question_comes_once_per_version_and_never_when_refused_or_done(worl
     world.settings.steam_never_ask = False
     selfsteam.add(world.settings)
     assert selfsteam.should_ask(world.settings, "1.3") is False
-
-
-def test_steam_is_closed_by_its_own_command_and_waited_for(world, monkeypatch):
-    ran = []
-    monkeypatch.setattr(selfsteam, "steam_command", lambda: ["steam"])
-    monkeypatch.setattr(selfsteam.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
-    world.state["running"] = True
-    clock = [0.0]
-
-    def sleep(seconds):
-        clock[0] += seconds
-        if clock[0] >= 3:
-            world.state["running"] = False
-
-    assert selfsteam.close_steam(wait=10, sleep=sleep, clock=lambda: clock[0]) is True
-    assert ran == [["steam", "-shutdown"]]
-
-    world.state["running"] = True
-    clock[0] = 0
-    assert selfsteam.close_steam(wait=2, sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0]) is False
-
-
-def test_steam_is_not_closed_from_inside_steam_or_without_a_way_to_do_it(world, monkeypatch):
-    monkeypatch.setattr(selfsteam, "steam_command", lambda: ["steam"])
-    for var in ("SteamGameId", "SteamAppId", "SteamGamepadUI"):
-        monkeypatch.delenv(var, raising=False)
-    assert selfsteam.can_close_steam() is True
-
-    monkeypatch.setenv("SteamGamepadUI", "1")  # Game Mode: closing Steam would close this client too
-    assert selfsteam.can_close_steam() is False
-    monkeypatch.delenv("SteamGamepadUI")
-    monkeypatch.setattr(selfsteam, "steam_command", lambda: None)
-    assert selfsteam.can_close_steam() is False and selfsteam.close_steam() is False and selfsteam.start_steam() is False
-
-
-def test_steam_is_started_apart_from_the_client(world, monkeypatch):
-    started = []
-    monkeypatch.setattr(selfsteam, "steam_command", lambda: ["flatpak", "run", "com.valvesoftware.Steam"])
-    monkeypatch.setattr(selfsteam.subprocess, "Popen", lambda cmd, **kw: started.append((cmd, kw["start_new_session"])))
-    assert selfsteam.start_steam() is True
-    assert started == [(["flatpak", "run", "com.valvesoftware.Steam"], True)]
-
-
-def test_a_shortcut_made_under_the_old_name_is_renamed_where_it_stands(world):
-    selfsteam.add(world.settings)
-    path = steam.shortcuts_path(world.user)
-    data = steam.load_shortcuts(path)
-    data["shortcuts"]["0"]["appname"] = "MOG Client"  # what an earlier version called it
-    steam.save_shortcuts(path, data)
-    appid = world.settings.steam_client["appid"]
-
-    assert selfsteam.settle(world.settings) == "updated"
-    (entry,) = entries(world.user)
-    assert entry["appname"] == "MOG - My Own Games" and world.settings.steam_client["appid"] == appid  # art stays
-
-
-def test_an_entry_made_before_the_logo_existed_gets_it_at_the_next_start(world):
-    selfsteam.add(world.settings)
-    appid = world.settings.steam_client["appid"]
-    logo = world.user / "config" / "grid" / f"{appid}_logo.png"
-    logo.unlink()
-    world.settings.steam_client["artwork"] = [f for f in world.settings.steam_client["artwork"] if not f.endswith("_logo.png")]
-
-    assert selfsteam.settle(world.settings) == "updated"
-    assert logo.is_file() and logo.read_bytes()[:4] == b"\x89PNG"
-    assert any(f.endswith("_logo.png") for f in world.settings.steam_client["artwork"])
-    assert selfsteam.settle(world.settings) is None  # nothing left to add: the pictures are not written every start
 
 
 LOGINUSERS = '''"users"

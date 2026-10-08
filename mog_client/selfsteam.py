@@ -1,24 +1,17 @@
 """MOG Client as a game of its own in Steam: a non-Steam shortcut to the file the user keeps (the AppImage or the exe),
 with the artwork made for it, so it opens from Steam's library and Game Mode (stdlib only).
 
-Steam rewrites its shortcuts file from memory when it quits, so nothing is written while it runs: a request made then
-waits in `Settings.steam_client_pending` and is carried out at a start with Steam closed (`settle`)."""
+The entry is written at once, with Steam open or not (Steam shows it after a restart). Steam is said to rewrite its
+shortcuts file from memory when it quits, which would undo a change made while it ran; so one made then is looked at again
+at the next start with Steam closed, and put back if it is gone (`settle`)."""
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
-import sys
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 from mog_client import steam
 from mog_client.config import Settings, save_settings
-from mog_client.launcher import _flatpak_has, client_command
-
-STEAM_FLATPAK = "com.valvesoftware.Steam"
+from mog_client.launcher import client_command
 
 NAME = "MOG - My Own Games"
 ASSETS = Path(__file__).parent / "gui" / "assets"
@@ -42,57 +35,6 @@ def artwork() -> dict[str, bytes]:
         except OSError:
             continue  # a build without it still makes the shortcut
     return out
-
-
-def running() -> bool:
-    return steam.steam_running()
-
-
-def steam_command() -> list[str] | None:
-    """What starts Steam on this computer (and, with `-shutdown`, closes it), or None when it cannot be told."""
-    if shutil.which("steam"):
-        return ["steam"]
-    if shutil.which("flatpak") and _flatpak_has(STEAM_FLATPAK):
-        return ["flatpak", "run", STEAM_FLATPAK]
-    return None
-
-
-def can_close_steam() -> bool:
-    """Whether MOG may close Steam for the user: not in Game Mode, and not when Steam itself started this client, since
-    closing Steam would close it too."""
-    inside_steam = any(os.environ.get(v) for v in ("SteamGameId", "SteamAppId", "SteamGamepadUI"))
-    return sys.platform.startswith("linux") and not inside_steam and steam_command() is not None
-
-
-def close_steam(
-    wait: float = 40.0,
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
-) -> bool:
-    """Ask Steam to quit and wait for it to be gone. True when it is not running any more."""
-    command = steam_command()
-    if command is None:
-        return False
-    try:
-        subprocess.run([*command, "-shutdown"], check=False, capture_output=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return not running()
-    deadline = clock() + wait
-    while running() and clock() < deadline:
-        sleep(0.5)
-    return not running()
-
-
-def start_steam() -> bool:
-    """Open Steam again, on its own so it outlives this client."""
-    command = steam_command()
-    if command is None:
-        return False
-    try:
-        subprocess.Popen(command, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError:
-        return False
-    return True
 
 
 def users() -> list[Path]:
@@ -127,53 +69,59 @@ def added(settings: Settings) -> bool:
 
 
 def add(settings: Settings, user_dir: Path | None = None) -> str:
-    """Put the client in Steam's library. "added", "pending" (Steam is running: it goes in at the next start with it
-    closed) or "no-steam"."""
+    """Put the client in Steam's library now. "added", "added-open" (Steam was running: it shows the entry after a restart,
+    and the next start of MOG makes sure Steam did not undo it) or "no-steam"."""
     user_dir = user_dir or next(iter(users()), None)
     if user_dir is None:
         return "no-steam"
-    if steam.steam_running():
-        settings.steam_client_pending = str(user_dir)
-        save_settings(settings)
-        return "pending"
     exe, start_dir = _target()
     if settings.steam_client:  # one entry only: a new one replaces what an earlier request made
         steam.remove_shortcut(settings.steam_client)
     settings.steam_client = steam.add_shortcut(user_dir, NAME, exe, start_dir, "", artwork=artwork())
     settings.steam_client_pending = ""
+    settings.steam_client_verify = steam.steam_running()
     save_settings(settings)
-    return "added"
+    return "added-open" if settings.steam_client_verify else "added"
 
 
 def remove(settings: Settings) -> bool:
-    """Take the client out of Steam's library. False when it is not there, or Steam is running (it would put it back)."""
-    if not settings.steam_client or steam.steam_running():
+    """Take the client out of Steam's library. False when it is not there."""
+    if not settings.steam_client:
         return False
     steam.remove_shortcut(settings.steam_client)
     settings.steam_client = None
+    settings.steam_client_verify = False
     save_settings(settings)
     return True
 
 
 def settle(settings: Settings) -> str | None:
-    """At start: carry out a request that waited for Steam to close, and follow the client if it was moved or renamed
-    (the shortcut holds its path). Returns "added" or "updated" when something was written."""
-    if steam.steam_running():
-        return None
-    if settings.steam_client_pending and not settings.steam_client:
+    """At start: put the entry back if Steam undid it, follow the client if it was moved or renamed (the shortcut holds its
+    path), give it pictures added since it was made. Returns "added" or "updated" when something was written."""
+    running = steam.steam_running()
+    if settings.steam_client_pending and not settings.steam_client:  # a request an earlier version left waiting
         user_dir = Path(settings.steam_client_pending)
-        if user_dir.is_dir():
-            return add(settings, user_dir)
         settings.steam_client_pending = ""
         save_settings(settings)
+        if not user_dir.is_dir():
+            return None
+        add(settings, user_dir)
+        return "added"
+    record = settings.steam_client
+    if not record:
         return None
-    if settings.steam_client:
-        exe, start_dir = _target()
-        changed = bool(steam.update_shortcut(settings.steam_client, exe, start_dir, "", name=NAME))
-        changed |= _add_missing_artwork(settings.steam_client)
-        if changed:
-            save_settings(settings)
-            return "updated"
+    if settings.steam_client_verify and not running:
+        settings.steam_client_verify = False
+        if not steam.has_shortcut(record):  # Steam wrote its own copy of the file when it quit
+            add(settings, Path(record["shortcuts_path"]).parent.parent)
+            return "added"
+        save_settings(settings)
+    exe, start_dir = _target()
+    changed = bool(steam.update_shortcut(record, exe, start_dir, "", name=NAME)) | _add_missing_artwork(record)
+    if changed:
+        settings.steam_client_verify = settings.steam_client_verify or running
+        save_settings(settings)
+        return "updated"
     return None
 
 
@@ -195,7 +143,6 @@ def should_ask(settings: Settings, version: str) -> bool:
     asked already for this version (so an update brings the question back once)."""
     return (
         not settings.steam_client
-        and not settings.steam_client_pending
         and not settings.steam_never_ask
         and settings.steam_asked_for != version
         and available()

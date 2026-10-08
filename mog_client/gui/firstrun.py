@@ -320,8 +320,6 @@ class FirstRunPage(QWidget):
         settings = self.win.app.settings
         if selfsteam.added(settings):
             self.steam_status.setText("MOG Client is in your Steam library.")
-        elif settings.steam_client_pending:
-            self.steam_status.setText("Steam is open: it goes in the next time MOG starts with Steam closed.")
         else:
             self.steam_status.setText("")
 
