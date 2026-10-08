@@ -217,7 +217,7 @@ def download_all_files(
     return total(), False
 
 
-def _sha1_of(path: Path) -> str:
+def sha1_of(path: Path) -> str:
     digest = hashlib.sha1()
     with path.open("rb") as f:
         while chunk := f.read(4 * 1024 * 1024):
@@ -253,13 +253,13 @@ def verify_and_repair(
         local_path = out_dir / path
         if not local_path.is_file():
             continue
-        if _sha1_of(local_path) == entry["sha1"]:
+        if sha1_of(local_path) == entry["sha1"]:
             continue
         mismatches += 1
         warn(f"  {path}: hash mismatch - re-downloading")
         try:
             local_path.write_bytes(client.download_file(game_id, path, session_id=session_id))
-            log(f"  {path}: repaired" if _sha1_of(local_path) == entry["sha1"] else f"  {path}: still mismatched after re-download")
+            log(f"  {path}: repaired" if sha1_of(local_path) == entry["sha1"] else f"  {path}: still mismatched after re-download")
         except RuntimeError as e:
             warn(f"  {path}: repair failed: {e}")
     if mismatches == 0:

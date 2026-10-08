@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import glob
 import http.client
 import json
 import re
@@ -144,13 +145,24 @@ class Client:
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
 
-    def download_to(self, path: str, dest: Path, timeout: float = 600.0, on_progress: Callable[[int, int], None] | None = None) -> int:
+    def download_to(
+        self,
+        path: str,
+        dest: Path,
+        timeout: float = 600.0,
+        on_progress: Callable[[int, int], None] | None = None,
+        resume: bool = False,
+    ) -> int:
         """GET a file straight to `dest` (replaced atomically); returns the HTTP status. `on_progress(written, total)`
-        is called as it arrives (total is 0 when the server does not say)."""
+        is called as it arrives (total is 0 when the server does not say). Whatever `on_progress` raises stops the
+        download and leaves nothing behind. With `resume` a download that was cut short keeps its half file, and the
+        next call continues it from there, as long as the server's file is still the same one."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if resume:
+            return self._download_resumable(path, dest, timeout, on_progress)
         req = urllib.request.Request(self.base + path, headers=self._headers({"Accept": "*/*"}))
         # Unique per call: two downloads of one file must not share (and then rename away) the same temp file.
         part = dest.with_name(f"{dest.name}.{uuid.uuid4().hex[:8]}.part")
-        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             with net.urlopen(req, timeout=timeout) as resp, open(part, "wb") as out:
                 total = int(resp.headers.get("Content-Length") or 0)
@@ -167,8 +179,71 @@ class Client:
         except (OSError, http.client.HTTPException) as e:
             part.unlink(missing_ok=True)
             raise RuntimeError(f"connection error ({self.base}): {getattr(e, 'reason', e)}") from e
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
         part.replace(dest)
         return status
+
+    def _download_resumable(self, path: str, dest: Path, timeout: float, on_progress) -> int:
+        part = dest.with_name(f"{dest.name}.part")
+        marker = dest.with_name(f"{dest.name}.part.id")  # the server's ETag for what the half file is a piece of
+
+        def drop() -> None:
+            part.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+        # Half files an earlier version left, one per try.
+        for old in glob.glob(glob.escape(str(dest)) + ".*.part"):
+            Path(old).unlink(missing_ok=True)
+        for attempt in range(2):
+            have = part.stat().st_size if part.exists() and marker.exists() else 0
+            etag = marker.read_text().strip() if have else ""
+            if not have:
+                drop()
+            headers = {"Accept": "*/*"}
+            if have and etag:
+                headers.update({"Range": f"bytes={have}-", "If-Range": etag})
+            else:
+                have = 0
+            req = urllib.request.Request(self.base + path, headers=self._headers(headers))
+            try:
+                with net.urlopen(req, timeout=timeout) as resp:
+                    status = resp.status
+                    if status != 206:
+                        have = 0  # the whole file again: nothing to continue, or the server's file changed
+                    new_etag = resp.headers.get("ETag") or ""
+                    total = have + int(resp.headers.get("Content-Length") or 0)
+                    if new_etag:
+                        marker.write_text(new_etag)
+                    else:
+                        marker.unlink(missing_ok=True)
+                    written = have
+                    with open(part, "ab" if have else "wb") as out:
+                        while chunk := resp.read(STREAM_CHUNK):
+                            out.write(chunk)
+                            written += len(chunk)
+                            if on_progress:
+                                on_progress(written, total)
+                    if total and written < total:
+                        raise _CutShort(f"the download was cut short at {written} of {total} bytes")
+            except urllib.error.HTTPError as e:
+                if e.code == 416 and attempt == 0:  # the half file is longer than the server's: fetch it whole
+                    drop()
+                    continue
+                drop()
+                return e.code
+            except _CutShort as e:
+                raise RuntimeError(f"connection error ({self.base}): {e}") from e
+            except (OSError, http.client.HTTPException) as e:
+                raise RuntimeError(f"connection error ({self.base}): {getattr(e, 'reason', e)}") from e
+            except BaseException:
+                drop()
+                raise
+            part.replace(dest)
+            marker.unlink(missing_ok=True)
+            return 200 if status == 206 else status
+        return 416
 
     def delete_json(self, path: str, **kw) -> tuple[int, dict]:
         status, content, _ = self.request("DELETE", path, **kw)
@@ -176,6 +251,10 @@ class Client:
             return status, json.loads(content.decode() or "null")
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
+
+
+class _CutShort(Exception):
+    """The server ended a download before the length it announced."""
 
 
 class _MultipartBody:
@@ -483,10 +562,41 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def cancel_mod(self, game_id: int, name: str) -> None:
+        """Tell the server to stop zipping a mod and drop what it made. Best effort: the client has stopped anyway."""
+        try:
+            self.c.post_json(self._mod_path(game_id, name, "cancel"), {})
+        except RuntimeError:
+            pass
+
+    def mod_downloaded(self, game_id: int, name: str, machine: str | None = None) -> bool:
+        """Tell the server the mod is on this machine, so the person finds it in their notifications. False when the
+        server cannot keep the notice (an older one), and the client has to say it itself."""
+        path = self._mod_path(game_id, name, "downloaded")
+        if machine:
+            path += "?" + urllib.parse.urlencode({"machine": machine})
+        try:
+            status, _ = self.c.post_json(path, {})
+        except RuntimeError:
+            return False
+        return status in (200, 204)
+
     def download_mod(self, game_id: int, name: str, dest: Path, on_progress: Callable[[int, int], None] | None = None) -> None:
-        status = self.c.download_to(self._mod_path(game_id, name, "download"), dest, timeout=3600.0, on_progress=on_progress)
+        status = self.c.download_to(
+            self._mod_path(game_id, name, "download"), dest, timeout=3600.0, on_progress=on_progress, resume=True
+        )
         if status != 200:
             raise RuntimeError(f"the server refused the download of {name} (HTTP {status})")
+
+    def save_paths(self, game_id: int) -> list[str] | None:
+        """Where a Linux build of the game keeps its saves, as the server's manifest names them (placeholders such as
+        `<xdgConfig>` left in), or None when the server cannot say (an older one)."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/save-paths")
+        except RuntimeError:
+            return None
+        paths = data.get("paths") if status == 200 and isinstance(data, dict) else None
+        return [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else None
 
     def games_revision(self) -> str | None:
         """A value that changes when the server's library does, or None (an older server)."""
