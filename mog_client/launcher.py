@@ -41,10 +41,10 @@ def _is_game_script(rel: Path) -> bool:
 
 
 def list_executables(install_dir: Path) -> list[Path]:
-    """Candidate game executables under install_dir. The game's own start script comes first (the `start.sh`
-    GOG's Linux games have at the top), then the .exe files, the biggest first (the game binary is nearly always
-    the biggest one that isn't a redistributable), then any other script, shallowest first. Scripts are Linux's
-    way to start a game and are not offered on Windows."""
+    """Candidate game executables under install_dir, the ones that run natively first: on Linux the game's own start
+    script (the `start.sh` GOG's Linux games have at the top, then any other script, shallowest first) comes before
+    every .exe, the biggest first (the game binary is nearly always the biggest one that isn't a redistributable).
+    Scripts are Linux's way to start a game and are not offered on Windows, where the .exe files are all there is."""
     found = []
     for dirpath, dirnames, filenames in os.walk(install_dir):
         here = Path(dirpath)
@@ -66,10 +66,10 @@ def list_executables(install_dir: Path) -> list[Path]:
     def rank(path: Path) -> tuple[int, int, int]:
         rel = path.relative_to(install_dir)
         if path.suffix.lower() == ".exe":
-            return 1, 0, -path.stat().st_size
+            return 2, 0, -path.stat().st_size
         if rel.name.lower() == "start.sh" and len(rel.parts) == 1:
             return 0, 0, 0
-        return 2, len(rel.parts), 0
+        return 1, len(rel.parts), 0
 
     found.sort(key=lambda p: (*rank(p), p.name.lower()))
     return found

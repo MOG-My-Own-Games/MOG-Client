@@ -58,15 +58,16 @@ def test_other_scripts_are_offered_shallowest_first(tmp_path):
     assert names(tmp_path) == ["launch.sh", "tools/run_editor.sh", "tools/deep/x.sh"]
 
 
-def test_the_start_script_comes_before_the_windows_executables_which_come_before_other_scripts(tmp_path):
+def test_on_linux_the_scripts_come_before_the_windows_executables_and_the_start_script_first(tmp_path):
     make(tmp_path, "game.exe", "Big Game.exe", "setup_extra.exe", "run.sh", "start.sh")
     (tmp_path / "Big Game.exe").write_bytes(b"x" * 9000)
-    assert names(tmp_path) == ["start.sh", "Big Game.exe", "game.exe", "run.sh"]
+    assert names(tmp_path) == ["start.sh", "run.sh", "Big Game.exe", "game.exe"]
 
 
-def test_a_start_script_below_the_top_is_just_a_script(tmp_path):
-    make(tmp_path, "game/start.sh", "Game.exe")
-    assert names(tmp_path) == ["Game.exe", "game/start.sh"]
+def test_a_script_below_the_top_still_comes_before_the_executables(tmp_path):
+    make(tmp_path, "Game_1.0/Game.sh", "Game_1.0/Game.exe", "Game_1.0/lib/windows-i686/python.exe")
+    found = names(tmp_path)
+    assert found[0] == "Game_1.0/Game.sh" and set(found[1:]) == {"Game_1.0/Game.exe", "Game_1.0/lib/windows-i686/python.exe"}
 
 
 def test_a_windows_game_is_listed_as_before(tmp_path):
