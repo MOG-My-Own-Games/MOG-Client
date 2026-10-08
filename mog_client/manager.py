@@ -28,6 +28,10 @@ from mog_client.saves.state import forget_game, save_install_manifest
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import download_all_files, poll_session, verify_and_repair
 
+# What run_install's error starts with when the server cannot choose an installer: the window tells it apart from a
+# failure and offers the list of installers instead of sending the person to the server.
+NEEDS_PICK = "needs a manual installer pick"
+
 Log = Callable[[str], None]
 
 
@@ -94,7 +98,7 @@ def run_install(
         )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":
-            raise RuntimeError(f"needs a manual installer pick, open {client.c.base}{session.get('vnc_url') or ''}")
+            raise RuntimeError(f"{NEEDS_PICK}, open {client.c.base}{session.get('vnc_url') or ''}")
     _update(rec, session_id=session_id)
 
     server_done = threading.Event()
@@ -122,7 +126,7 @@ def run_install(
     if not finished:
         state = server_final.get("state")
         if state == "awaiting_installer":
-            raise RuntimeError(f"needs a manual installer pick, open {client.c.base}{server_final.get('vnc_url') or ''}")
+            raise RuntimeError(f"{NEEDS_PICK}, open {client.c.base}{server_final.get('vnc_url') or ''}")
         if state == "failed":
             raise RuntimeError(f"install failed: {server_final.get('error')}")
         return rec  # paused or cancelled: not a failure, the buttons already say so
