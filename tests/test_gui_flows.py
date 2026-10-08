@@ -775,6 +775,26 @@ def test_unread_notifications_are_a_red_dot_with_the_number_on_the_user_button_c
     assert button.count == 0 and button.grab().toImage() == quiet and win.notifications_action.text() == "Notifications"
 
 
+def test_the_notifications_of_the_last_run_show_at_once_and_the_first_answer_replaces_them(win, qapp, monkeypatch, tmp_path):
+    from mog_client import snapshot
+
+    monkeypatch.setattr(snapshot, "data_dir", lambda: tmp_path / "snap")
+    kept = {"notifications": [{"id": 4, "title": "old", "read": False}], "unread": 1}
+    snapshot.save_notifications("http://server:5000", kept)
+
+    win._show_snapshot()
+    pump(qapp)
+    assert win.user_btn.count == 1 and [n["id"] for n in win.notifications] == [4]
+    assert win.seen_notification_id is None  # nothing from the snapshot is announced as new
+
+    shown = []
+    monkeypatch.setattr(win, "notify", lambda text, level="info": shown.append(text))
+    fresh = {"notifications": [{"id": 4, "title": "old", "read": True}, {"id": 5, "title": "new", "read": False}], "unread": 1}
+    win.on_notifications(fresh)
+    assert [n["id"] for n in win.notifications] == [4, 5] and shown == []  # the first answer only settles what is seen
+    assert snapshot.load_notifications("http://server:5000") == fresh
+
+
 # --- mog:// links from the web UI --------------------------------------------------------------
 
 
@@ -1274,6 +1294,27 @@ def test_a_game_with_mods_has_a_mods_button_that_lists_them_and_one_without_has_
     assert listing.list.item(1).text().startswith("mod2.zip\narchive")
 
 
+def test_a_mod_row_in_the_sidebar_opens_that_games_mods_and_an_install_row_its_page(win, qapp, monkeypatch):
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    win.app.mods[41] = [{"name": "mod1", "kind": "folder", "size_bytes": 1, "file_count": 1}]
+    win.back()
+    win.app.mod_jobs[(41, "mod1")] = ("Zipping", 40)
+    win.library.update_active()
+
+    win.library._open_install(win.library.installs.item(0))
+    assert isinstance(win.current_page(), gui.ModsPage) and win.current_page().game["id"] == 41
+    win.back()
+    assert isinstance(win.current_page(), gui.GamePage)  # Back lands on the game's page
+
+    win.back()
+    win.app.mod_jobs.clear()
+    win.library.syncing.add(41)
+    win.library.update_active()
+    win.library._open_install(win.library.installs.item(0))
+    assert isinstance(win.current_page(), gui.GamePage)  # a sync row opens the game, not its mods
+    win.library.syncing.discard(41)
+
+
 def test_choosing_a_mod_starts_its_download_and_the_sidebar_shows_the_progress(win, qapp, monkeypatch):
     page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
     mod = {"name": "mod1", "kind": "folder", "size_bytes": 1, "file_count": 1}
@@ -1289,29 +1330,352 @@ def test_choosing_a_mod_starts_its_download_and_the_sidebar_shows_the_progress(w
     win.app.mod_jobs[(41, "mod1")] = ("Zipping", 40)
     win.library.update_active()
     assert win.library.installs.count() == 1 and not win.library.installs_box.isHidden()
-    assert win.library.installs.item(0).text() == "Eta\nMod mod1: Zipping... 40%"
+    assert win.library.installs.item(0).text() == "Eta\nMod mod1\nZipping... 40%"
 
     win.app.mod_jobs[(41, "mod1")] = ("Downloading", 70)
     win.library.update_active()
-    assert win.library.installs.item(0).text() == "Eta\nMod mod1: Downloading... 70%"
+    assert win.library.installs.item(0).text() == "Eta\nMod mod1\nDownloading... 70%"
     win.app.mod_jobs.clear()
     win.library.update_active()
     assert win.library.installs.count() == 0 and win.library.installs_box.isHidden()
 
 
-def test_a_finished_mod_job_tells_the_user_where_it_went_and_leaves_the_sidebar(win, qapp, monkeypatch, tmp_path):
+def _finish_a_mod(win, qapp, monkeypatch, tmp_path, told):
     from mog_client import mods as mods_module
 
-    monkeypatch.setattr(win.app, "client", lambda: object())
-    monkeypatch.setattr(mods_module, "download_dir", lambda name: tmp_path)
-    monkeypatch.setattr(mods_module, "fetch", lambda client, gid, mod, dest, progress, **k: (progress("Zipping", 10), tmp_path / "mod1.zip")[1])
+    calls = []
+    server = type("Server", (), {"mod_downloaded": lambda self, gid, name, machine=None: calls.append((gid, name)) or told})()
+    polled = []
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "poll_notifications", lambda: polled.append(1))
+    monkeypatch.setattr(win.app, "mod_folder", lambda game: tmp_path)
+    monkeypatch.setattr(mods_module, "fetch", lambda client, gid, mod, dest, progress, *a, **k: (progress("Zipping", 10), tmp_path / "mod1.zip")[1])
     monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
     win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
-    messages = []
+    messages, notes = [], []
     win.app.bridge.message.connect(lambda level, text: messages.append((level, text)))
+    win.app.bridge.note.connect(notes.append)
 
     win.app.download_mod(win.app.games[41], {"name": "mod1", "kind": "folder"})
     pump(qapp)
+    return calls, polled, messages, notes
 
-    assert messages == [("info", f"Mod mod1 of Eta downloaded: {tmp_path / 'mod1.zip'}")]
-    assert win.app.mod_jobs == {}
+
+def test_a_finished_mod_job_is_told_in_the_notifications_not_in_a_window(win, qapp, monkeypatch, tmp_path):
+    calls, polled, messages, notes = _finish_a_mod(win, qapp, monkeypatch, tmp_path, told=True)
+
+    assert calls == [(41, "mod1")] and polled == [1]  # the server keeps it in the inbox, which is fetched at once
+    assert messages == [] and notes == [f"Mod mod1 of Eta downloaded: {tmp_path / 'mod1.zip'}"]
+    assert win.app.mod_jobs == {} and win.app.mod_saved[(41, "mod1")] == str(tmp_path / "mod1.zip")
+
+
+def test_a_server_that_cannot_keep_the_notice_gets_a_message_so_it_is_not_lost(win, qapp, monkeypatch, tmp_path):
+    _calls, polled, messages, _notes = _finish_a_mod(win, qapp, monkeypatch, tmp_path, told=False)
+
+    assert polled == [] and messages == [("info", f"Mod mod1 of Eta downloaded: {tmp_path / 'mod1.zip'}")]
+
+
+def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_here(win, qapp, monkeypatch):
+    from mog_client import manager
+
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    asked = []
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: asked.append(gid))
+    win.app.set_games([{"id": 41, "name": "Gothic II", "fs_name": "Gothic II", "library_id": None, "igdb_id": None}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None: started.append((game["id"], installer)))
+
+    page._on_finished(41, f"{manager.NEEDS_PICK}, open http://server:5000/api/games/install/vnc/6900/vnc.html")
+    pump(qapp)
+
+    picker = win.current_page()
+    assert isinstance(picker, gui.InstallerPickerPage) and asked == [41]
+    assert not win.overlay.showing  # no message sending the user to the server
+    picker.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
+    assert "could not tell which installer" in picker.status.text()
+    rows = [picker.list.item(i).text() for i in range(picker.list.count())]
+    assert not any("Let the server choose" in r for r in rows) and any("gothic2.exe" in r for r in rows)
+
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole)))
+    assert started == [(41, {"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
+
+
+def test_when_the_game_page_is_not_in_front_the_user_is_told_to_open_it(win, qapp, monkeypatch):
+    from mog_client import manager
+
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Gothic II", "library_id": None, "igdb_id": None}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    win.back()
+
+    page._on_finished(41, f"{manager.NEEDS_PICK}, open http://x")
+    pump(qapp)
+
+    assert win.current_page() is win.library and "choose which installer" in win.overlay.body.text()
+
+
+def test_the_mods_page_shows_each_mods_progress_on_its_own_row_also_when_opened_later(win, qapp, monkeypatch):
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    mods = [{"name": "mod1", "kind": "folder", "size_bytes": 2048, "file_count": 2}, {"name": "mod2.zip", "kind": "archive", "size_bytes": 10, "file_count": 1}]
+    win.app.mods[41] = mods
+    win.app.mod_jobs[(41, "mod1")] = ("Zipping", 40)  # started earlier, the page was left meanwhile
+
+    page.open_mods()
+    listing = win.current_page()
+    assert listing.list.item(0).text() == "mod1\nZipping... 40%"
+    assert listing.list.item(1).text().startswith("mod2.zip\narchive")  # the other mod is untouched
+
+    win.app.mod_jobs[(41, "mod1")] = ("Downloading", 70)
+    win.app.bridge.activity.emit()  # what the download thread does as it goes
+    assert listing.list.item(0).text() == "mod1\nDownloading... 70%"
+
+    del win.app.mod_jobs[(41, "mod1")]
+    win.app.mod_saved[(41, "mod1")] = "/home/u/Downloads/MOG/Eta/mods/mod1.zip"
+    win.app.bridge.activity.emit()
+    assert listing.list.item(0).text() == "mod1\nDownloaded to /home/u/Downloads/MOG/Eta/mods/mod1.zip"
+
+
+def test_the_sidebar_rows_wrap_a_long_name_instead_of_cutting_it(win, qapp):
+    win.app.set_games([{"id": 7, "name": "Gothic II: The Chronicles of Myrtana: Archolos Extended Edition", "igdb_id": None}])
+    win.app.mod_jobs[(7, "Gothic Online multiplayer mod for the Night of the Raven")] = ("Downloading", 70)
+    win.library.update_active()
+    qapp.processEvents()
+
+    assert win.library.installs.wordWrap() and win.library.installs.textElideMode() == Qt.ElideNone
+
+
+def test_choosing_a_mod_that_is_being_fetched_asks_to_cancel_it_and_cancelling_stops_it(win, qapp, monkeypatch):
+    import threading
+
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    win.app.mods[41] = [{"name": "mod1", "kind": "folder", "size_bytes": 1, "file_count": 1}]
+    page.open_mods()
+    listing = win.current_page()
+    stop = win.app.mod_stops[(41, "mod1")] = threading.Event()
+    win.app.mod_jobs[(41, "mod1")] = ("Zipping", 10)
+
+    listing.fetch(listing.list.item(0))
+    ask = win.current_page()
+    assert isinstance(ask, gui.ConfirmPage) and "Cancel fetching mod1?" in ask.text_label.text() and not stop.is_set()
+
+    ask.yes.click()
+    assert stop.is_set()
+
+
+def test_a_mod_is_saved_in_the_games_own_folder_and_is_not_taken_for_a_save(win, qapp, monkeypatch, tmp_path):
+    from mog_client import saves
+    from mog_client.saves.state import load_install_manifest
+
+    install = tmp_path / "games" / "Eta"
+    (install / "mods").mkdir(parents=True)
+    config.save_library({41: config.InstalledGame(41, "Eta", str(install), state="installed")})
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    assert win.app.mod_folder(win.app.games[41]) == install / "mods"
+
+    saved = install / "mods" / "mod1.zip"
+    saved.write_bytes(b"zipped")
+    win.app._note_mod_file(41, saved)
+    assert "mods/mod1.zip" in load_install_manifest(41)
+
+    # A game that is not installed yet: the folder it would be installed in.
+    monkeypatch.setattr(win.app.settings, "install_dirs", [str(tmp_path / "root")])
+    other = {"id": 42, "name": "Zeta", "library_id": None, "igdb_id": None}
+    assert win.app.mod_folder(other) == tmp_path / "root" / "Zeta" / "mods"
+    assert saves  # (the module is imported to make the intent plain)
+
+
+def test_what_was_running_when_the_client_closed_starts_again_and_the_rest_is_forgotten(win, qapp, monkeypatch, tmp_path):
+    from mog_client import activity
+
+    games = [{"id": i, "name": f"G{i}", "library_id": None, "igdb_id": None} for i in (1, 2, 3)]
+    folder = tmp_path / "G1"
+    folder.mkdir()
+    config.save_library(
+        {
+            1: config.InstalledGame(1, "G1", str(folder), state="installing"),  # partial: resumes
+            2: config.InstalledGame(2, "G2", str(tmp_path / "G2"), state="installed"),  # finished meanwhile: forgotten
+        }
+    )
+    activity.add_install(1)
+    activity.add_install(2)
+    activity.add_install(99)  # a game the server no longer lists
+    activity.add_mod(3, {"name": "mod1", "kind": "folder"})
+    activity.add_mod(77, {"name": "gone", "kind": "file"})
+    installs, mods = [], []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None: installs.append(game["id"]))
+    monkeypatch.setattr(win.app, "download_mod", lambda game, mod: mods.append((game["id"], mod["name"])))
+    win.app.set_games(games)
+
+    win._resume_background()
+    win._resume_background()  # once per start
+
+    assert installs == [1] and mods == [(3, "mod1")]
+    assert activity.load()["installs"] == [1]  # the others were dropped (the resumed one is the install's own to clear)
+    assert [m["game_id"] for m in activity.load()["mods"]] == [3]
+
+
+def test_starting_an_install_and_a_mod_remembers_them_and_ending_forgets_them(win, qapp, monkeypatch):
+    from mog_client import activity, manager
+
+    ran = []
+    monkeypatch.setattr(manager, "run_install", lambda *a, **k: ran.append(activity.load()["installs"]))
+    game = {"id": 5, "name": "Eta", "library_id": None, "igdb_id": None}
+    win.app.set_games([game])
+
+    win.app.start_install(game)
+    for _ in range(100):
+        if 5 not in win.app.installs:
+            break
+        pump(qapp)
+        time.sleep(0.02)
+
+    assert ran == [[5]]  # remembered while it ran
+    assert activity.load()["installs"] == []  # and forgotten once it ended
+
+
+def test_howlongtobeat_times_are_a_table_beside_the_header_only_when_the_game_has_them(win, qapp, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    times = {"main_story": 102_600, "main_plus_extra": 122_400, "completionist": 158_400}
+    win.app.set_games(
+        [
+            {"id": 51, "name": "Timed", "library_id": None, "hltb_metadata": times},
+            {"id": 52, "name": "Untimed", "library_id": None},
+        ]
+    )
+    win.show_game(51)
+    pump(qapp)
+    box = win.current_page().hltb_box
+    texts = [lbl.text() for lbl in box.findChildren(QLabel)]
+    assert box.isVisibleTo(win.current_page())
+    assert texts == ["HOW LONG TO BEAT", "Main Story", "28.5h", "Main + Extra", "34h", "Completionist", "44h"]
+
+    win.show_game(52)
+    pump(qapp)
+    assert not win.current_page().hltb_box.isVisibleTo(win.current_page())
+
+
+def test_a_long_description_does_not_squeeze_the_rows_of_the_game_page(win, qapp, monkeypatch):
+    """A word-wrapped label made the header's height depend on its width, so a short window squeezed the form
+    rows under their own height and cut their text."""
+    from PySide6.QtWidgets import QLabel
+
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    text = "A long story about a fighting tournament, with many modes and arenas. " * 12
+    win.app.set_games(
+        [
+            {
+                "id": 61,
+                "name": "Long",
+                "library_id": None,
+                "summary": text,
+                "igdb_metadata": {
+                    "first_release_date": 1_706_227_200,
+                    "genres": [{"name": "Fighting"}],
+                    "game_modes": [{"name": "Single player"}, {"name": "Multiplayer"}],
+                    "player_perspectives": [{"name": "Side view"}],
+                },
+            }
+        ]
+    )
+    win.show_game(61)
+    win.resize(1000, 450)
+    pump(qapp)
+    page = win.current_page()
+    rows = [lbl for lbl in page.header.findChildren(QLabel) if lbl.objectName() in ("metaKey", "metaValue")]
+    assert rows and all(lbl.height() >= lbl.minimumSizeHint().height() for lbl in rows)
+    summary = page.findChild(gui.ParagraphLabel, "summary")
+    assert not summary.hasHeightForWidth() and summary.text().endswith("...")
+    assert summary.height() >= 2 * summary.fontMetrics().lineSpacing()
+
+
+def _picker_for(win, qapp, monkeypatch, needed=True):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": None}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    win.push(gui.InstallerPickerPage(win, page, page._group(), needed=needed))
+    pump(qapp)
+    return page, win.current_page()
+
+
+def _rows(picker):
+    return [picker.list.item(i).text() for i in range(picker.list.count())]
+
+
+EXE = {"path": "Metroid.exe", "file_size_bytes": 1000, "kind": "executable (top level)", "category": "game"}
+
+
+def test_a_folder_with_no_installer_offers_its_executables_and_just_extract(win, qapp, monkeypatch):
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
+
+    picker.on_installers(41, [EXE], "", True)
+    rows = _rows(picker)
+    assert any("Just extract" in r for r in rows) and any("Metroid.exe" in r for r in rows)
+    assert not any("Let the server choose" in r for r in rows) and "probably the game itself" in picker.status.text()
+
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Just extract" in picker.list.item(i).text()))
+    assert started == [(None, True)]
+
+
+def test_an_executable_can_still_be_picked_from_that_folder(win, qapp, monkeypatch):
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
+
+    picker.on_installers(41, [EXE], "", True)
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Metroid.exe" in picker.list.item(i).text()))
+    assert started == [(EXE, False)]
+
+
+def test_just_extract_is_only_offered_when_the_server_found_no_installer(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch)
+    picker.on_installers(41, [EXE], "", False)
+    assert not any("Just extract" in r for r in _rows(picker))
+
+
+def test_the_picker_learns_from_the_server_that_there_is_no_installer(win, qapp, monkeypatch):
+    seen = []
+    win.app.bridge.installers.connect(lambda *args: seen.append(args))
+    monkeypatch.setattr(win.app, "client", lambda: type("S", (), {"candidates": lambda self, gid: {"candidates": [EXE], "extract_suggested": True}})())
+
+    win.app.load_installers(41)
+    for _ in range(100):
+        if seen:
+            break
+        pump(qapp)
+        time.sleep(0.02)
+
+    assert seen == [(41, [EXE], "", True)]
+
+
+def test_extracting_from_the_picker_goes_straight_to_the_install_without_asking_again(win, qapp, monkeypatch):
+    page, _picker = _picker_for(win, qapp, monkeypatch)
+    started, asked = [], []
+    monkeypatch.setattr(win.app, "start_install", lambda game, installer=None, root=None, extract=False: started.append((installer, extract)))
+    monkeypatch.setattr(win, "_ask_extraction", lambda *a: asked.append(a))
+    monkeypatch.setattr(win, "_place", lambda game, size, go: go())
+    win.app.sizes[41] = 1
+
+    win.install_game(win.app.games[41], None, None, extract=True)
+    pump(qapp)
+
+    assert started == [(None, True)] and asked == []
