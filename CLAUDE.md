@@ -32,10 +32,12 @@ mog_client/
   gameplay.py   Following a game started from here to its end, and stopping it (stdlib)
   saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher
   steam.py      shortcuts.vdf read/write + grid artwork
+  selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
   scrape.py     Artwork URLs from the server's already-scraped metadata
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
     widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
     keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
+    firstrun.py the first-start guide (server, games folder, saves, Steam); `Settings.first_run_done`
     busy.py     the message over the window while a restore or backup is under way (progress, Cancel)
     syncwindow.py the small "Syncing saves" window `--save-sync --window` and the end-of-game watch show (own process, never the main window; Qt only here)
     theme.py    STYLE, the stylesheet every window shares

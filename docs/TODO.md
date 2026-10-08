@@ -13,6 +13,12 @@ Research whether [GameNative](https://github.com/GameNative/GameNative), Heroic 
 stream-install against a MOG-Server directly, instead of (or alongside) the
 dedicated MOG-Client. Not started - needs scoping first.
 
+## MOG Client's Steam artwork
+
+The artwork is bundled (`gui/assets/steam`), the same pictures published on [SteamGridDB for MOG](https://www.steamgriddb.com/game/5555531). Fetching it from SteamGridDB instead is not possible without an API key: the game
+page is a script-built page with no image addresses in it. If wanted, the server (which holds the key) could serve the grids of
+one SteamGridDB game to the client, with the bundled files as the fallback.
+
 ## Save-file sync
 
 Done: per-machine backups to the server, last three versions kept per machine, restore with a backup

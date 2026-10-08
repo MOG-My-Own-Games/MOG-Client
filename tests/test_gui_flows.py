@@ -2186,3 +2186,90 @@ def test_a_notice_the_client_keeps_itself_sits_in_the_list_and_never_goes_to_the
     assert win.local_notifications == [] and len(sent) == 1
     win.delete_notification(None)
     assert win.notifications == [] and len(sent) == 2
+
+
+class _Server:
+    """What `App.refresh` and `poll_library` ask of the server, with a revision the test moves."""
+
+    def __init__(self, revision):
+        self.revision, self.games, self.listed = revision, [], 0
+
+    def games_revision(self):
+        return self.revision
+
+    def list_libraries(self):
+        return []
+
+    def me(self):
+        return {}
+
+    def list_games(self):
+        self.listed += 1
+        return self.games
+
+    def get_image(self, path):
+        return None
+
+
+def test_a_game_added_on_the_server_appears_without_pressing_refresh(win, qapp, monkeypatch):
+    server = _Server("1-a")
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "_load_cover", lambda game, client: None)
+    win.app.refresh()
+    assert _until(qapp, lambda: not win.app.refreshing) and win.app.revision == "1-a"
+
+    win.app.poll_library()
+    pump(qapp)
+    time.sleep(0.1)
+    assert server.listed == 1  # nothing changed: nothing loaded again
+
+    server.revision = "2-b"  # a game was added
+    win.app.poll_library()
+    assert _until(qapp, lambda: server.listed == 2 and win.app.revision == "2-b")
+
+
+def test_the_library_is_watched_again_while_the_covers_are_still_coming(win, qapp, monkeypatch):
+    import threading
+
+    server = _Server("1-a")
+    release = threading.Event()
+    server.games = [{"id": 1, "name": "A", "library_id": None, "igdb_id": None}]
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "_load_cover", lambda game, client: release.wait(5))  # a slow cover
+    win.app.refresh()
+    try:
+        assert _until(qapp, lambda: server.listed == 1 and not win.app.refreshing)  # free as soon as the list is in
+        server.revision = "2-b"
+        win.app.poll_library()
+        assert _until(qapp, lambda: server.listed == 2)  # the change is not kept waiting for the covers
+    finally:
+        release.set()
+
+
+def test_a_server_that_did_not_answer_at_the_load_is_picked_up_at_the_next_poll(win, qapp, monkeypatch):
+    server = _Server(None)  # no revision at the load: the call failed that time
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "_load_cover", lambda game, client: None)
+    win.app.refresh()
+    assert _until(qapp, lambda: not win.app.refreshing) and win.app.revision is None
+
+    win.app.poll_library()
+    pump(qapp)
+    time.sleep(0.1)
+    assert server.listed == 1  # still none: an older server is left alone
+
+    server.revision = "5-x"
+    win.app.poll_library()
+    assert _until(qapp, lambda: server.listed == 2 and win.app.revision == "5-x")
+
+
+def test_a_games_added_notice_has_the_library_looked_at_at_once(win, qapp, monkeypatch):
+    looked = []
+    monkeypatch.setattr(win.app, "poll_library", lambda: looked.append(1))
+    note = lambda i, kind: {"id": i, "kind": kind, "title": "t", "body": None, "game_id": None, "read": False}  # noqa: E731
+    win.on_notifications({"notifications": [note(1, "save_synced")], "unread": 1})  # the first list is only taken in
+    win.on_notifications({"notifications": [note(2, "save_synced"), note(1, "save_synced")], "unread": 2})
+    assert looked == []
+
+    win.on_notifications({"notifications": [note(3, "games_added"), note(2, "save_synced"), note(1, "save_synced")], "unread": 3})
+    assert looked == [1]

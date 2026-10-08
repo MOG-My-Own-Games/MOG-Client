@@ -82,6 +82,7 @@ from mog_client import (
     manager,
     ordering,
     protocol,
+    selfsteam,
     snapshot,
     steam,
     trace,
@@ -101,6 +102,7 @@ from mog_client.config import (
 from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
+from mog_client.gui.firstrun import FirstRunPage
 from mog_client.gui.about import AboutTab
 from mog_client.gui.busy import BusyOverlay
 from mog_client.gui.headerart import HeaderArt
@@ -313,6 +315,7 @@ class App:
                 snapshot.save_library(self.settings.base, games, libraries)
             except OSError as e:
                 logstore.warning(f"Could not keep the library for the next start: {e}")
+            done()  # the list is in; a change on the server from here on is a new refresh, whatever the covers are doing
             with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
                 list(pool.map(lambda g: self._load_cover(g, client), games))
 
@@ -320,7 +323,7 @@ class App:
             self.refreshing = False
 
         self.refreshing = True
-        self.run_bg(lambda: (work(), done()), on_error=lambda m: (done(), self.bridge.error.emit(m)))
+        self.run_bg(work, on_error=lambda m: (done(), self.bridge.error.emit(m)))
 
     def load_mods(self, game_id: int) -> None:
         """Ask for the game's mods; the answer comes as `mods_loaded`."""
@@ -404,11 +407,13 @@ class App:
 
     def poll_library(self) -> None:
         """Ask the server whether the library changed (a scan, a scrape, an edit) and, if so, load it again."""
-        if not self.settings.configured or self.refreshing or self.revision is None:
+        if not self.settings.configured or self.refreshing:
             return
 
         def work() -> None:
             current = self.client().games_revision()
+            # No revision at the last load (the server did not answer then) is not "never": the first one that comes is
+            # a difference, since what happened meanwhile is not known.
             if current is not None and current != self.revision and not self.refreshing:
                 logstore.info("The library changed on the server, refreshing it")
                 self.refresh()
@@ -1467,7 +1472,7 @@ class SettingsPage(Page):
         for row in menu.rows:
             inside = [] if isinstance(row.control, QComboBox) else row.control.findChildren(QWidget)  # not a popup's list
             for widget in (row.control, *inside):
-                if widget.focusPolicy() != Qt.NoFocus and (widget.isEnabled() or not enabled_only):
+                if widget.focusPolicy() != Qt.NoFocus and not widget.isHidden() and (widget.isEnabled() or not enabled_only):
                     found.append(widget)
         return found
 
@@ -1582,6 +1587,35 @@ class SettingsPage(Page):
             row = menu.add(OptionRow("Check for updates", "Look for a new version right now.", check_now))
             self.update_status = row.status
             self._update_row = row
+        self.steam_button = QPushButton()
+        self.steam_button.clicked.connect(self.toggle_steam_client)
+        self.steam_cancel = QPushButton("Cancel")
+        self.steam_cancel.clicked.connect(self.win.cancel_steam_request)
+        steam_controls = QWidget()
+        steam_layout = QHBoxLayout(steam_controls)
+        steam_layout.setContentsMargins(0, 0, 0, 0)
+        steam_layout.addWidget(self.steam_cancel)
+        steam_layout.addWidget(self.steam_button)
+        self._steam_row = menu.add(
+            OptionRow(
+                "MOG Client in Steam",
+                "Put MOG Client in Steam's library as a game of its own, with its artwork, so it opens from Steam and "
+                "from Game Mode.",
+                steam_controls,
+            )
+        )
+        self.win.steam_changed.connect(self._update_steam_row)
+        self._update_steam_row()
+        guide = QPushButton("Run again")
+        guide.clicked.connect(lambda: self.win.open_first_run(rerun=True))
+        menu.add(
+            OptionRow(
+                "Setup guide",
+                "Go through the first-start questions again: the server, where games go, saves and Steam. It starts from "
+                "what is set now, and nothing is reset.",
+                guide,
+            )
+        )
         menu.add(
             OptionRow(
                 "Sounds",
@@ -1590,6 +1624,33 @@ class SettingsPage(Page):
             )
         )
         return menu
+
+    def _update_steam_row(self) -> None:
+        settings = self.win.app.settings
+        self.steam_cancel.setVisible(False)
+        if not selfsteam.available():
+            self.steam_button.setText("Add to Steam")
+            self.steam_button.setEnabled(False)
+            self._steam_row.set_status("Steam was not found on this computer.")
+        elif settings.steam_client:
+            self.steam_button.setText("Remove from Steam")
+            self.steam_button.setEnabled(True)
+            self._steam_row.set_status("In your Steam library.")
+        elif settings.steam_client_pending:
+            self.steam_button.setText("Add now")
+            self.steam_button.setEnabled(True)
+            self.steam_cancel.setVisible(True)
+            self._steam_row.set_status("Waiting for Steam to close: it goes in the next time MOG starts without Steam.")
+        else:
+            self.steam_button.setText("Add to Steam")
+            self.steam_button.setEnabled(True)
+            self._steam_row.set_status("")
+
+    def toggle_steam_client(self) -> None:
+        if self.win.app.settings.steam_client:
+            self.win.remove_client_from_steam()
+        else:
+            self.win.add_client_to_steam()  # a request that was waiting is tried again: Steam may be closed by now
 
     def _server_tab(self) -> MenuView:
         menu = MenuView()
@@ -3290,6 +3351,8 @@ class MainWindow(QMainWindow):
     """One window, a stack of pages. Back (button, Esc or gamepad B) pops the
     stack; installs run on worker threads, so they continue while navigating."""
 
+    steam_changed = Signal()  # MOG Client was added to or taken out of Steam's library (or the request was changed)
+
     def __init__(self, app: App):
         super().__init__()
         self.app = app
@@ -3498,12 +3561,12 @@ class MainWindow(QMainWindow):
 
     def show_busy(self, title: str, name: str, game_id: int | None = None, on_cancel=None) -> None:
         """Cover the window with what is under way (a restore, a backup). Cancel is offered when `on_cancel` is."""
-        try:
-            self.busy.cancel_clicked.disconnect()
-        except RuntimeError:  # nothing was connected
-            pass
+        if getattr(self, "_busy_cancel", None) is not None:
+            self.busy.cancel_clicked.disconnect(self._busy_cancel)
+            self._busy_cancel = None
         if on_cancel is not None:
-            self.busy.cancel_clicked.connect(lambda: (self.busy.cancelling(), on_cancel()))
+            self._busy_cancel = lambda: (self.busy.cancelling(), on_cancel())
+            self.busy.cancel_clicked.connect(self._busy_cancel)
         self.busy.show_busy(title, name, self.covers.get(game_id) if game_id is not None else None, on_cancel is not None)
 
     def busy_progress(self, done: int, total: int, detail: str | None = None) -> None:
@@ -3888,6 +3951,121 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         self.push(SettingsPage(self))
 
+    def open_first_run(self, rerun: bool = False) -> None:
+        self.push(FirstRunPage(self, rerun))
+
+    # --- MOG Client in Steam ---
+
+    def add_client_to_steam(self) -> None:
+        """Put MOG Client in Steam's library; with several Steam accounts on the computer, ask which."""
+        users = selfsteam.users()
+        if not users:
+            self.message("Steam was not found on this computer.", "warning")
+            return
+        if len(users) == 1:
+            self._add_client_for(users[0])
+            return
+        self.choose(
+            "Which Steam account?",
+            "Steam has more than one account on this computer. MOG Client goes in the library of the one you pick.",
+            [(f"Account {user.name}", user) for user in users],
+            lambda user: user is not None and self._add_client_for(user),
+        )
+
+    def _add_client_for(self, user_dir: Path) -> None:
+        if selfsteam.running():
+            self._steam_is_open(user_dir)
+        else:
+            self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
+
+    def _steam_is_open(self, user_dir: Path) -> None:
+        """Steam writes its shortcuts when it quits and would undo an entry added while it runs: offer to close it for the
+        user (and open it again), or to wait until they do."""
+        options: list[tuple[str, str]] = []
+        if selfsteam.can_close_steam():
+            options.append(("Close Steam, add it, and open Steam again", "close"))
+        options += [("I will close Steam myself: add it when MOG starts next", "wait"), ("Cancel", "cancel")]
+
+        def answered(answer: str | None) -> None:
+            if answer == "close":
+                self._close_steam_and_add(user_dir)
+            elif answer == "wait":
+                self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
+
+        self.choose(
+            "Steam is open",
+            "Steam would undo the change when it closes, so MOG Client can only go into its library while Steam is closed.",
+            options,
+            answered,
+        )
+
+    def _close_steam_and_add(self, user_dir: Path) -> None:
+        self.show_busy("Closing Steam", "MOG Client goes into its library, then Steam opens again")
+
+        def work() -> None:
+            closed = selfsteam.close_steam()
+            outcome = selfsteam.add(self.app.settings, user_dir) if closed else "still-open"
+            if closed:
+                selfsteam.start_steam()
+            self.app.bridge.call.emit(lambda: (self.hide_busy(), self._finish_steam_add(outcome, reopened=closed)))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(lambda: (self.hide_busy(), self.message(f"Could not add MOG Client to Steam: {m}", "error"))))
+
+    def _finish_steam_add(self, outcome: str, reopened: bool = False) -> None:
+        if outcome == "added":
+            self.message(
+                "MOG Client is in your Steam library." + (" Steam is opening again." if reopened else " If Steam is open, restart it to see it."),
+                "info",
+            )
+        elif outcome == "pending":
+            self.message(
+                "MOG Client goes into Steam's library the next time MOG starts with Steam closed (or press Add now in "
+                "Settings once you have closed it).",
+                "info",
+            )
+        elif outcome == "still-open":
+            self.message("Steam did not close. Close it yourself and press Add now in Settings > General > Application.", "warning")
+        else:
+            self.message("Steam was not found on this computer.", "warning")
+        self.steam_changed.emit()
+
+    def cancel_steam_request(self) -> None:
+        settings = self.app.settings
+        settings.steam_client_pending = ""
+        save_settings(settings)
+        self.steam_changed.emit()
+
+    def remove_client_from_steam(self) -> None:
+        if selfsteam.remove(self.app.settings):
+            self.message("MOG Client is out of your Steam library. If Steam is open, restart it to see that.", "info")
+        else:
+            self.message("Close Steam first: it would put the entry back when it closes.", "warning")
+        self.steam_changed.emit()
+
+    def offer_steam_client(self) -> None:
+        """After an update (and at the first start with Steam), once per version: offer to put MOG Client in Steam."""
+        settings = self.app.settings
+        if not selfsteam.should_ask(settings, __version__):
+            return
+        settings.steam_asked_for = __version__
+        save_settings(settings)
+
+        def answered(answer: str | None) -> None:
+            if answer == "add":
+                self.add_client_to_steam()
+            elif answer == "never":
+                settings.steam_never_ask = True
+                save_settings(settings)
+                self.notify("MOG Client will not be offered to Steam again; Settings > General > Application has the button")
+
+        self.choose(
+            "Add MOG Client to Steam?",
+            "MOG Client can sit in your Steam library like any game, with its own artwork, so it opens from Steam and from "
+            "Game Mode. You can do this later in Settings > General > Application.",
+            [("Add to Steam", "add"), ("Not now (ask again after the next update)", "later"), ("Never ask again", "never")],
+            answered,
+        )
+
     def open_about(self) -> None:
         self.push(AboutPage())
 
@@ -4105,9 +4283,13 @@ class MainWindow(QMainWindow):
         items = data["notifications"]
         newest = max((n["id"] for n in items), default=0)
         if self.seen_notification_id is not None:
+            added = False
             for n in items:
                 if n["id"] > self.seen_notification_id and not n["read"]:
                     self.notify(f"Notification: {n['title']}")
+                    added |= n.get("kind") == "games_added"
+            if added:
+                self.app.poll_library()  # the server says games came in: no waiting for the next look at the library
         self.seen_notification_id = newest
         self._show_notifications(data)
         if self.app.settings.configured:
@@ -4178,6 +4360,8 @@ def run_gui(link: str | None = None) -> int:
     updater.cleanup_old()
     app = App()
     ensure_scanned(app.settings)
+    if (settled := selfsteam.settle(app.settings)) is not None:  # a request that waited for Steam to close, or a moved client
+        logstore.info(f"MOG Client's Steam shortcut was {settled}")
     remember_client()  # where the launch scripts find this client, whatever it is called or wherever it was moved to
     if app.settings.scripts_written_for != __version__:
         app.settings.scripts_written_for = __version__
@@ -4200,10 +4384,17 @@ def run_gui(link: str | None = None) -> int:
         app.check_update()
     if link:
         win._pending_link = link
+    if app.settings.configured and not app.settings.first_run_done:
+        app.settings.first_run_done = True  # set up before there was a guide: it has nothing to add
+        save_settings(app.settings)
     if app.settings.configured:
         app.refresh()
+    elif not app.settings.first_run_done:
+        win.open_first_run()
     else:
         win.open_settings()
         if link:
             win.handle_link(link)
+    if app.settings.first_run_done:
+        QTimer.singleShot(0, win.offer_steam_client)
     return qapp.exec()
