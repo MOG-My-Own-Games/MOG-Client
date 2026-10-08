@@ -74,6 +74,14 @@ class Settings:
     sync_window: bool = True
     # The MOG version that last wrote the games' launch scripts (they hold the client's whereabouts).
     scripts_written_for: str = ""
+    # MOG Client as a shortcut of its own in Steam (see selfsteam.py): the record of the entry, the Steam user folder it
+    # waits to be added to while Steam is running, the version the user was last asked about it for, and "never ask".
+    steam_client: dict | None = None
+    steam_client_pending: str = ""
+    steam_asked_for: str = ""
+    steam_never_ask: bool = False
+    # The first-start guide has been through (or the client was set up before there was one).
+    first_run_done: bool = False
 
     @property
     def install_roots(self) -> list[Path]:
