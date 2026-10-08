@@ -260,3 +260,35 @@ def test_a_cancelled_resumable_download_leaves_nothing_and_old_attempt_files_are
         client.download_to("/x", dest, resume=True, on_progress=stop)
 
     assert list(tmp_path.iterdir()) == []
+
+
+# --- the copies of a mod already on this computer ---------------------------------------------------
+
+
+def test_the_local_files_of_a_mod_are_its_own_and_its_numbered_copies(tmp_path):
+    (tmp_path / "Gothic Online.zip").write_bytes(b"1")
+    (tmp_path / "Gothic Online (2).zip").write_bytes(b"2")
+    (tmp_path / "Gothic Online (10).zip").write_bytes(b"3")
+    (tmp_path / "Gothic Online (final).zip").write_bytes(b"x")  # somebody else's file, not a copy
+    (tmp_path / "Other.zip").write_bytes(b"y")
+    mod = {"name": "Gothic Online", "kind": "folder"}
+
+    assert [p.name for p in mods.local_files(tmp_path, mod)] == ["Gothic Online.zip", "Gothic Online (10).zip", "Gothic Online (2).zip"]
+    assert mods.local_files(tmp_path, {"name": "Missing", "kind": "folder"}) == []
+    assert mods.local_files(tmp_path / "nowhere", mod) == []
+
+
+def test_an_archive_or_a_file_is_saved_under_its_own_name(tmp_path):
+    (tmp_path / "patch.zip").write_bytes(b"1")
+    (tmp_path / "patch (2).zip").write_bytes(b"2")
+    assert [p.name for p in mods.local_files(tmp_path, {"name": "patch.zip", "kind": "archive"})] == ["patch.zip", "patch (2).zip"]
+
+
+def test_removing_a_mod_takes_its_copies_and_a_half_download_and_nothing_else(tmp_path):
+    for name in ("m.zip", "m (2).zip", "m.zip.part", "m.zip.part.id", "keep.zip"):
+        (tmp_path / name).write_bytes(b"x")
+
+    removed = mods.remove_local(tmp_path, {"name": "m", "kind": "folder"})
+
+    assert sorted(p.name for p in removed) == ["m (2).zip", "m.zip"]
+    assert [p.name for p in tmp_path.iterdir()] == ["keep.zip"]

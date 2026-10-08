@@ -4,6 +4,7 @@ down is one file in the mods folder of the game's own folder here."""
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -41,6 +42,29 @@ def free_path(folder: Path, name: str) -> Path:
         target = folder / f"{stem} ({n}){suffix}"
         n += 1
     return target
+
+
+def local_files(folder: Path, mod: dict) -> list[Path]:
+    """The files of this mod already in `folder`: the one it is saved as, and the numbered copies `free_path` made
+    when it was fetched again."""
+    name = Path(file_name(mod))
+    numbered = re.compile(rf"{re.escape(name.stem)} \(\d+\){re.escape(name.suffix)}")
+    found = [folder / name.name] if (folder / name.name).is_file() else []
+    if folder.is_dir():
+        found += sorted(p for p in folder.iterdir() if p.is_file() and numbered.fullmatch(p.name))
+    return found
+
+
+def remove_local(folder: Path, mod: dict) -> list[Path]:
+    """Delete the mod's files from `folder`, and a half-downloaded one with them. Returns what was removed."""
+    removed = []
+    for path in local_files(folder, mod):
+        path.unlink(missing_ok=True)
+        removed.append(path)
+    base = folder / file_name(mod)
+    for leftover in (base.with_name(f"{base.name}.part"), base.with_name(f"{base.name}.part.id")):
+        leftover.unlink(missing_ok=True)
+    return removed
 
 
 def fetch(
