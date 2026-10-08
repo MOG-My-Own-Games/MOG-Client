@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -211,6 +212,47 @@ def ensure_executable(path: str) -> None:
         pass  # the launch itself will say so
 
 
+PERMISSIONS_MARK = ".mog-permissions"  # in a game's folder once its programs have been given back their executable bit
+_SHARED_LIBRARY = re.compile(r"\.so(\.\d+)*$", re.IGNORECASE)
+
+
+def fix_native_permissions(install_dir: Path) -> int:
+    """Give back the executable bit a download does not keep: to every program (an ELF file) and script (a `#!` file)
+    under a Linux game's folder, whose start script runs them. Libraries need none. Returns how many were changed."""
+    changed = 0
+    for dirpath, dirnames, filenames in os.walk(install_dir):
+        if Path(dirpath) == install_dir:
+            dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]
+        for name in filenames:
+            if _SHARED_LIBRARY.search(name):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                info = os.lstat(path)
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o100:
+                    continue
+                with open(path, "rb") as f:
+                    head = f.read(4)
+                if head == b"\x7fELF" or head[:2] == b"#!":
+                    os.chmod(path, stat.S_IMODE(info.st_mode) | 0o755)
+                    changed += 1
+            except OSError:
+                continue
+    return changed
+
+
+def ensure_native_permissions(install_dir: str) -> None:
+    """Once per game folder: see to its programs' executable bits (see `fix_native_permissions`)."""
+    mark = Path(install_dir) / PERMISSIONS_MARK
+    if mark.exists() or not Path(install_dir).is_dir():
+        return
+    fix_native_permissions(Path(install_dir))
+    try:
+        mark.write_text("")
+    except OSError:
+        pass  # it is looked at again next time
+
+
 def launch_command(
     game: InstalledGame, preference: str = "auto", require_umu: bool = True
 ) -> tuple[list[str], dict[str, str]]:
@@ -219,6 +261,7 @@ def launch_command(
         raise RuntimeError("no executable chosen for this game")
     if game.native:
         ensure_executable(game.executable)
+        ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
         return [game.executable], {}  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:

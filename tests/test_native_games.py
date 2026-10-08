@@ -136,3 +136,40 @@ def test_save_sync_follows_the_settings_for_a_native_game_too(tmp_path):
     off = native_game(tmp_path)
     off.save_sync = False
     assert sync.enabled(off, settings) is False
+
+
+def _unmarked(path, content: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(0o644)  # what a download leaves
+    return path
+
+
+def test_the_programs_a_download_left_unmarked_get_their_executable_bit_back(tmp_path):
+    folder = tmp_path / "Game"
+    script = _unmarked(folder / "Game.sh", b"#!/bin/sh\nexec lib/linux-x86_64/Game\n")
+    binary = _unmarked(folder / "lib/linux-x86_64/Game", b"\x7fELF" + b"\0" * 60)
+    helper = _unmarked(folder / "lib/tools/run.py", b"#!/usr/bin/env python3\n")
+    library = _unmarked(folder / "lib/linux-x86_64/libfoo.so.1", b"\x7fELF" + b"\0" * 60)
+    data = _unmarked(folder / "game/script.rpy", b"label start:\n")
+    pfx = _unmarked(folder / "pfx/drive_c/x.exe", b"\x7fELF")
+    already = _unmarked(folder / "ok", b"\x7fELF")
+    already.chmod(0o755)
+
+    assert launcher.fix_native_permissions(folder) == 3
+    assert all(p.stat().st_mode & 0o111 for p in (script, binary, helper))
+    assert not library.stat().st_mode & 0o111 and not data.stat().st_mode & 0o111 and not pfx.stat().st_mode & 0o111
+
+
+def test_a_native_game_is_given_its_permissions_once_when_it_is_launched(tmp_path):
+    game = native_game(tmp_path, mode=0o644)
+    folder = Path(game.install_dir)
+    binary = _unmarked(folder / "lib/Lost Ruins", b"\x7fELF" + b"\0" * 8)
+
+    command, extra = launcher.launch_command(game)
+
+    assert command == [game.executable] and binary.stat().st_mode & 0o111
+    assert (folder / launcher.PERMISSIONS_MARK).exists()
+    binary.chmod(0o644)
+    launcher.launch_command(game)  # the folder is not walked again
+    assert not binary.stat().st_mode & 0o111

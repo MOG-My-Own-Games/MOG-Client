@@ -1955,7 +1955,7 @@ class ExecutablePage(Page):
         self.steam.setEnabled(bool(self.steam_users))
         self.steam_user = QComboBox()
         for d in self.steam_users:
-            self.steam_user.addItem(f"Steam user {d.name}", str(d))
+            self.steam_user.addItem(selfsteam.label(d, self.steam_users), str(d))
         self.steam_user.setVisible(len(self.steam_users) > 1)
         ok = QPushButton("Use this executable")
         ok.setDefault(True)
@@ -3968,7 +3968,7 @@ class MainWindow(QMainWindow):
         self.choose(
             "Which Steam account?",
             "Steam has more than one account on this computer. MOG Client goes in the library of the one you pick.",
-            [(f"Account {user.name}", user) for user in users],
+            [(selfsteam.label(user, users), user) for user in users],
             lambda user: user is not None and self._add_client_for(user),
         )
 

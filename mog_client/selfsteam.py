@@ -103,6 +103,16 @@ def users() -> list[Path]:
         return []
 
 
+def label(user_dir: Path, among: list[Path] | None = None) -> str:
+    """How to call a Steam account to the user: its name, with the number only where two accounts share a name (or it
+    has none to show)."""
+    name = steam.persona_name(user_dir)
+    if name is None:
+        return f"Account {user_dir.name}"
+    twins = [d for d in (among or []) if d != user_dir and steam.persona_name(d) == name]
+    return f"{name} ({user_dir.name})" if twins else name
+
+
 def available() -> bool:
     return bool(users())
 

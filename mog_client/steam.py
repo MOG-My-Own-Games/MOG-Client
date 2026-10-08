@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import struct
 import sys
 import zlib
@@ -36,6 +37,36 @@ def steam_user_dirs() -> list[Path]:
     dirs = [d for root in steam_roots() for d in (root / "userdata").iterdir() if d.name.isdigit() and d.name != "0"]
     dirs.sort(key=lambda d: (d / "config").stat().st_mtime if (d / "config").exists() else 0, reverse=True)
     return dirs
+
+
+STEAMID64_BASE = 76561197960265728  # a Steam account's 64-bit id is this plus the number that names its userdata folder
+_PERSONA = re.compile(r'"PersonaName"\s+"((?:[^"\\]|\\.)*)"')
+_LOGIN_USER = re.compile(r'"(\d{17})"\s*\{(.*?)\}', re.DOTALL)
+
+
+def _unquote(raw: str) -> str:
+    return raw.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def persona_name(user_dir: Path) -> str | None:
+    """The name a Steam account shows (its PersonaName), from the login list Steam keeps (loginusers.vdf), else from
+    the account's own settings; None when neither says."""
+    account = int(user_dir.name) if user_dir.name.isdigit() else None
+    if account is None:
+        return None
+    login = user_dir.parent.parent / "config" / "loginusers.vdf"
+    try:
+        for steamid, body in _LOGIN_USER.findall(login.read_text(errors="replace")):
+            if int(steamid) - STEAMID64_BASE == account and (found := _PERSONA.search(body)):
+                return _unquote(found.group(1)) or None
+    except OSError:
+        pass
+    try:
+        text = (user_dir / "config" / "localconfig.vdf").read_text(errors="replace")
+    except OSError:
+        return None
+    found = _PERSONA.search(text)
+    return (_unquote(found.group(1)) or None) if found else None
 
 
 def steam_running() -> bool:

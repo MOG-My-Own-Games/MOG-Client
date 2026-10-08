@@ -160,3 +160,54 @@ def test_an_entry_made_before_the_logo_existed_gets_it_at_the_next_start(world):
     assert logo.is_file() and logo.read_bytes()[:4] == b"\x89PNG"
     assert any(f.endswith("_logo.png") for f in world.settings.steam_client["artwork"])
     assert selfsteam.settle(world.settings) is None  # nothing left to add: the pictures are not written every start
+
+
+LOGINUSERS = '''"users"
+{
+	"76561198025058569"
+	{
+		"AccountName"		"xargon_login"
+		"PersonaName"		"Xargon"
+		"RememberPassword"		"1"
+	}
+	"76561197960265729"
+	{
+		"AccountName"		"other"
+		"PersonaName"		"Say \\"Hi\\""
+	}
+}
+'''
+
+
+def test_a_steam_account_is_called_by_its_name(tmp_path):
+    root = tmp_path / "Steam"
+    (root / "config").mkdir(parents=True)
+    (root / "config" / "loginusers.vdf").write_text(LOGINUSERS)
+    xargon = root / "userdata" / str(76561198025058569 - steam.STEAMID64_BASE)
+    other = root / "userdata" / "1"
+    stranger = root / "userdata" / "99"
+    for d in (xargon, other, stranger):
+        (d / "config").mkdir(parents=True)
+
+    assert steam.persona_name(xargon) == "Xargon" and steam.persona_name(other) == 'Say "Hi"'
+    assert steam.persona_name(stranger) is None
+    assert selfsteam.label(xargon, [xargon, other]) == "Xargon"
+    assert selfsteam.label(stranger, [xargon, stranger]) == "Account 99"
+
+
+def test_the_account_s_own_settings_name_it_when_the_login_list_does_not(tmp_path):
+    user = tmp_path / "Steam" / "userdata" / "5"
+    (user / "config").mkdir(parents=True)
+    (user / "config" / "localconfig.vdf").write_text('"UserLocalConfigStore"\n{\n\t"PersonaName"\t\t"Xargon"\n}\n')
+    assert steam.persona_name(user) == "Xargon"
+
+
+def test_two_accounts_with_one_name_are_told_apart_by_their_number(tmp_path):
+    root = tmp_path / "Steam"
+    users = []
+    for number in ("7", "8"):
+        user = root / "userdata" / number
+        (user / "config").mkdir(parents=True)
+        (user / "config" / "localconfig.vdf").write_text('"PersonaName"\t\t"Same"')
+        users.append(user)
+    assert [selfsteam.label(u, users) for u in users] == ["Same (7)", "Same (8)"]

@@ -181,6 +181,7 @@ def test_several_steam_accounts_are_asked_which(win, qapp, steam_world, tmp_path
     pump(qapp)
     page = win.current_page()
     assert isinstance(page, gui.ChoicePage) and page.title == "Which Steam account?"
+    assert [page.list.item(i).text() for i in range(2)] == ["Account 1001", "Account 2002"]  # no name known: the number
     page.list.setCurrentRow(1)
     page.accept()
     assert str(second) in win.app.settings.steam_client["shortcuts_path"]
