@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -54,11 +56,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mog_client import crashlog, gameplay, logstore, manager, steam, trace, updater
+from mog_client import activity, crashlog, gameplay, logstore, manager, steam, trace, updater
 from mog_client import installdirs, ordering, protocol, snapshot
 from mog_client import mods as mods_download
 from mog_client import played as played_at
-from mog_client.api import fetch_url, fmt_bytes
+from mog_client.api import fetch_url, fmt_bytes, safe_dirname
 from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.progress import RateMeter, format_eta
 from mog_client.stopactions import StopActions
@@ -82,10 +84,10 @@ from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.loading import LoadingPanel
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
-from mog_client.saves import runner, sync
-from mog_client.saves.state import load_state
+from mog_client.saves import devices, runner, sync
+from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, FocusTabs, Toggle, accent_gradient, accent_qss, avatar_icon, clear_icon, scrollbar_qss
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, ParagraphLabel, FocusTabs, Toggle, accent_gradient, accent_qss, avatar_icon, clear_icon, scrollbar_qss
 from mog_client.launcher import (
     available_launchers,
     client_command,
@@ -97,6 +99,7 @@ from mog_client.launcher import (
     list_executables,
 )
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
+from mog_client.transfer import sha1_of
 from mog_client.version import __version__
 
 ASSETS = Path(__file__).parent / "assets"
@@ -147,9 +150,13 @@ QMenu { background: #1e2733; color: #e8eaed; border: 1px solid #343c49; border-r
 QMenu::item { padding: 12px 34px 12px 18px; border-radius: 8px; font-size: 18px; }
 QMenu::item:selected { background: {accent}; color: white; }
 QMenu::separator { height: 1px; background: #343c49; margin: 6px 10px; }
-#metaKey { color: #8b94a3; font-size: 13px; font-weight: bold; padding-top: 4px; }
-#metaValue { color: #ffffff; font-size: 19px; }
-#summary { color: #c3c8d2; padding-top: 12px; }
+#metaKey { color: #8b94a3; font-size: 12px; font-weight: bold; padding-top: 3px; }
+#metaValue { color: #ffffff; font-size: 17px; }
+#summary { color: #c3c8d2; }
+#hltbBox { background: rgba(21, 25, 32, 205); border: 1px solid #343c49; border-radius: 10px; }
+#hltbTitle { color: #8b94a3; font-size: 12px; font-weight: bold; }
+#hltbLabel { color: #c3c8d2; font-size: 14px; }
+#hltbTime { color: #ffffff; font-size: 19px; font-weight: bold; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
 QProgressBar::chunk { background: {accent}; border-radius: 6px; }
 """.replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()
@@ -170,6 +177,7 @@ TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
 ACTIVE_ICON = QSize(32, 32)
+ROLE_MOD_ROW = Qt.UserRole + 30  # on a sidebar row: the name of the mod it is fetching (None for an install or a sync)
 IMAGE_WORKERS = 6
 
 
@@ -204,7 +212,7 @@ class Bridge(QObject):
     pad_connected = Signal(bool, str)  # connected, controller family
     notifications = Signal(object)  # {"notifications": [...], "unread": n}
     libraries = Signal(list)
-    installers = Signal(int, object, str)  # game id, candidates (None on error), error
+    installers = Signal(int, object, str, bool)  # game id, candidates (None on error), error, the server found no installer
     game_size = Signal(int, object)  # game id, bytes on the server (not a 32-bit int)
     activity = Signal()  # something started, moved on or ended in the background: the sidebar's rows follow
     mods_loaded = Signal(int, object)  # game id, its mods ({name, kind, size_bytes, file_count})
@@ -236,6 +244,8 @@ class App:
         self._icons_asked: set[int] = set()
         self.mods: dict[int, list[dict]] = {}  # each game's mods, once asked
         self.mod_jobs: dict[tuple[int, str], tuple[str, int]] = {}  # (game, mod) -> (stage, percent) while it is fetched
+        self.mod_saved: dict[tuple[int, str], str] = {}  # (game, mod) -> where the last fetch of it was saved
+        self.mod_stops: dict[tuple[int, str], threading.Event] = {}  # set to stop that mod's fetch
         self.revision: str | None = None  # the server's library revision at the last load
         self.refreshing = False
         self.sizes: dict[int, int] = {}  # bytes each game takes on the server, once asked
@@ -321,13 +331,41 @@ class App:
 
         self.run_bg(work, on_error=lambda _m: None)
 
+    def mod_folder(self, game: dict) -> Path:
+        """Where the game's mods go: the mods folder of its own folder, installed or not yet."""
+        rec = load_library().get(game["id"])
+        base = Path(rec.install_dir) if rec else installdirs.default_root(self.settings) / safe_dirname(game["name"])
+        return mods_download.mods_dir(base)
+
+    def _note_mod_file(self, game_id: int, path: Path) -> None:
+        """A mod saved inside an installed game's folder is one of the game's own files, so it is not taken for a save."""
+        rec = load_library().get(game_id)
+        if rec is None:
+            return
+        try:
+            relative = path.resolve().relative_to(Path(rec.install_dir).resolve())
+            entry = {"path": relative.as_posix(), "size_bytes": path.stat().st_size, "sha1": sha1_of(path)}
+        except (OSError, ValueError):
+            return
+        save_install_manifest(game_id, [entry])
+
+    def cancel_mod(self, game: dict, mod: dict) -> None:
+        """Stop a mod's fetch: the server drops the zip and what was downloaded here is removed."""
+        stop = self.mod_stops.get((game["id"], mod["name"]))
+        if stop is not None:
+            stop.set()
+
     def download_mod(self, game: dict, mod: dict) -> None:
-        """Fetch a mod to the Downloads folder (the server zips a folder first), with its progress in the sidebar."""
+        """Fetch a mod into the game's mods folder (the server zips a folder first), with its progress in the sidebar. The
+        server keeps the news in the person's notifications; the fetch is remembered so a restart carries on with it."""
         key = (game["id"], mod["name"])
         if key in self.mod_jobs:
             return
         bridge = self.bridge
+        stop = self.mod_stops[key] = threading.Event()
+        self.mod_saved.pop(key, None)
         self.mod_jobs[key] = ("Preparing", 0)
+        activity.add_mod(game["id"], mod)
 
         def changed() -> None:
             bridge.activity.emit()
@@ -337,14 +375,27 @@ class App:
             changed()
 
         def work() -> None:
+            client = self.client()
             try:
-                saved = mods_download.fetch(self.client(), game["id"], mod, mods_download.download_dir(game["name"]), progress)
+                saved = mods_download.fetch(client, game["id"], mod, self.mod_folder(game), progress, stop.is_set)
+            except mods_download.ModCancelled:
+                bridge.note.emit(f"Mod {mod['name']} of {game['name']}: stopped")
             except Exception as e:  # noqa: BLE001 - told to the user
                 bridge.message.emit("error", f"Mod {mod['name']} of {game['name']}: {e}")
             else:
-                bridge.message.emit("info", f"Mod {mod['name']} of {game['name']} downloaded: {saved}")
+                self.mod_saved[key] = str(saved)
+                self._note_mod_file(game["id"], saved)
+                text = f"Mod {mod['name']} of {game['name']} downloaded: {saved}"
+                device = devices.known_device()
+                if client.mod_downloaded(game["id"], mod["name"], device.name if device else None):
+                    bridge.note.emit(text)  # the server keeps it in the inbox
+                    self.poll_notifications()
+                else:
+                    bridge.message.emit("info", text)
             finally:
                 self.mod_jobs.pop(key, None)
+                self.mod_stops.pop(key, None)
+                activity.remove_mod(game["id"], mod["name"])
                 changed()
 
         changed()
@@ -499,9 +550,9 @@ class App:
         def work():
             try:
                 data = self.client().candidates(game_id)
-                self.bridge.installers.emit(game_id, data.get("candidates", []), "")
+                self.bridge.installers.emit(game_id, data.get("candidates", []), "", bool(data.get("extract_suggested")))
             except Exception as e:  # noqa: BLE001 - shown in the picker
-                self.bridge.installers.emit(game_id, None, str(e))
+                self.bridge.installers.emit(game_id, None, str(e), False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -514,6 +565,7 @@ class App:
         stop = threading.Event()
         self.after_stop.forget(gid)
         self.installs[gid] = stop
+        activity.add_install(gid)
         bridge = self.bridge
 
         server_state = {"label": ""}
@@ -567,6 +619,7 @@ class App:
             self.installs.pop(gid, None)
             self.progress.pop(gid, None)
             self.stopping.discard(gid)
+            activity.remove_install(gid)
             follow_up = self.after_stop.take(gid)
             if follow_up:
                 try:
@@ -781,42 +834,62 @@ class NotificationsPage(Page):
 
 
 class ModsPage(Page):
-    """A game's mods, one row each; Enter downloads the one on it (the server zips a folder first). Mods are
-    only fetched, never installed."""
+    """A game's mods, one row each; Enter downloads the one on it (the server zips a folder first), or asks to cancel
+    it while it is being fetched. Mods are only fetched, never installed. Each row shows its own progress, and where
+    the file went once it is done."""
 
     title = "Mods"
 
     def __init__(self, win: "MainWindow", game: dict, mods: list[dict]):
         super().__init__()
-        self.win, self.game = win, game
+        self.win, self.game, self.mods = win, game, mods
         note = QLabel(
             "Pick a mod to download it. Nothing is installed: the file is saved in "
-            f"{mods_download.download_dir(game['name'])}. A folder is zipped by the server first; its progress is in the sidebar."
+            f"{win.app.mod_folder(game)}. A folder is zipped by the server first; its progress is shown on its row."
         )
         note.setWordWrap(True)
         self.list = QListWidget()
-        for mod in mods:
-            what = "folder, zipped on download" if mod.get("kind") == "folder" else mod.get("kind", "file")
-            item = QListWidgetItem(f"{mod['name']}\n{what}, {fmt_bytes(mod.get('size_bytes') or 0)}")
-            item.setData(Qt.UserRole, mod)
-            self.list.addItem(item)
+        self.render()
         if self.list.count():
             self.list.setCurrentRow(0)
         self.list.itemActivated.connect(self.fetch)
         self.list.itemClicked.connect(self.fetch)
+        win.app.bridge.activity.connect(self.render)
         lay = QVBoxLayout(self)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
+
+    def render(self) -> None:
+        """One row per mod: what it is, or how its fetch is going, or where its last fetch was saved."""
+        app = self.win.app
+        row = self.list.currentRow()
+        self.list.clear()
+        for mod in self.mods:
+            key = (self.game["id"], mod["name"])
+            if key in app.mod_jobs:
+                stage, percent = app.mod_jobs[key]
+                what = f"{stage}... {percent}%"
+            elif key in app.mod_saved:
+                what = f"Downloaded to {app.mod_saved[key]}"
+            else:
+                kind = "folder, zipped on download" if mod.get("kind") == "folder" else mod.get("kind", "file")
+                what = f"{kind}, {fmt_bytes(mod.get('size_bytes') or 0)}"
+            item = QListWidgetItem(f"{mod['name']}\n{what}")
+            item.setData(Qt.UserRole, mod)
+            self.list.addItem(item)
+        if row >= 0:
+            self.list.setCurrentRow(min(row, self.list.count() - 1))
 
     def focus_default(self) -> None:
         self.list.setFocus()
 
     def fetch(self, item: QListWidgetItem) -> None:
         mod = item.data(Qt.UserRole)
-        if (self.game["id"], mod["name"]) in self.win.app.mod_jobs:
-            self.win.notify(f"{mod['name']} is already being fetched")
+        app = self.win.app
+        if (self.game["id"], mod["name"]) in app.mod_jobs:
+            self.win.ask(f"Cancel fetching {mod['name']}?", lambda: app.cancel_mod(self.game, mod), danger=True)
             return
-        self.win.app.download_mod(self.game, mod)
+        app.download_mod(self.game, mod)
         self.win.notify(f"Fetching the mod {mod['name']}")
 
 
@@ -927,11 +1000,11 @@ class ChecklistPage(Page):
         note = QLabel(text)
         note.setWordWrap(True)
         self.list = QListWidget()
-        for label, value in items:
+        for label, value, *ticked in items:  # an entry may say it starts ticked
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, value)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked)
+            item.setCheckState(Qt.Checked if ticked and ticked[0] else Qt.Unchecked)
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
@@ -1103,15 +1176,21 @@ def version_label(game: dict, libraries: list[dict]) -> str:
     return name
 
 
+# The picker's "just extract" entry: install the game's own files as they are, with nothing run.
+EXTRACT_AS_IS = {"extract_only": True}
+
+
 class InstallerPickerPage(Page):
-    """The installers of every version of a title, each under its version, to pick which one to run."""
+    """The installers of every version of a title, each under its version, to pick which one to run. `needed` is when
+    the server has already tried and could not tell which one: then "let the server choose" is not offered."""
 
     title = "Choose an installer"
 
-    def __init__(self, win: "MainWindow", page: "GamePage", group: Group):
+    def __init__(self, win: "MainWindow", page: "GamePage", group: Group, needed: bool = False):
         super().__init__()
-        self.win, self.page, self.group = win, page, group
+        self.win, self.page, self.group, self.needed = win, page, group, needed
         self.found: dict[int, list[dict] | str] = {}
+        self.portable: set[int] = set()  # versions the server found no installer in: probably the game itself
         self.list = QListWidget()
         self.list.itemActivated.connect(self.choose)
         self.status = QLabel("Looking for installers...")
@@ -1126,9 +1205,11 @@ class InstallerPickerPage(Page):
     def focus_default(self) -> None:
         self.list.setFocus()
 
-    def on_installers(self, game_id: int, candidates, error: str) -> None:
+    def on_installers(self, game_id: int, candidates, error: str, portable: bool = False) -> None:
         if game_id in {v["id"] for v in self.group.versions}:
             self.found[game_id] = candidates if candidates is not None else error
+            if portable:
+                self.portable.add(game_id)
             self.render()
 
     def render(self) -> None:
@@ -1140,9 +1221,14 @@ class InstallerPickerPage(Page):
             font.setBold(True)
             header.setFont(font)
             self.list.addItem(header)
-            entry = QListWidgetItem("    Let the server choose")
-            entry.setData(Qt.UserRole, (version, None))
-            self.list.addItem(entry)
+            if version["id"] in self.portable:
+                entry = QListWidgetItem("    Just extract: use the files as they are, run nothing")
+                entry.setData(Qt.UserRole, (version, EXTRACT_AS_IS))
+                self.list.addItem(entry)
+            if not self.needed:
+                entry = QListWidgetItem("    Let the server choose")
+                entry.setData(Qt.UserRole, (version, None))
+                self.list.addItem(entry)
             found = self.found.get(version["id"])
             if found is None:
                 self.list.addItem(self._note("    Looking..."))
@@ -1154,7 +1240,13 @@ class InstallerPickerPage(Page):
                 row.setData(Qt.UserRole, (version, cand))
                 self.list.addItem(row)
         done = len(self.found) == len(self.group.versions)
-        self.status.setText("Pick the installer to run:" if done else "Looking for installers...")
+        if self.needed and self.portable:
+            pick = "No installer was found, so this is probably the game itself. Pick an executable to run, or extract it as it is:"
+        elif self.needed:
+            pick = "The server could not tell which installer to run. Pick it:"
+        else:
+            pick = "Pick the installer to run:"
+        self.status.setText(pick if done else "Looking for installers...")
         for i in range(self.list.count()):
             if self.list.item(i).data(Qt.UserRole):
                 self.list.setCurrentRow(i)
@@ -1172,7 +1264,10 @@ class InstallerPickerPage(Page):
             return
         version, installer = picked
         self.win.back()
-        self.page.start_with(version, installer)
+        if installer is EXTRACT_AS_IS:
+            self.page.start_with(version, None, extract=True)
+        else:
+            self.page.start_with(version, installer)
 
 
 class SettingsPage(Page):
@@ -1833,7 +1928,7 @@ class GamePage(Page):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
         form.setHorizontalSpacing(28)
-        form.setVerticalSpacing(8)
+        form.setVerticalSpacing(5)
 
         def row(label: str, widget: QLabel) -> None:
             key = QLabel(label.upper())  # the name small, dim and capitalised, its value large and bright
@@ -1842,24 +1937,22 @@ class GamePage(Page):
             widget.setObjectName("metaValue")
             form.addRow(key, widget)
 
-        for label, value in [*metadata_lines(game), *hltb_lines(game)]:
-            val = QLabel(value)
-            val.setWordWrap(True)
-            val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            row(label, val)
+        # Wrapped labels here are ParagraphLabels: a plain word-wrapped one makes the header's height depend on its
+        # width, and when the window is short the form rows are squeezed under their own height.
+        for label, value in metadata_lines(game):
+            row(label, ParagraphLabel(value, max_lines=3, min_lines=1))
         self.size_label = QLabel("...")
         row("Size on server", self.size_label)
         self.played_label = QLabel()
         row("Last played", self.played_label)
-        self.sync_label = QLabel()
-        self.sync_label.setWordWrap(True)
+        self.sync_label = ParagraphLabel(max_lines=2, min_lines=1)
         row("Last save sync", self.sync_label)
         self.sync_key = form.labelForField(self.sync_label)
         info_col.addLayout(form)
         text = game.get("summary") or (game.get("igdb_metadata") or {}).get("summary") or ""
-        summary = QLabel(text if len(text) < 700 else text[:700].rsplit(" ", 1)[0] + "...")
+        summary = ParagraphLabel(text, min_lines=3)
         summary.setObjectName("summary")
-        summary.setWordWrap(True)
+        info_col.addSpacing(12)
         info_col.addWidget(summary)
         info_col.addStretch()
         head = QHBoxLayout()
@@ -1867,6 +1960,11 @@ class GamePage(Page):
         head.setSpacing(24)
         head.addWidget(self.cover)
         head.addLayout(info_col, 1)
+        self.hltb_box = QFrame()
+        self.hltb_box.setObjectName("hltbBox")
+        QGridLayout(self.hltb_box).setContentsMargins(16, 12, 16, 12)
+        head.addWidget(self.hltb_box, 0, Qt.AlignTop)
+        self._show_hltb()
         self.header = HeaderArt()
         self.header.setLayout(head)
 
@@ -1884,8 +1982,10 @@ class GamePage(Page):
         lay = QVBoxLayout(self)
         lay.addWidget(self.header)
         lay.addWidget(self.shots)
+        lay.addSpacing(6)
         for w in (self.status, self.bar):
             lay.addWidget(w)
+        lay.addSpacing(14)  # lifts the bar, and the screenshots above it, off the buttons
         lay.addLayout(self.buttons)
         b = self.app.bridge
         b.progress.connect(self._on_progress)
@@ -1906,6 +2006,28 @@ class GamePage(Page):
         self._show_play_rows()
         self.rebuild()
 
+    def _show_hltb(self) -> None:
+        """The HowLongToBeat times as a small table at the right of the header; no table when there are none."""
+        grid = self.hltb_box.layout()
+        while grid.count():
+            grid.takeAt(0).widget().deleteLater()
+        rows = hltb_lines(self.game)
+        self.hltb_box.setVisible(bool(rows))
+        if not rows:
+            return
+        title = QLabel("HOW LONG TO BEAT")
+        title.setObjectName("hltbTitle")
+        grid.addWidget(title, 0, 0, 1, 2)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(6)
+        for i, (label, value) in enumerate(rows, start=1):
+            name, time = QLabel(label), QLabel(value)
+            name.setObjectName("hltbLabel")
+            time.setObjectName("hltbTime")
+            time.setAlignment(Qt.AlignRight)
+            grid.addWidget(name, i, 0)
+            grid.addWidget(time, i, 1)
+
     def _on_mods(self, gid: int, found: list) -> None:
         if gid == self.game["id"] and found:  # the Mods button appears; a game with none changes nothing
             had_focus = self.first is not None and self.first.hasFocus()
@@ -1922,8 +2044,13 @@ class GamePage(Page):
 
     def _on_sizes(self, gid: int, held: dict) -> None:
         if gid == self.game["id"]:
-            parts = [f"{name} {fmt_bytes(held[key])}" for name, key in (("Installer", "installer"), ("Cache", "cache"), ("Saves", "saves"))]
-            self.size_label.setText(f"{fmt_bytes(held['total'])} ({', '.join(parts)})")
+            parts = [
+                f"{name} {fmt_bytes(held[key])}"
+                for name, key in (("Installer", "installer"), ("Cache", "cache"), ("Saves", "saves"))
+                if held[key]
+            ]
+            total = fmt_bytes(held["total"])
+            self.size_label.setText(f"{total} ({', '.join(parts)})" if len(parts) > 1 else total)
 
     def _on_played(self, gid: int) -> None:
         group = self._group()
@@ -1935,14 +2062,18 @@ class GamePage(Page):
         gid = self.game["id"]
         group = self._group()
         members = group.members if group else [self.game]
-        played = ordering.last_played(Group(members=members, versions=members), played_at.history())
-        self.played_label.setText(sync_ui.when_epoch(played) if played else "Never")
+        device = devices.known_device()
+        played, machine = ordering.last_played_on(
+            Group(members=members, versions=members), played_at.history(), device.name if device else None
+        )
+        text = sync_ui.when_epoch(played) if played else "Never"
+        self.played_label.setText(f"{text} on {machine}" if played and machine else text)
         rec = load_library().get(gid)
         enabled = bool(rec) and sync.enabled(rec, self.app.settings)
         self.sync_key.setVisible(enabled)
         self.sync_label.setVisible(enabled)
         if enabled:
-            self.sync_label.setText(sync_ui.describe_check(load_state(gid)))
+            self.sync_label.set_paragraph(sync_ui.describe_check(load_state(gid)))
 
     def _on_header_art(self, gid: int, blob: bytes) -> None:
         pix = QPixmap()
@@ -1972,6 +2103,7 @@ class GamePage(Page):
         self._set_cover(self.win.covers.get(game["id"]))
         self._update_version_label()
         self.size_label.setText("...")
+        self._show_hltb()
         self.header.set_image(None)
         self.app.fetch_header_art(game)
         self.app.load_size(game["id"])
@@ -1979,9 +2111,12 @@ class GamePage(Page):
         self._show_play_rows()
         self.rebuild()
 
-    def start_with(self, version: dict, installer: dict | None) -> None:
+    def start_with(self, version: dict, installer: dict | None, extract: bool = False) -> None:
         self.switch_version(version)
-        self.win.install_game(version, installer, self._installing)
+        if extract:
+            self.win.install_game(version, installer, self._installing, extract=True)
+        else:
+            self.win.install_game(version, installer, self._installing)
 
     def _on_image(self, url: str, blob: bytes) -> None:
         pix = QPixmap()
@@ -2023,6 +2158,10 @@ class GamePage(Page):
     def _on_finished(self, gid: int, err: str) -> None:
         if gid != self.game["id"]:
             return
+        if err.startswith(manager.NEEDS_PICK):
+            self.rebuild()
+            self._ask_for_installer()
+            return
         if err:
             self.win.message(f"{self.game['name']}: {err}", "error")
         self.rebuild()
@@ -2032,6 +2171,17 @@ class GamePage(Page):
                 self.choose_executable(rec)
             else:
                 self.win.message(f"{self.game['name']} finished installing: open it to choose the executable", "info")
+
+    def _ask_for_installer(self) -> None:
+        """The server could not choose the installer: the person does, here, from the list of what it found."""
+        group = self._group()
+        if self.win.current_page() is not self or group is None:
+            self.win.message(
+                f"{self.game['name']}: the server could not tell which installer to run. Open the game's page to choose which installer to run.",
+                "warning",
+            )
+            return
+        self.win.push(InstallerPickerPage(self.win, self, group, needed=True))
 
     def _check_again(self) -> None:
         self.rebuild()
@@ -2406,6 +2556,9 @@ class LibraryPage(Page):
         self.libs.currentRowChanged.connect(self._library_chosen)
         self.installs = EdgeList()
         self.installs.setIconSize(ACTIVE_ICON)
+        self.installs.setWordWrap(True)  # a long game or mod name goes over lines, never cut
+        self.installs.setTextElideMode(Qt.ElideNone)
+        self.installs.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.installs.itemActivated.connect(self._open_install)
         self.installs.itemClicked.connect(self._open_install)
         # Running installs sit above the libraries, and the section is only there while one runs.
@@ -2508,9 +2661,15 @@ class LibraryPage(Page):
         self.populate(self.win.search.text().lower())
 
     def _open_install(self, item: QListWidgetItem) -> None:
+        """An install or a sync row opens the game's page; a mod row opens that game's mods, with Back to its page."""
         gid = item.data(Qt.UserRole)
-        if gid is not None:
-            self.win.show_game(gid)
+        if gid is None:
+            return
+        self.win.show_game(gid)
+        if item.data(ROLE_MOD_ROW) is not None:
+            page = self.win.current_page()
+            if isinstance(page, GamePage):
+                page.open_mods()
 
     def _library_chosen(self, row: int) -> None:
         self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
@@ -2596,19 +2755,20 @@ class LibraryPage(Page):
         """What is going on in the background, one row each: installs, saves being synced and mods being fetched."""
         app = self.win.app
         installing = [gid for gid in app.installs if gid in app.games]
-        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%") for gid in installing]
-        rows += [(gid, "Syncing saves...") for gid in sorted(self.syncing) if gid in app.games and gid not in installing]
+        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None) for gid in installing]
+        rows += [(gid, "Syncing saves...", None) for gid in sorted(self.syncing) if gid in app.games and gid not in installing]
         rows += [
-            (gid, f"Mod {name}: {stage}... {pct}%")
+            (gid, f"Mod {name}\n{stage}... {pct}%", name)
             for (gid, name), (stage, pct) in app.mod_jobs.items()
             if gid in app.games
         ]
         row = self.installs.currentRow()
         self.installs.clear()
-        for gid, doing in rows:
+        for gid, doing, mod_name in rows:
             game = app.games[gid]
             item = QListWidgetItem(f"{game['name']}\n{doing}")
             item.setData(Qt.UserRole, gid)
+            item.setData(ROLE_MOD_ROW, mod_name)
             if gid in self.win.icons:
                 item.setIcon(QIcon(self.win.icons[gid]))
             else:
@@ -2619,7 +2779,7 @@ class LibraryPage(Page):
         if not rows and self.installs_box.isAncestorOf(QApplication.focusWidget()):
             self.libs.setFocus()  # the list the focus was in is about to go
         height = self.installs.sizeHintForRow(0) if rows else 0
-        self.installs.setFixedHeight(min(170, height * len(rows) + 12))  # as tall as its rows, up to a limit
+        self.installs.setFixedHeight(min(300, height * len(rows) + 12))  # as tall as its rows, up to a limit
         self.installs_box.setVisible(bool(rows))
 
     def populate(self, needle: str) -> None:
@@ -2700,6 +2860,7 @@ class MainWindow(QMainWindow):
         self.user_menu.addAction("Sign out", self.sign_out)
         self.notifications: list[dict] = []
         self.seen_notification_id: int | None = None
+        self._resumed = False  # what was running when the client last closed is carried on once, at the first list
         top = QHBoxLayout()
         top.addWidget(self.back_btn)
         top.addWidget(self.logo)
@@ -2784,6 +2945,9 @@ class MainWindow(QMainWindow):
         user = snapshot.load_user(settings.base)
         if user:
             self.set_user(*user)
+        kept = snapshot.load_notifications(settings.base)
+        if kept:
+            self._show_notifications(kept)  # shown, not announced: the first real answer settles what is new
 
     def closeEvent(self, e):
         self.pad_stop.set()
@@ -2862,7 +3026,7 @@ class MainWindow(QMainWindow):
         page.no.clicked.connect(no)
         self.push(page)
 
-    def install_game(self, game: dict, installer: dict | None = None, then=None) -> None:
+    def install_game(self, game: dict, installer: dict | None = None, then=None, extract: bool = False) -> None:
         """Start installing `game`. One that was begun carries on where it is (its drive has to be back); a new
         one goes into the first install folder that is connected and has room, and when an earlier folder is
         full the user is asked, folder by folder, before it goes into a later one. `then` runs once started."""
@@ -2899,6 +3063,9 @@ class MainWindow(QMainWindow):
 
             self.app.run_bg(ask_size, on_error=lambda _m: self.app.bridge.call.emit(lambda: place(extract)))
 
+        if extract:  # asked for in the picker: nothing left to ask
+            go(None, True) if rec else size_then_place(True)
+            return
         # A game that was begun is asked too when its session is not running (an attempt that failed
         # leaves its record behind, and starting it again would only fail the same way).
         self._ask_extraction(game, installer, (lambda extract: go(None, extract)) if rec else size_then_place)
@@ -3223,8 +3390,8 @@ class MainWindow(QMainWindow):
             ctx = None
             if sync_enabled(rec, self.app.settings):
                 ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)
-            recorder = runner.runtime_prefix_recorder(ctx) if ctx else None
-            started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, **timing)
+            recorder = runner.runtime_prefix_recorder(ctx) if ctx and not rec.native else None
+            started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, **timing)
             if started and ctx:
                 self.app.bridge.call.emit(lambda: self._sync_started(rec))
             result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None
@@ -3244,7 +3411,7 @@ class MainWindow(QMainWindow):
         self.playing.stopping()
         logstore.info(f"Stopping {rec.name}")
         threading.Thread(
-            target=lambda: gameplay.stop_game(Path(rec.install_dir), proc), daemon=True, name="stop-game"
+            target=lambda: gameplay.stop_game(Path(rec.install_dir), proc, native=rec.native), daemon=True, name="stop-game"
         ).start()
 
     def _sync_started(self, rec: InstalledGame) -> None:
@@ -3294,9 +3461,31 @@ class MainWindow(QMainWindow):
         self.refresh_items()
         self.saves.check_all()
         self.settle_steam()
+        self._resume_background()
         if self._pending_link:
             link, self._pending_link = self._pending_link, None
             self.handle_link(link)
+
+    def _resume_background(self) -> None:
+        """Carry on with what was running when the client closed, once per start: an install that stopped half way
+        (its folder has to be reachable) and the mods that were being fetched. What cannot go on is forgotten."""
+        if self._resumed:
+            return
+        self._resumed = True
+        local = load_library()
+        state = activity.load()
+        for gid in state["installs"]:
+            game, rec = self.app.games.get(gid), local.get(gid)
+            if game and rec and rec.state not in ("installed", "awaiting_executable") and installdirs.resumable(rec):
+                self.install_game(game)
+            else:
+                activity.remove_install(gid)
+        for entry in state["mods"]:
+            game = self.app.games.get(entry["game_id"])
+            if game:
+                self.app.download_mod(game, entry["mod"])
+            else:
+                activity.remove_mod(entry["game_id"], entry["mod"].get("name"))
 
     def set_user(self, name: str, avatar: bytes | None) -> None:
         self.user_btn.setText(name)
@@ -3405,7 +3594,15 @@ class MainWindow(QMainWindow):
                 if n["id"] > self.seen_notification_id and not n["read"]:
                     self.notify(f"Notification: {n['title']}")
         self.seen_notification_id = newest
-        self.notifications = items
+        self._show_notifications(data)
+        if self.app.settings.configured:
+            try:
+                snapshot.save_notifications(self.app.settings.base, data)
+            except OSError as e:
+                logstore.warning(f"Could not keep the notifications for the next start: {e}")
+
+    def _show_notifications(self, data: dict) -> None:
+        self.notifications = data["notifications"]
         unread = data["unread"]
         self.user_btn.set_count(unread)
         self.notifications_action.setText(f"Notifications ({unread})" if unread else "Notifications")
