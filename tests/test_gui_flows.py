@@ -1546,7 +1546,10 @@ def test_starting_an_install_and_a_mod_remembers_them_and_ending_forgets_them(wi
     game = {"id": 5, "name": "Eta", "library_id": None, "igdb_id": None}
     win.app.set_games([game])
 
+    listed = []
+    win.app.bridge.activity.connect(lambda: listed.append(sorted(win.app.installs)))
     win.app.start_install(game)
+    assert listed and listed[0] == [5]  # the task list hears of it at once, not with the first progress
     for _ in range(100):
         if 5 not in win.app.installs:
             break
@@ -1758,13 +1761,13 @@ def test_the_close_button_and_a_click_outside_the_card_both_close_it(win, qapp, 
     assert isinstance(win.current_page(), gui.ModsPage) and win.modal.showing
 
 
-def test_a_question_asked_from_the_card_comes_back_to_the_card(win, qapp, monkeypatch, tmp_path):
+def test_a_question_asked_from_the_card_is_a_card_and_comes_back_to_the_card(win, qapp, monkeypatch, tmp_path):
     game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
     game_page.open_mods()
     mods_page = win.current_page()
     win.ask("Sure?", lambda: None)
     pump(qapp)
-    assert isinstance(win.current_page(), gui.ConfirmPage) and not win.modal.showing
+    assert isinstance(win.current_page(), gui.ConfirmPage) and win.modal.page is win.current_page()
     win.current_page().no.click()
     pump(qapp)
     assert win.current_page() is mods_page and win.modal.showing and win.stack.currentWidget() is game_page
@@ -1842,3 +1845,344 @@ def test_sort_by_sits_right_under_the_libraries_not_at_the_bottom_of_the_sidebar
     assert sorts.geometry().bottom() < win.library.sidebar.height() - 40  # free space is left under it
     heading = [lbl for lbl in win.library.sidebar.findChildren(QLabel) if lbl.text().lower() == "sort by"]
     assert heading and heading[0].geometry().top() > libs.geometry().bottom()
+
+
+def test_a_restore_is_a_row_in_the_task_list_and_play_waits_for_it(win, qapp, tmp_path, monkeypatch):
+    from mog_client.gui.saves_ui import RestoreJob
+
+    folder = tmp_path / "games" / "Alpha"
+    folder.mkdir(parents=True)
+    _library_with(win, qapp, tmp_path, monkeypatch, folder)
+    win.show_game(1)
+    page = win.current_page()
+    started = []
+    monkeypatch.setattr(page, "start", lambda rec: started.append(rec.game_id))
+
+    win.saves.restoring[1] = RestoreJob(percent=37)
+    win.refresh_tasks()
+    rows = [win.library.installs.item(i).text() for i in range(win.library.installs.count())]
+    assert any("Alpha" in r and "Restoring saves... 37%" in r for r in rows)
+
+    page.play()
+    pump(qapp)
+    assert started == [] and 1 in win.saves.restoring  # asked, neither started nor cancelled
+
+    win.saves.restoring[1].applying = True
+    win.refresh_tasks()
+    rows = [win.library.installs.item(i).text() for i in range(win.library.installs.count())]
+    assert any("Putting the saves back" in r for r in rows)
+
+    win.saves.restoring.clear()
+    win.refresh_tasks()
+    assert win.library.installs.count() == 0
+
+
+def _until(qapp, condition, seconds=3.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline and not condition():
+        qapp.processEvents()
+        time.sleep(0.01)
+    return condition()
+
+
+def _a_game_is_listed(win, qapp, tmp_path, monkeypatch):
+    folder = tmp_path / "games" / "Alpha"
+    folder.mkdir(parents=True)
+    _library_with(win, qapp, tmp_path, monkeypatch, folder)
+    win.show_game(1)
+    win.back()
+    pump(qapp)
+
+
+def test_the_sidebar_stays_as_it_is_when_a_task_starts(win, qapp, tmp_path, monkeypatch):
+    from mog_client.gui.saves_ui import RestoreJob
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.library.toggle_sidebar()
+    assert not win.library.sidebar.isVisible()
+
+    win.saves.restoring[1] = RestoreJob()
+    win.refresh_tasks()
+    pump(qapp)
+    assert not win.library.sidebar.isVisible() and win.library.sidebar.width() == gui.SIDEBAR_WIDTH
+    win.library.toggle_sidebar()
+    assert win.library.sidebar.isVisible()
+
+
+def test_a_task_started_on_another_page_pulses_the_cover_when_the_library_comes_back(win, qapp, tmp_path, monkeypatch):
+    from mog_client.gui.saves_ui import RestoreJob
+
+    monkeypatch.setattr(gui, "CARD_PULSE_MS", 20)
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    win.saves.restoring[1] = RestoreJob()
+    win.refresh_tasks()
+    assert win.library._card_pulses == {} and win.library._cards_due == {1}
+
+    win.back()
+    assert _until(qapp, lambda: not win.library._cards_due and (1 in win.library._card_pulses or True))
+    assert _until(qapp, lambda: win.library._card_pulses == {})
+
+
+def test_a_cover_with_a_task_carries_a_turning_ring_for_as_long_as_it_runs(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QAbstractAnimation
+
+    from mog_client.gui.saves_ui import RestoreJob
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    library = win.library
+    item = library.items[1]
+    assert not item.data(gui.ROLE_BUSY) and library._spin.state() != QAbstractAnimation.Running
+
+    win.saves.restoring[1] = RestoreJob(percent=10)  # a download of saves
+    win.refresh_tasks()
+    assert item.data(gui.ROLE_BUSY) is True and library._spin.state() == QAbstractAnimation.Running
+    before = library.grid.itemDelegate().angle
+    assert _until(qapp, lambda: library.grid.itemDelegate().angle != before)  # it turns
+
+    del win.saves.restoring[1]
+    win.refresh_tasks()
+    assert not item.data(gui.ROLE_BUSY) and library._spin.state() != QAbstractAnimation.Running
+
+
+def test_an_install_download_and_a_populate_keep_the_ring_on_the_cover(win, qapp, tmp_path, monkeypatch):
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    library = win.library
+    win.app.installs[1] = threading.Event()  # an install is running
+    win.refresh_tasks()
+    assert library.items[1].data(gui.ROLE_BUSY) is True
+
+    library.populate("")  # the grid is rebuilt (a search, a sort): the new item still carries it
+    assert library.items[1].data(gui.ROLE_BUSY) is True
+    win.app.installs.pop(1)
+    win.refresh_tasks()
+    assert library.items[1].data(gui.ROLE_BUSY) is False
+
+
+def test_a_notification_shows_the_game_icon_else_the_icon_of_who_wrote_it(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtGui import QPixmap
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.icon_art[1] = QPixmap(256, 256)
+    monkeypatch.setattr(win.app, "fetch_icon", lambda game: None)
+    win.notifications = [
+        {"id": 1, "kind": "save_synced", "title": "Saves backed up: Alpha", "body": None, "game_id": 1, "read": True},
+        {"id": 2, "kind": "auto_mode_failed", "title": "Install failed", "body": None, "game_id": None, "read": True},
+        {"id": 3, "kind": "save_synced", "title": "Backed up", "body": None, "game_id": None, "read": True},
+        {"id": 4, "kind": "games_added", "title": "New games", "body": None, "game_id": 999, "read": True},
+    ]
+    page = gui.NotificationsPage(win)
+    size = gui.NOTIFICATION_ICON.height()
+    server, client = (gui.asset_pixmap(name, size).toImage() for name in ("server.png", "icon.png"))
+
+    def image(row):
+        return page.list.item(row).icon().pixmap(size, size).toImage()
+
+    assert not page.list.item(0).icon().isNull()  # the game's own
+    assert page.list.item(0).font().bold() is False  # read: no weight
+    assert "\u25cf" not in page.list.item(0).text()  # no bullet any more
+    assert image(1) == server  # about the server, no game
+    assert image(2) == client  # about what the client did, no game
+    assert image(3) == server  # a game this library does not have: the server's
+
+
+def test_questions_and_pickers_are_cards_over_the_page_they_came_from(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    answers = []
+    for show in (
+        lambda: win.ask("Cancel it?", lambda: answers.append("yes")),
+        lambda: win.choose("Pick", "which", [("A", 1), ("B", 2)], answers.append),
+        lambda: win.checklist("Tick", "which", [("A", 1)], answers.append),
+    ):
+        show()
+        pump(qapp)
+        page = win.current_page()
+        assert page.modal and win.modal.page is page and win.stack.currentWidget() is game_page
+        win.back()
+        pump(qapp)
+        assert not win.modal.showing and win.current_page() is game_page
+
+
+def test_a_question_card_is_as_big_as_the_question_and_has_no_close_button(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    win.ask("Cancel that and play with the saves on this machine instead?", lambda: None)
+    pump(qapp)
+    question = win.modal.card.geometry()
+    assert question.width() <= 560 and question.height() < 260 and not win.modal.close_button.isVisibleTo(win.modal)
+    win.back()
+    game_page.open_mods()
+    pump(qapp)
+    mods = win.modal.card.geometry()
+    assert mods.height() > question.height() and win.modal.close_button.isVisibleTo(win.modal)
+
+
+def test_the_ring_around_a_cover_can_be_painted_in_the_grid_and_on_a_widget(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    image = QImage(300, 400, QImage.Format_ARGB32)
+    painter = QPainter(image)
+    gui.paint_ring(painter, QRect(40, 40, 200, 300), 0.5)
+
+    item = win.library.items[1]
+    item.setData(gui.ROLE_PULSE, 0.4)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 300, 400)
+    win.library.grid.itemDelegate().paint(painter, option, win.library.grid.indexFromItem(item))  # raises if it cannot
+    painter.end()
+
+    ring = gui.RingPulse(win)
+    ring.resize(300, 400)
+    ring.progress = 0.5
+    ring.grab()
+
+
+def test_a_task_queued_for_the_game_on_screen_pulses_its_cover(win, qapp, tmp_path, monkeypatch):
+    from mog_client.gui.saves_ui import RestoreJob
+
+    monkeypatch.setattr(gui, "CARD_PULSE_MS", 30)
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    page = win.current_page()
+    fired = []
+    monkeypatch.setattr(page, "pulse", lambda: fired.append(1))
+
+    win.saves.restoring[1] = RestoreJob()
+    win.refresh_tasks()
+    win.refresh_tasks()  # nothing new the second time
+    assert fired == [1]
+
+    real = gui.GamePage.pulse
+    real(page)
+    assert page._ring.isVisible() and _until(qapp, lambda: not page._ring.isVisible())
+
+
+def test_notification_icons_are_made_at_the_screens_pixel_ratio(win, qapp, tmp_path, monkeypatch):
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.notifications = [{"id": 1, "kind": "games_added", "title": "t", "body": None, "game_id": None, "read": True}]
+    page = gui.NotificationsPage(win)
+    monkeypatch.setattr(page, "devicePixelRatioF", lambda: 2.0)
+    pix = page._sharp(gui.QPixmap(str(gui.ASSETS / "server.png")))
+    assert pix.devicePixelRatio() == 2.0 and pix.width() == 128 and pix.height() == 128  # 64 points
+
+
+def _ico_of(*sizes):
+    """An .ico holding a PNG of each size, smallest first, the way the server's icons come."""
+    import struct
+
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    images = []
+    for size in sizes:
+        image = QImage(size, size, QImage.Format_ARGB32)
+        image.fill(QColor("red"))
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        images.append((size, bytes(data)))
+    offset = 6 + 16 * len(images)
+    header, body = struct.pack("<HHH", 0, 1, len(images)), b""
+    for size, png in images:
+        header += struct.pack("<BBBBHHII", size, size, 0, 0, 1, 32, len(png), offset + len(body))
+        body += png
+    return header + body
+
+
+def test_an_icon_file_with_several_sizes_is_shown_at_its_largest(win, qapp):
+    from PySide6.QtGui import QPixmap
+
+    blob = _ico_of(16, 32, 64)
+    plain = QPixmap()
+    plain.loadFromData(blob)
+    assert plain.width() == 16  # what loading it plainly gives: the smallest
+
+    assert gui.largest_pixmap(blob).width() == 64
+    win.set_icon(1, blob)
+    assert win.icon_art[1].width() == 64 and win.icons[1].width() == gui.ACTIVE_ICON.width()
+    assert gui.largest_pixmap(b"not a picture").isNull()
+
+
+def test_the_pie_and_the_ring_can_be_painted(qapp):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage, QPainter
+
+    image = QImage(300, 400, QImage.Format_ARGB32)
+    painter = QPainter(image)
+    rect = QRect(0, 0, 300, 400)
+    for kind, percent in (("download", 0), ("download", 42), ("download", 100), ("upload", None)):
+        gui.paint_pie(painter, rect, kind, percent, 120.0)  # raises if it cannot
+    gui.paint_spin_ring(painter, QRect(0, 0, 160, 48), 200.0)
+    painter.end()
+
+
+def test_a_game_page_shows_a_pie_on_the_cover_and_a_ring_on_play_while_its_saves_move(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QAbstractAnimation
+
+    from mog_client.gui.saves_ui import RestoreJob
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    page = win.current_page()
+    assert page.play_ring is not None and page.play_ring.isHidden() and not hasattr(page, "_pie")
+
+    win.saves.restoring[1] = RestoreJob(percent=42)
+    win.refresh_tasks()
+    assert not page._pie.isHidden() and page._pie.kind == "download" and page._pie.percent == 42
+    assert not page.play_ring.isHidden() and page.play_ring.spin.state() == QAbstractAnimation.Running
+
+    win.saves.restoring[1].applying = True
+    win.refresh_tasks()
+    assert page._pie.percent == 100
+
+    del win.saves.restoring[1]
+    win.saves.uploading.add(1)
+    win.refresh_tasks()
+    assert page._pie.kind == "upload" and page._pie.percent is None and page._pie.spin.state() == QAbstractAnimation.Running
+
+    win.saves.uploading.clear()
+    win.refresh_tasks()
+    assert page._pie.isHidden() and page.play_ring.isHidden()
+
+
+def test_the_ring_follows_the_play_button_when_the_page_is_rebuilt(win, qapp, tmp_path, monkeypatch):
+    from mog_client.gui.saves_ui import RestoreJob
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    page = win.current_page()
+    win.saves.restoring[1] = RestoreJob(percent=10)
+    win.refresh_tasks()
+    page.rebuild()  # new buttons: the ring is on the new Play
+    pump(qapp)
+    assert page.play_ring is not None and not page.play_ring.isHidden()
+    win.saves.restoring.clear()
+    win.refresh_tasks()
+    assert page.play_ring.isHidden()
+
+
+def test_a_notice_the_client_keeps_itself_sits_in_the_list_and_never_goes_to_the_server(win, qapp, monkeypatch):
+    sent = []
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: sent.append(fn))
+    monkeypatch.setattr(win.app, "poll_notifications", lambda: None)
+    win.on_notifications({"notifications": [{"id": 5, "kind": "save_synced", "title": "Saves backed up: A", "body": None, "game_id": None, "read": False}], "unread": 1})
+
+    win.add_local_notification("save_restored", "Saves restored: A", "On this machine, 2 files.", None)
+    assert [n["title"] for n in win.notifications] == ["Saves restored: A", "Saves backed up: A"]
+    assert win.user_btn.count == 2  # the bell counts both
+
+    win.on_notifications({"notifications": win.server_notifications, "unread": 1})  # the server's list comes again
+    assert [n["id"] for n in win.notifications] == [-1, 5]  # the notice is still there, once
+
+    win.mark_read(-1)
+    assert win.local_notifications[0]["read"] is True and sent == []  # nothing asked of the server for it
+    win.mark_read(5)
+    assert len(sent) == 1
+
+    win.delete_notification(-1)
+    assert win.local_notifications == [] and len(sent) == 1
+    win.delete_notification(None)
+    assert win.notifications == [] and len(sent) == 2

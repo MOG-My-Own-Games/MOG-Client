@@ -8,25 +8,42 @@ import os
 import sys
 import threading
 import time
-from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
+    QBrush,
     QColor,
+    QConicalGradient,
     QDesktopServices,
+    QIcon,
     QImage,
     QKeyEvent,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPen,
-    QIcon,
-    QKeySequence,
     QPixmap,
-    QShortcut,
     QPolygonF,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -39,31 +56,40 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QStyledItemDelegate,
     QListView,
     QListWidget,
     QListWidgetItem,
-    QMenu,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QProgressBar,
-    QSizePolicy,
     QPushButton,
+    QSizePolicy,
     QStackedLayout,
     QStackedWidget,
     QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 
-from mog_client import activity, crashlog, gameplay, logstore, manager, steam, trace, updater
-from mog_client import installdirs, ordering, protocol, snapshot
+from mog_client import (
+    activity,
+    crashlog,
+    gameplay,
+    installdirs,
+    logstore,
+    manager,
+    ordering,
+    protocol,
+    snapshot,
+    steam,
+    trace,
+    updater,
+)
 from mog_client import mods as mods_download
 from mog_client import played as played_at
 from mog_client.api import fetch_url, fmt_bytes, safe_dirname
-from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
-from mog_client.progress import RateMeter, format_eta
-from mog_client.stopactions import StopActions
 from mog_client.config import (
     InstalledGame,
     data_dir,
@@ -72,25 +98,36 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
+from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
 from mog_client.gui import gamepad, keyboard, legend, osk
+from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.about import AboutTab
+from mog_client.gui.busy import BusyOverlay
 from mog_client.gui.headerart import HeaderArt
 from mog_client.gui.instance import Listener, send_to_running
+from mog_client.gui.loading import LoadingPanel
 from mog_client.gui.logview import LogView
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
-from mog_client.gui.busy import BusyOverlay
+from mog_client.gui.modal import FitScrollArea, ModalHost
 from mog_client.gui.overlay import MessageOverlay
+from mog_client.gui.pictures import largest_pixmap
 from mog_client.gui.playing import PlayingOverlay
-from mog_client.gui import saves_ui as sync_ui
-from mog_client.gui.loading import LoadingPanel
-from mog_client.gui.modal import ModalHost
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
-from mog_client.saves import devices, runner, sync
-from mog_client.saves.state import load_state, save_install_manifest
-from mog_client.saves.sync import enabled as sync_enabled
 from mog_client.gui.theme import STYLE
-from mog_client.gui.widgets import ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, ParagraphLabel, FocusTabs, Toggle, accent_gradient, avatar_icon, clear_icon
+from mog_client.gui.widgets import (
+    ROLE_DIVIDER,
+    ROLE_KIND,
+    ROLE_ON,
+    BadgeButton,
+    FocusTabs,
+    OptionDelegate,
+    ParagraphLabel,
+    Toggle,
+    accent_gradient,
+    avatar_icon,
+    clear_icon,
+)
 from mog_client.launcher import (
     available_launchers,
     client_command,
@@ -102,7 +139,12 @@ from mog_client.launcher import (
     list_executables,
     remember_client,
 )
+from mog_client.progress import RateMeter, format_eta
+from mog_client.saves import devices, runner, sync
+from mog_client.saves.state import load_state, save_install_manifest
+from mog_client.saves.sync import enabled as sync_enabled
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
+from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
 from mog_client.version import __version__
 
@@ -111,6 +153,7 @@ ASSETS = Path(__file__).parent / "assets"
 
 def asset_pixmap(name: str, height: int) -> QPixmap:
     return QPixmap(str(ASSETS / name)).scaledToHeight(height, Qt.SmoothTransformation)
+
 
 
 
@@ -129,8 +172,13 @@ COVER_SIZE = QSize(200, 270)
 TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
+CARD_PULSE_MS, CARD_RING, PAGE_RING = 900, 8, 22  # a task starting: the ring around the game's cover, how long it lasts and how far it spreads
+SPIN_MS = 1100  # one turn of the wedge on the cover and of the ring on Play
 ACTIVE_ICON = QSize(32, 32)
-ROLE_MOD_ROW = Qt.UserRole + 30  # on a sidebar row: the name of the mod it is fetching (None for an install or a sync)
+NOTIFICATION_ICON = QSize(64, 64)
+# What the server records about something the client did itself; every other kind comes from the server.
+CLIENT_KINDS = frozenset({"save_synced", "save_restored", "mod_downloaded"})
+ROLE_MOD_ROW = Qt.UserRole + 30  # on a sidebar row: the name of the mod it is fetching (None for an install, a sync or a restore)
 IMAGE_WORKERS = 6
 
 
@@ -520,6 +568,7 @@ class App:
         self.installs[gid] = stop
         activity.add_install(gid)
         bridge = self.bridge
+        bridge.activity.emit()  # listed, and its animation shown, now: the first progress comes seconds later
 
         server_state = {"label": ""}
         meter = RateMeter()
@@ -630,6 +679,8 @@ class Page(QWidget):
     title = ""
     searchable = False
     modal = False  # drawn as a small card over the page beneath it (see ModalHost) instead of filling the window
+    compact = False  # a modal card sized to what the page holds (a question), not the full-size card
+    show_close = True  # a modal card's own Close button; off where the page has its own way out
 
     def focus_default(self) -> None:
         self.setFocus()
@@ -656,6 +707,10 @@ def _row(*widgets, stretch_first: bool = True) -> QHBoxLayout:
 class ConfirmPage(Page):
     """Inline yes/no question; "No" holds the initial focus so a stray A press is safe."""
 
+    modal = True
+    compact = True
+    show_close = False  # No is the way out
+
     def __init__(self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False):
         super().__init__()
         self.title = title
@@ -677,6 +732,10 @@ class ConfirmPage(Page):
 
 class UpdatePage(Page):
     """Downloads and installs a new build, then restarts into it."""
+
+    modal = True
+    compact = True
+    show_close = False  # it closes itself when the new build starts
 
     title = "Updating"
 
@@ -722,7 +781,9 @@ class NotificationsPage(Page):
         super().__init__()
         self.win = win
         self.list = QListWidget()
+        self.list.setIconSize(NOTIFICATION_ICON)
         self.list.itemActivated.connect(self.open_item)
+        win.app.bridge.icon.connect(self._icon_arrived)  # a game's icon that was fetched for this list
         self.empty = QLabel("No notifications.")
         self.empty.setAlignment(Qt.AlignCenter)
         mark_all = QPushButton("Mark all read")
@@ -741,15 +802,44 @@ class NotificationsPage(Page):
     def focus_default(self) -> None:
         self.list.setFocus()
 
+    def _icon_of(self, n: dict) -> QPixmap | None:
+        """The game's own icon for a notification about a game; otherwise the client's for what it did itself and the
+        server's for the rest."""
+        game = self.win.app.games.get(n.get("game_id"))
+        if game is not None:
+            art = self.win.icon_art.get(game["id"])
+            if art is None:
+                self.win.app.fetch_icon(game)
+                has_icon = ((game.get("media") or {}).get("icon") or {}).get("url")
+                art = None if has_icon else self.win.covers.get(game["id"])  # no icon to wait for: the cover stands in
+            return self._sharp(art) if art else None
+        return self._sharp(QPixmap(str(ASSETS / ("icon.png" if n.get("kind") in CLIENT_KINDS else "server.png"))))
+
+    def _sharp(self, pix: QPixmap) -> QPixmap:
+        """The picture at the icon's size in device pixels, so a screen that scales the interface does not stretch it."""
+        ratio = self.devicePixelRatioF()
+        out = pix.scaled(NOTIFICATION_ICON * ratio, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        out.setDevicePixelRatio(ratio)
+        return out
+
+    def _icon_arrived(self, *_args) -> None:
+        self.populate()
+
     def populate(self) -> None:
         row = self.list.currentRow()
         self.list.clear()
         for n in self.win.notifications:
-            text = ("" if n["read"] else "\u25cf ") + n["title"]
+            text = n["title"]
             if n.get("body"):
-                text += "\n    " + n["body"]
+                text += "\n" + n["body"]
             item = QListWidgetItem(text)
+            if not n["read"]:
+                bold = item.font()
+                bold.setBold(True)
+                item.setFont(bold)  # the icon says what it is about; unread is told by the weight
             item.setData(Qt.UserRole, n["id"])
+            if (icon := self._icon_of(n)) is not None:
+                item.setIcon(QIcon(icon))
             self.list.addItem(item)
         self.empty.setVisible(self.list.count() == 0)
         if self.list.count():
@@ -899,19 +989,23 @@ class ModsPage(Page):
 class OptionsPage(Page):
     """The less common actions of a game: launch engine, shortcuts, and deleting it here or on the server."""
 
+    modal = True
+    compact = True
+
     title = "Options"
 
     def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame | None):
         super().__init__()
         self.win = win
         self.first: QPushButton | None = None
-        lay = QVBoxLayout(self)
-        lay.addStretch()
+        content = QWidget()
+        lay = QVBoxLayout(content)
 
         def add(text: str, action, danger: bool = False) -> None:
             button = QPushButton(text)
             button.setProperty("danger", danger)
             button.setFixedWidth(OPTIONS_BUTTON_WIDTH)  # one width for all, centered
+            button.setMinimumHeight(button.sizeHint().height())  # a short window scrolls the list, it never squeezes a button
             button.clicked.connect(lambda: (win.back(), action()))
             lay.addWidget(button, 0, Qt.AlignHCenter)
             self.first = self.first or button
@@ -928,6 +1022,8 @@ class OptionsPage(Page):
             if on:
                 add("Back up saves now", lambda: win.saves.backup_now(rec))
                 add("Restore a saved version...", lambda: win.saves.restore_pick(rec))
+                if rec.game_id in win.saves.restoring:
+                    add("Cancel restoring saves", lambda: win.saves.cancel_restore(rec.game_id))
                 if sys.platform != "win32":
                     add("Where is this game's prefix?", lambda: win.saves.choose_prefix(rec))
         if rec:
@@ -939,7 +1035,9 @@ class OptionsPage(Page):
                 True,
             )
         add("Delete the install cache on the server", page.delete_server_cache, True)
-        lay.addStretch()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(FitScrollArea(content))
 
     def focus_default(self) -> None:
         if self.first:
@@ -949,6 +1047,8 @@ class OptionsPage(Page):
 class ChoicePage(Page):
     """A list to pick one answer from, then OK (or Enter on an entry). `skip` adds a red button that
     answers None; Esc or Back leaves without answering."""
+
+    modal = True
 
     def __init__(self, win: "MainWindow", title: str, text: str, options: list, on_choose, skip: str | None = None):
         super().__init__()
@@ -997,6 +1097,8 @@ class ChoicePage(Page):
 class ChecklistPage(Page):
     """A list to tick any number of entries from, then Done."""
 
+    modal = True
+
     def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done):
         super().__init__()
         self.title, self.win, self.on_done = title, win, on_done
@@ -1037,6 +1139,8 @@ class ChecklistPage(Page):
 
 class LauncherPage(Page):
     """Pick the engine that starts one game; its desktop entry and Steam shortcut follow."""
+
+    modal = True
 
     title = "Launch engine"
 
@@ -1186,6 +1290,8 @@ EXTRACT_AS_IS = {"extract_only": True}
 class InstallerPickerPage(Page):
     """The installers of every version of a title, each under its version, to pick which one to run. `needed` is when
     the server has already tried and could not tell which one: then "let the server choose" is not offered."""
+
+    modal = True
 
     title = "Choose an installer"
 
@@ -1595,6 +1701,8 @@ class InstallDirsPage(Page):
     """The install folders in order of priority: + adds one, - removes the selected one (the games in it stay
     on disk), and the arrows beside them change which is tried first. `dirs` is edited in place."""
 
+    modal = True
+
     title = "Install folders"
 
     def __init__(self, win: "MainWindow", dirs: list[str], changed) -> None:
@@ -1759,6 +1867,8 @@ class BrowsePage(Page):
 
 class ExecutablePage(Page):
     """The "awaiting executable info" step: pick what to run, then create the entries."""
+
+    modal = True
 
     def __init__(self, win: "MainWindow", rec: InstalledGame, on_done):
         super().__init__()
@@ -2230,8 +2340,10 @@ class GamePage(Page):
             if w:
                 w.deleteLater()
         self.buttons.addStretch()  # the buttons sit in the middle, none wider than the stylesheet allows
+        self.play_ring = None
         self._fill_buttons()
         self.buttons.addStretch()
+        self.update_transfer()
 
     def _fill_buttons(self) -> None:
         gid = self.game["id"]
@@ -2260,6 +2372,7 @@ class GamePage(Page):
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
             self.first = self._button("Play", self.play, True)
+            self.play_ring = SpinRing(self.first)
             self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
@@ -2306,8 +2419,43 @@ class GamePage(Page):
             danger=True,
         )
 
+    def update_transfer(self) -> None:
+        """While this game's saves are being downloaded or uploaded: a pie on the cover (how far a download is) and a ring
+        turning round Play."""
+        groups = self.app.group_of
+        mine = groups.get(self.game["id"])
+        kind, percent = None, None
+        for gid, job in self.win.saves.restoring.items():
+            if groups.get(gid) is mine:
+                kind, percent = "download", 100 if job.applying else job.percent
+        if kind is None:
+            for gid in self.win.saves.uploading | self.win.library.syncing:
+                if groups.get(gid) is mine:
+                    kind = "upload"
+        if kind is None:
+            if hasattr(self, "_pie"):
+                self._pie.clear()
+        else:
+            if not hasattr(self, "_pie"):
+                self._pie = TransferPie(self.header)
+            self._pie.show_transfer(self.cover, kind, percent)
+        ring = getattr(self, "play_ring", None)
+        if ring is not None:
+            try:
+                ring.set_active(kind is not None)
+            except RuntimeError:  # the button it sat on was rebuilt and is gone
+                self.play_ring = None
+
+    def pulse(self) -> None:
+        """A task was queued for this game: the cover flashes and a ring spreads out from it."""
+        if not hasattr(self, "_ring"):
+            self._ring = RingPulse(self.header)
+        self._ring.fire(self.cover)
+
     def play(self) -> None:
         rec = load_library()[self.game["id"]]
+        if self.win.saves.wait_for_restore(rec, lambda: self.start(rec)):
+            return  # its saves are still coming: the user was told, and can cancel that and play anyway
         self.win.saves.before_launch(rec, lambda: self.start(rec))
 
     def start(self, rec: InstalledGame) -> None:
@@ -2452,7 +2600,7 @@ class GamePage(Page):
         )
 
 
-ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER, ROLE_ABSENT = (Qt.UserRole + n for n in range(1, 6))
+ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER, ROLE_ABSENT, ROLE_PULSE, ROLE_BUSY = (Qt.UserRole + n for n in range(1, 8))
 _GREY: dict[int, QPixmap] = {}  # a cover's grey twin, by the cover's cache key
 
 
@@ -2518,7 +2666,10 @@ def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
 
 
 class CoverDelegate(QStyledItemDelegate):
-    """Cover art with an install progress bar along its bottom edge, then the title."""
+    """Cover art with an install progress bar along its bottom edge, then the title. A game with a task going on has a
+    ring turning round its cover (`angle` is where its head is, moved by the library page)."""
+
+    angle = 0.0
 
     def sizeHint(self, option, index) -> QSize:
         return QSize(COVER_SIZE.width() + 40, COVER_SIZE.height() + 80)
@@ -2551,10 +2702,196 @@ class CoverDelegate(QStyledItemDelegate):
         if state := index.data(ROLE_CORNER):
             paint_state_badge(painter, cover, state)
         painter.setClipping(False)
+        if index.data(ROLE_BUSY):
+            paint_spin_ring(painter, cover.adjusted(-2, -2, 2, 2), self.angle)
+        if (pulse := index.data(ROLE_PULSE)) is not None:
+            paint_ring(painter, cover, pulse)
         painter.setPen(QColor("#6b7380" if absent else "#e8eaed"))
         text = QRect(cell.left() + 4, cover.bottom() + 6, cell.width() - 8, cell.bottom() - cover.bottom() - 6)
         painter.drawText(text, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, index.data(Qt.DisplayRole))
         painter.restore()
+
+
+def paint_ring(painter: QPainter, rect: QRect, progress: float, spread: int = CARD_RING) -> None:
+    """A task has just started for what is in `rect`: it flashes and a ring spreads out from it and fades."""
+    fade = 1.0 - progress
+    painter.save()
+    painter.fillRect(rect, QColor(255, 255, 255, int(110 * fade)))
+    grow = int(spread * progress)
+    gradient = accent_gradient(rect.left() - grow, rect.top(), rect.right() + grow, rect.bottom())
+    painter.setOpacity(fade)
+    painter.setPen(QPen(QBrush(gradient), 3 + spread // 6))
+    painter.setBrush(Qt.NoBrush)
+    painter.drawRoundedRect(rect.adjusted(-grow, -grow, grow, grow), 6, 6)
+    painter.restore()
+
+
+class RingPulse(QWidget):
+    """The same ring over a widget that is not in the grid (the cover on a game's page), where there is no sidebar to
+    show that a task was queued."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.progress = 1.0
+        self.target: QWidget | None = None
+        self.animation = QVariantAnimation(self)
+        self.animation.setStartValue(0.0)
+        self.animation.setEndValue(1.0)
+        self.animation.setDuration(CARD_PULSE_MS)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.valueChanged.connect(self._frame)
+        self.animation.finished.connect(self.hide)
+        self.hide()
+
+    def fire(self, target: QWidget) -> None:
+        self.target = target
+        room = PAGE_RING + 6
+        self.setGeometry(target.geometry().adjusted(-room, -room, room, room))
+        self.show()
+        self.raise_()
+        self.animation.stop()
+        self.animation.start()
+
+    def _frame(self, progress: float) -> None:
+        self.progress = progress
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        room = PAGE_RING + 6
+        paint_ring(painter, self.rect().adjusted(room, room, -room, -room), self.progress, PAGE_RING)
+
+
+class TransferPie(QWidget):
+    """Over a game's cover while its saves are being downloaded or uploaded: the cover dims and a pie fills clockwise as
+    the download goes; an upload, which has no figure to show, is a wedge going round."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.kind = "download"
+        self.percent: int | None = None
+        self.angle = 0.0
+        self.spin = QVariantAnimation(self)
+        self.spin.setStartValue(0.0)
+        self.spin.setEndValue(360.0)
+        self.spin.setDuration(SPIN_MS)
+        self.spin.setLoopCount(-1)
+        self.spin.valueChanged.connect(self._turn)
+        self.hide()
+
+    def show_transfer(self, target: QWidget, kind: str, percent: int | None) -> None:
+        self.kind, self.percent = kind, percent
+        self.setGeometry(target.geometry())
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        if percent is None and self.spin.state() != QAbstractAnimation.Running:
+            self.spin.start()
+        elif percent is not None:
+            self.spin.stop()
+        self.update()
+
+    def clear(self) -> None:
+        self.spin.stop()
+        self.hide()
+
+    def _turn(self, angle: float) -> None:
+        self.angle = angle
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        paint_pie(painter, self.rect(), self.kind, self.percent, self.angle)
+
+
+def paint_pie(painter: QPainter, rect: QRect, kind: str, percent: int | None, angle: float = 0.0) -> None:
+    """The dimmed cover with a pie on it: filled clockwise to `percent`, or a wedge at `angle` when there is no figure,
+    an arrow in the middle for which way the saves go, and the percent beneath."""
+    painter.save()
+    painter.fillRect(rect, QColor(0, 0, 0, 120))
+    radius = int(min(rect.width(), rect.height()) * 0.28)
+    disc = QRect(rect.center().x() - radius, rect.center().y() - radius, radius * 2, radius * 2)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(20, 24, 32, 225))
+    painter.drawEllipse(disc.adjusted(-5, -5, 5, 5))
+    painter.setBrush(QBrush(accent_gradient(disc.left(), disc.top(), disc.right(), disc.bottom())))
+    if percent is None:
+        painter.drawPie(disc, int((90 - angle) * 16), -100 * 16)  # a wedge going round, clockwise
+    else:
+        painter.drawPie(disc, 90 * 16, -int(360 * 16 * max(0, min(percent, 100)) / 100))
+    painter.setPen(QPen(QColor(20, 24, 32, 230), 3))  # the arrow keeps a dark edge over the pie, filled or not
+    painter.setBrush(QColor("white"))
+    c, h = disc.center(), disc.height() / 4.5
+    shaft, head, flip = h * 0.3, h * 0.8, -1 if kind == "upload" else 1
+    outline = [(-shaft, -h), (shaft, -h), (shaft, 0.1 * h), (head, 0.1 * h), (0, h), (-head, 0.1 * h), (-shaft, 0.1 * h)]
+    painter.drawPolygon(QPolygonF([QPointF(c.x() + x, c.y() + flip * y) for x, y in outline]))
+    if percent is not None:
+        painter.setPen(QColor("white"))
+        label = QRect(rect.left(), disc.bottom() + 12, rect.width(), 30)
+        painter.drawText(label, Qt.AlignHCenter | Qt.AlignTop, f"{percent}%")
+    painter.restore()
+
+
+class SpinRing(QWidget):
+    """A ring that turns round the edge of the Play button while the game's saves are on the move."""
+
+    def __init__(self, button: QWidget) -> None:
+        super().__init__(button)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.angle = 0.0
+        self.spin = QVariantAnimation(self)
+        self.spin.setStartValue(0.0)
+        self.spin.setEndValue(360.0)
+        self.spin.setDuration(SPIN_MS)
+        self.spin.setLoopCount(-1)
+        self.spin.valueChanged.connect(self._turn)
+        button.installEventFilter(self)
+        self.hide()
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.setGeometry(self.parentWidget().rect())
+            self.show()
+            self.raise_()
+            if self.spin.state() != QAbstractAnimation.Running:
+                self.spin.start()
+        else:
+            self.spin.stop()
+            self.hide()
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Resize and self.isVisible():
+            self.setGeometry(self.parentWidget().rect())
+        return False
+
+    def _turn(self, angle: float) -> None:
+        self.angle = angle
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        paint_spin_ring(painter, self.rect(), self.angle)
+
+
+def paint_spin_ring(painter: QPainter, rect: QRect, angle: float) -> None:
+    """A bright arc with a fading tail, round the inside of a rounded button; `angle` is where its head is."""
+    painter.save()
+    gradient = QConicalGradient(QPointF(rect.center()), -angle)
+    gradient.setColorAt(0.0, QColor(255, 255, 255, 255))
+    gradient.setColorAt(0.4, QColor(255, 255, 255, 0))
+    gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.setPen(QPen(QBrush(gradient), 3))
+    painter.setBrush(Qt.NoBrush)
+    painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 8, 8)
+    painter.restore()
 
 
 class LibraryPage(Page):
@@ -2607,6 +2944,16 @@ class LibraryPage(Page):
         side.addStretch(1)
         self._ranks: dict[int, tuple[bool, bool]] = {}
         self.syncing: set[int] = set()  # games whose saves are being backed up after they closed
+        self._task_keys: set = set()  # the tasks listed the last time, to notice a new one
+        self._card_pulses: dict[int, QVariantAnimation] = {}
+        self._cards_due: set[int] = set()  # the games whose task started while this page was not in front
+        self._busy_gids: set[int] = set()  # the games with a task going on: their covers carry the turning ring
+        self._spin = QVariantAnimation(self)
+        self._spin.setStartValue(0.0)
+        self._spin.setEndValue(360.0)
+        self._spin.setDuration(SPIN_MS)
+        self._spin.setLoopCount(-1)
+        self._spin.valueChanged.connect(self._turn_rings)
         self._fill_sorts()
         self.installs_box.setVisible(False)  # only while an install runs (see update_active)
         self.sidebar.setVisible(win.app.settings.show_sidebar)
@@ -2768,6 +3115,7 @@ class LibraryPage(Page):
         item.setData(ROLE_PROGRESS, self._progress(gid))
         item.setData(ROLE_INSTALLED, any(lib.get(g["id"]) and lib[g["id"]].state == "installed" for g in group.members))
         item.setData(ROLE_CORNER, corner_state(self.win.app.active_version(group)))
+        item.setData(ROLE_BUSY, any(m["id"] in self._busy_gids for m in group.members))
 
     def update_label(self, gid: int) -> None:
         item = self.items.get(gid)
@@ -2780,20 +3128,67 @@ class LibraryPage(Page):
                 QTimer.singleShot(0, lambda: self.populate(self.win.search.text().lower()))
         self.update_active()
 
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if self._cards_due:
+            due, self._cards_due = self._cards_due, set()
+            for gid in due & {gid for gid, _what in self._task_keys}:  # only what is still going on
+                QTimer.singleShot(0, lambda gid=gid: self.pulse_card(gid))
+
+    def pulse_card(self, gid: int) -> None:
+        """The ring around a game's cover in the grid, so a task that has just started for it is seen there too."""
+        if gid in self._card_pulses or gid not in self.items:
+            return
+        animation = QVariantAnimation(self)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setDuration(CARD_PULSE_MS)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+
+        def frame(progress: float | None) -> None:
+            if item := self.items.get(gid):  # the list may have been rebuilt meanwhile
+                item.setData(ROLE_PULSE, progress)
+
+        def done() -> None:
+            frame(None)
+            self._card_pulses.pop(gid, None)
+            animation.deleteLater()
+
+        animation.valueChanged.connect(frame)
+        animation.finished.connect(done)
+        self._card_pulses[gid] = animation
+        animation.start()
+
     def update_active(self) -> None:
         """What is going on in the background, one row each: installs, saves being synced and mods being fetched."""
         app = self.win.app
         installing = [gid for gid in app.installs if gid in app.games]
-        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None) for gid in installing]
-        rows += [(gid, "Syncing saves...", None) for gid in sorted(self.syncing) if gid in app.games and gid not in installing]
+        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None, "install") for gid in installing]
         rows += [
-            (gid, f"Mod {name}\n{stage}... {pct}%", name)
+            (gid, "Syncing saves...", None, "sync") for gid in sorted(self.syncing) if gid in app.games and gid not in installing
+        ]
+        rows += [
+            (gid, "Backing up saves...", None, "backup")
+            for gid in sorted(self.win.saves.uploading)
+            if gid in app.games and gid not in installing and gid not in self.syncing
+        ]
+        rows += [
+            (gid, "Putting the saves back..." if job.applying else f"Restoring saves... {job.percent}%", None, "restore")
+            for gid, job in self.win.saves.restoring.items()
+            if gid in app.games and gid not in installing
+        ]
+        rows += [
+            (gid, f"Mod {name}\n{stage}... {pct}%", name, "mod")
             for (gid, name), (stage, pct) in app.mod_jobs.items()
             if gid in app.games
         ]
+        keys = {(gid, mod_name or kind) for gid, _doing, mod_name, kind in rows}
+        new_games = {gid for gid, _what in keys - self._task_keys}
+        started = bool(keys - self._task_keys)
+        self._task_keys = keys
         row = self.installs.currentRow()
         self.installs.clear()
-        for gid, doing, mod_name in rows:
+        for gid, doing, mod_name, _kind in rows:
             game = app.games[gid]
             item = QListWidgetItem(f"{game['name']}\n{doing}")
             item.setData(Qt.UserRole, gid)
@@ -2810,6 +3205,44 @@ class LibraryPage(Page):
         height = self.installs.sizeHintForRow(0) if rows else 0
         self.installs.setFixedHeight(min(300, height * len(rows) + 12))  # as tall as its rows, up to a limit
         self.installs_box.setVisible(bool(rows))
+        page = self.win.stack.currentWidget()
+        if isinstance(page, GamePage):
+            page.update_transfer()
+        if started:
+            if isinstance(page, GamePage):  # no sidebar here: the cover of the game it is for says it
+                groups = self.win.app.group_of
+                for gid in new_games:
+                    if groups.get(gid) is not None and groups.get(gid) is groups.get(page.game["id"]):
+                        page.pulse()
+            if self.isVisible():
+                for gid in new_games:
+                    self.pulse_card(gid)
+            else:
+                self._cards_due |= new_games
+        self._busy_gids = {gid for gid, _what in keys}
+        self._refresh_rings()
+
+    def _refresh_rings(self) -> None:
+        """Mark the covers of the games with a task going on (an install or download, mods, saves moving) so they carry
+        the turning ring, and keep it turning only while there is one."""
+        busy = False
+        for item in {id(i): i for i in self.items.values()}.values():
+            group = self.win.app.group_of.get(item.data(Qt.UserRole))
+            on = group is not None and any(m["id"] in self._busy_gids for m in group.members)
+            if bool(item.data(ROLE_BUSY)) != on:
+                item.setData(ROLE_BUSY, on)
+            busy |= on
+        if busy and self._spin.state() != QAbstractAnimation.Running:
+            self._spin.start()
+        elif not busy and self._spin.state() == QAbstractAnimation.Running:
+            self._spin.stop()
+
+    def _turn_rings(self, angle: float) -> None:
+        delegate = self.grid.itemDelegate()
+        delegate.angle = angle
+        for item in {id(i): i for i in self.items.values()}.values():
+            if item.data(ROLE_BUSY):
+                self.grid.update(self.grid.indexFromItem(item))
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
@@ -2889,7 +3322,10 @@ class MainWindow(QMainWindow):
         self.user_menu.addAction("About", self.open_about)
         self.user_menu.addSeparator()
         self.user_menu.addAction("Sign out", self.sign_out)
-        self.notifications: list[dict] = []
+        self.notifications: list[dict] = []  # what the list shows: this client's own notices, then the server's
+        self.server_notifications: list[dict] = []
+        self.local_notifications: list[dict] = []  # notices the server could not keep (an older one), lost with the session
+        self._server_unread = 0
         self.seen_notification_id: int | None = None
         self._resumed = False  # what was running when the client last closed is carried on once, at the first list
         top = QHBoxLayout()
@@ -2927,6 +3363,7 @@ class MainWindow(QMainWindow):
         self.overlay.changed.connect(self.refresh_legend)
         self.covers: dict[int, QPixmap] = {}
         self.icons: dict[int, QPixmap] = {}
+        self.icon_art: dict[int, QPixmap] = {}
         b = app.bridge
         b.call.connect(lambda fn: fn())
         self._steam_settled = False
@@ -3054,6 +3491,10 @@ class MainWindow(QMainWindow):
         self.playing.fit_to_parent()
         self.busy.fit_to_parent()
         self.refresh_legend()  # its size follows the window
+
+    def refresh_tasks(self) -> None:
+        """The sidebar's list of what is going on, after a task started, moved on or ended."""
+        self.library.update_active()
 
     def show_busy(self, title: str, name: str, game_id: int | None = None, on_cancel=None) -> None:
         """Cover the window with what is under way (a restore, a backup). Cancel is offered when `on_cancel` is."""
@@ -3567,8 +4008,9 @@ class MainWindow(QMainWindow):
         self.user_btn.setVisible(bool(name) and (page is self.library or isinstance(page, GamePage)))
 
     def set_icon(self, gid: int, blob: bytes) -> None:
-        pix = QPixmap()
-        if pix.loadFromData(blob):
+        pix = largest_pixmap(blob)
+        if not pix.isNull():
+            self.icon_art[gid] = pix  # as it came, for where it is shown larger than in the sidebar
             self.icons[gid] = pix.scaled(ACTIVE_ICON, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.library.update_active()
 
@@ -3675,26 +4117,45 @@ class MainWindow(QMainWindow):
                 logstore.warning(f"Could not keep the notifications for the next start: {e}")
 
     def _show_notifications(self, data: dict) -> None:
-        self.notifications = data["notifications"]
-        unread = data["unread"]
+        self.server_notifications, self._server_unread = data["notifications"], data["unread"]
+        self._merge_notifications()
+
+    def _merge_notifications(self) -> None:
+        self.notifications = self.local_notifications + self.server_notifications
+        unread = self._server_unread + sum(not n["read"] for n in self.local_notifications)
         self.user_btn.set_count(unread)
         self.notifications_action.setText(f"Notifications ({unread})" if unread else "Notifications")
         page = self.current_page()
         if isinstance(page, NotificationsPage):
             page.populate()
 
+    def add_local_notification(self, kind: str, title: str, body: str | None, game_id: int | None = None) -> None:
+        """A notice this client keeps itself, in the list beside the server's, when the server cannot keep it."""
+        self.local_notifications.insert(
+            0, {"id": -(len(self.local_notifications) + 1), "kind": kind, "title": title, "body": body, "game_id": game_id, "read": False}
+        )
+        self.notify(f"Notification: {title}")
+        self._merge_notifications()
+
+    def _server_unread_now(self) -> int:
+        return sum(not n["read"] for n in self.server_notifications)
+
     def mark_read(self, notification_id: int | None) -> None:
         for n in self.notifications:
             if notification_id is None or n["id"] == notification_id:
                 n["read"] = True
-        self.app.run_bg(lambda: self.app.client().mark_notifications_read(notification_id))
-        self.on_notifications({"notifications": self.notifications, "unread": sum(not n["read"] for n in self.notifications)})
+        if notification_id is None or notification_id > 0:  # a notice of this client's own is not on the server
+            self.app.run_bg(lambda: self.app.client().mark_notifications_read(notification_id))
+        self.on_notifications({"notifications": self.server_notifications, "unread": self._server_unread_now()})
         QTimer.singleShot(1000, self.app.poll_notifications)
 
     def delete_notification(self, notification_id: int | None) -> None:
-        self.notifications = [n for n in self.notifications if notification_id is not None and n["id"] != notification_id]
-        self.app.run_bg(lambda: self.app.client().delete_notifications(notification_id))
-        self.on_notifications({"notifications": self.notifications, "unread": sum(not n["read"] for n in self.notifications)})
+        keep = lambda n: notification_id is not None and n["id"] != notification_id  # noqa: E731
+        self.local_notifications = [n for n in self.local_notifications if keep(n)]
+        self.server_notifications = [n for n in self.server_notifications if keep(n)]
+        if notification_id is None or notification_id > 0:
+            self.app.run_bg(lambda: self.app.client().delete_notifications(notification_id))
+        self.on_notifications({"notifications": self.server_notifications, "unread": self._server_unread_now()})
         QTimer.singleShot(1000, self.app.poll_notifications)
 
 

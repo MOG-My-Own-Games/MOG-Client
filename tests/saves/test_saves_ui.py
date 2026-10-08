@@ -36,6 +36,8 @@ class FakeWin:
         self.browsed: list[Path] = []
         self.errors: list[str] = []
         self.busy = None
+        self.task_refreshes = 0
+        self.local_notices: list[tuple] = []
         self.busy_log: list[str] = []
         self.progress: list[tuple] = []
 
@@ -56,6 +58,12 @@ class FakeWin:
 
     def hide_busy(self):
         self.busy = None
+
+    def refresh_tasks(self):
+        self.task_refreshes += 1
+
+    def add_local_notification(self, kind, title, body, game_id=None):
+        self.local_notices.append((kind, title, body, game_id))
 
     def notify(self, text, level="info"):
         self.notes.append(text)
@@ -463,17 +471,29 @@ def test_a_native_game_that_wrote_nothing_is_asked_for_its_folder_by_hand(native
     assert ui.win.messages[-1][0] == "error" and load_state(7).includes is None
 
 
-def test_a_restore_shows_its_progress_and_ends_with_a_message(ui):
+def test_a_restore_is_a_task_that_ends_with_a_short_message_and_details_in_the_log(ui, monkeypatch):
+    logged = []
+    monkeypatch.setattr(saves_ui.logstore, "info", logged.append)
     version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
     ui.ui.restore_pick(ui.rec)
     ui.win.choices[0][2](version["id"])
 
-    assert ui.win.busy_log == ["Restoring saves"] and ui.win.busy is None  # shown, and gone once it ended
-    assert ui.win.progress and ui.win.progress[-1][2] == "Putting the files back..."
-    assert ui.win.messages[-1][0] == "info" and "restored" in ui.win.messages[-1][1]
+    assert ui.win.busy_log == [] and ui.ui.restoring == {} and ui.win.task_refreshes >= 2  # listed, then gone
+    assert ui.win.messages[-1] == ("info", "Saves of Some Game restored. Check the log for more information.")
+    assert any("1 file(s)" in line and "a.sav" in line for line in logged)
 
 
-def test_a_restore_that_fails_says_so_and_clears_the_progress(ui, monkeypatch):
+def test_a_restore_before_a_game_starts_covers_the_window_and_then_starts_it(ui):
+    version = ui.server.add_foreign_version({"game/p.sav": b"theirs"})
+    started = []
+    ui.ui.before_launch(ui.rec, lambda: started.append(1))
+    ui.win.choices[0][2]("use")
+
+    assert ui.win.busy_log == ["Restoring saves"] and ui.win.busy is None and ui.ui.restoring == {}
+    assert ui.win.progress[-1][2] == "Putting the files back..." and started == [1] and version
+
+
+def test_a_restore_that_fails_says_so_and_leaves_the_task_list(ui):
     version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
 
     def broken(vid, dest, on_progress=None):
@@ -483,7 +503,7 @@ def test_a_restore_that_fails_says_so_and_clears_the_progress(ui, monkeypatch):
     ui.ui.restore_pick(ui.rec)
     ui.win.choices[0][2](version["id"])
 
-    assert ui.win.busy is None
+    assert ui.ui.restoring == {}
     assert ui.win.messages[-1] == ("error", "Could not restore: could not download save version 3: HTTP 404")
 
 
@@ -492,15 +512,46 @@ def test_a_restore_can_be_cancelled_while_it_downloads(ui):
     original = ui.server.download_save
 
     def cancelling(vid, dest, on_progress=None):
-        ui.win.busy[2]()  # Cancel pressed
+        assert ui.ui.cancel_restore(7)
         return original(vid, dest, on_progress)
 
     ui.server.download_save = cancelling
     ui.ui.restore_pick(ui.rec)
     ui.win.choices[0][2](version["id"])
 
-    assert ui.win.busy is None and not (ui.install / "a.sav").exists()
+    assert ui.ui.restoring == {} and not (ui.install / "a.sav").exists()
     assert ui.win.messages == [] and "Restore cancelled" in ui.win.notes
+
+
+def test_play_does_nothing_special_when_no_restore_is_running(ui):
+    assert ui.ui.wait_for_restore(ui.rec, lambda: None) is False and ui.win.asks == []
+
+
+def test_play_during_a_download_asks_whether_to_cancel_it_and_play_anyway(ui):
+    job = saves_ui.RestoreJob(percent=42)
+    ui.ui.restoring[7] = job
+    played = []
+
+    assert ui.ui.wait_for_restore(ui.rec, lambda: played.append(1)) is True
+    text, yes, _no = ui.win.asks[0]
+    assert "42%" in text and "Some Game" in text and played == []
+
+    yes()
+    assert job.cancel.is_set() and played == [1] and ui.ui.restoring == {}
+
+
+def test_play_while_the_files_are_being_put_back_only_asks_to_wait(ui):
+    ui.ui.restoring[7] = saves_ui.RestoreJob(percent=100, applying=True)
+    assert ui.ui.wait_for_restore(ui.rec, lambda: None) is True
+    assert ui.win.asks == [] and ui.win.messages[-1][0] == "warning" and ui.ui.cancel_restore(7) is False
+
+
+def test_a_second_restore_of_the_same_game_is_refused(ui):
+    ui.ui.restoring[7] = saves_ui.RestoreJob()
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+    assert "already being restored" in ui.win.messages[-1][1] and not (ui.install / "a.sav").exists()
 
 
 def test_asking_for_a_restore_or_backup_of_a_game_with_saving_off_is_answered(ui):
@@ -510,7 +561,28 @@ def test_asking_for_a_restore_or_backup_of_a_game_with_saving_off_is_answered(ui
     assert [m[1] for m in ui.win.messages] == ["Save sync: saving is off for this game"] * 2
 
 
-def test_a_backup_by_hand_shows_it_is_working(ui):
+def test_a_backup_by_hand_is_a_task_while_it_runs_and_ends_with_its_answer(ui):
+    seen = []
+    ui.win.refresh_tasks = lambda: seen.append(sorted(ui.ui.uploading))
     ui.ui.backup_now(ui.rec)
-    assert ui.win.busy_log == ["Backing up saves"] and ui.win.busy is None
+
+    assert seen == [[7], []] and ui.ui.uploading == set()  # listed while it ran, and gone
+    assert ui.win.busy_log == []  # nothing covers the window
     assert ui.win.choices[0][0] == "Where is this game's Wine prefix?"  # no prefix yet: the answer is a question
+
+
+def test_a_restore_the_server_could_not_note_is_listed_by_the_client(ui):
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    ui.server.save_restored = lambda *args: False  # an older server
+
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+
+    assert ui.win.local_notices == [("save_restored", "Saves restored: Some Game", "On this machine, 1 file.", 7)]
+
+
+def test_a_restore_the_server_noted_is_not_listed_twice(ui):
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+    assert ui.win.local_notices == [] and ui.server.restored_notices

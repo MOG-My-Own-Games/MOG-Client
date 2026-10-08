@@ -10,13 +10,15 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from mog_client import installdirs, logstore
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import detect_launcher, effective_launcher, pfx_dir
-from mog_client.saves import devices, native, prefix as prefixes, sync
+from mog_client.saves import devices, native, sync
+from mog_client.saves import prefix as prefixes
 from mog_client.saves.locations import describe_key
 from mog_client.saves.state import load_state
 
@@ -26,6 +28,15 @@ PROGRESS_EVERY = 0.1  # seconds between updates of the progress shown while a sa
 
 class _Cancelled(Exception):
     """The user cancelled a restore that was downloading."""
+
+
+@dataclass
+class RestoreJob:
+    """A restore the user asked for, listed with the other tasks while it runs."""
+
+    cancel: threading.Event = field(default_factory=threading.Event)
+    percent: int = 0
+    applying: bool = False  # the files are being put back: too late to cancel, and the game must not start meanwhile
 
 
 # The entry of the folder list that opens the folder browser.
@@ -75,6 +86,8 @@ class SaveSync:
     def __init__(self, win) -> None:
         self.win = win
         self._checked = False
+        self.restoring: dict[int, RestoreJob] = {}  # game id -> its restore, while it runs
+        self.uploading: set[int] = set()  # games whose saves are being backed up by hand
 
     # --- plumbing ---
 
@@ -159,15 +172,24 @@ class SaveSync:
     # --- backing up ---
 
     def backup_now(self, rec: InstalledGame) -> None:
+        """Back the saves up, as a task in the sidebar (and a ring on the game's page) rather than over the window."""
+        gid = rec.game_id
+
+        def listed(on: bool) -> None:
+            (self.uploading.add if on else self.uploading.discard)(gid)
+            self.win.refresh_tasks()
+
         def run(ctx: sync.Context) -> None:
-            self.gui(lambda: self.win.show_busy("Backing up saves", rec.name, rec.game_id))
+            if gid in self.uploading:
+                return
+            self.gui(lambda: listed(True))
             try:
                 result = sync.backup(ctx, sync.MANUAL, force=True)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 text = f"Could not back up: {e}"  # `e` is gone once this block ends, before the GUI thread runs the lambda
-                self.gui(lambda: (self.win.hide_busy(), self.win.message(text, "error")))
+                self.gui(lambda: (listed(False), self.win.message(text, "error")))
                 return
-            self.gui(lambda: (self.win.hide_busy(), self.after_backup(rec, result, lambda: self.backup_now(rec), quiet=False)))
+            self.gui(lambda: (listed(False), self.after_backup(rec, result, lambda: self.backup_now(rec), quiet=False)))
 
         self.with_context(rec, run, ask=True)
 
@@ -364,39 +386,97 @@ class SaveSync:
     # --- restoring ---
 
     def _restore(self, rec: InstalledGame, ctx: sync.Context, version_id: int, then: Callable[[], None] | None = None) -> None:
-        cancelled = threading.Event()
-        self.gui(lambda: self.win.show_busy("Restoring saves", rec.name, rec.game_id, cancelled.set))
+        """Put a version back. On its own it is a task in the sidebar that Play waits for; with `then` (the game is
+        about to start) it covers the window instead, and `then` runs once it is over."""
+        if rec.game_id in self.restoring:
+            self.win.message(f"The saves of {rec.name} are already being restored", "warning")
+            return
+        job = RestoreJob()
+        foreground = then is not None
+        if foreground:
+            self.win.show_busy("Restoring saves", rec.name, rec.game_id, job.cancel.set)
+        else:
+            self.restoring[rec.game_id] = job
+            self.win.refresh_tasks()
         last = [0.0]
 
+        def shown(done: int, total: int) -> None:
+            job.percent = done * 100 // total if total else 0
+            if foreground:
+                self.win.busy_progress(done, total, None if done < total else "Putting the files back...")
+            else:
+                self.win.refresh_tasks()
+
         def progress(done: int, total: int) -> None:
-            if cancelled.is_set():
+            if job.cancel.is_set() and not job.applying:
                 raise _Cancelled
+            job.applying = bool(total) and done >= total
             now = time.monotonic()
-            if now - last[0] < PROGRESS_EVERY and done != total:
-                return
-            last[0] = now
-            self.gui(lambda: self.win.busy_progress(done, total, None if done < total else "Putting the files back..."))
+            if now - last[0] >= PROGRESS_EVERY or done == total:
+                last[0] = now
+                self.gui(lambda: shown(done, total))
+
+        def over() -> None:
+            self.restoring.pop(rec.game_id, None)
+            if foreground:
+                self.win.hide_busy()
+            else:
+                self.win.refresh_tasks()
 
         def run() -> None:
             try:
                 result = sync.restore(ctx, version_id, progress)
             except _Cancelled:
-                self.gui(lambda: self._restore_stopped(rec, "Restore cancelled", then, "info"))
+                self.gui(lambda: (over(), self.win.notify("Restore cancelled"), then() if then else None))
                 return
-            self.gui(lambda: (self.win.hide_busy(), self._restored(rec, ctx, result, then)))
+            self.gui(lambda: (over(), self._restored(rec, ctx, result, then)))
 
-        self.app.run_bg(run, on_error=lambda m: self.gui(lambda: self._restore_stopped(rec, f"Could not restore: {m}", then)))
+        def failed(m: str) -> None:
+            self.gui(lambda: (over(), self.win.message(f"Could not restore: {m}", "error"), then() if then else None))
 
-    def _restore_stopped(self, rec: InstalledGame, text: str, then: Callable[[], None] | None, level: str = "error") -> None:
-        self.win.hide_busy()
-        self.win.message(text, level) if level == "error" else self.win.notify(text)
-        if then:
-            then()
+        self.app.run_bg(run, on_error=failed)
+
+    def cancel_restore(self, game_id: int) -> bool:
+        """Stop a restore that is still downloading; False when there is none or it is already putting files back."""
+        job = self.restoring.get(game_id)
+        if job is None or job.applying:
+            return False
+        job.cancel.set()
+        return True
+
+    def wait_for_restore(self, rec: InstalledGame, play_anyway: Callable[[], None]) -> bool:
+        """Called when Play is pressed. True when a restore of this game is running, and the user has been told: asked
+        whether to cancel it and play anyway while it downloads, only told to wait while it puts the files back."""
+        job = self.restoring.get(rec.game_id)
+        if job is None:
+            return False
+        if job.applying:
+            self.win.message(f"The saves of {rec.name} are being put back. Try again in a moment.", "warning")
+            return True
+
+        def cancel_and_play() -> None:
+            if self.cancel_restore(rec.game_id):
+                self.restoring.pop(rec.game_id, None)  # the download stops by itself; the game does not wait for it
+                self.win.refresh_tasks()
+                play_anyway()
+            else:
+                self.win.message(f"The saves of {rec.name} are being put back. Try again in a moment.", "warning")
+
+        self.win.ask(
+            f"The saves of {rec.name} are still downloading ({job.percent}%). Cancel that and play with the saves "
+            "on this machine instead?",
+            cancel_and_play,
+        )
+        return True
 
     def _restored(self, rec, ctx, result: sync.RestoreResult, then) -> None:
         if result.status == "restored":
-            kept = f"; what it replaced is in {result.backup}" if result.backup else ""
-            self.win.message(f"Saves of {rec.name} restored ({len(result.restored)} files){kept}", "info")
+            logstore.info(
+                f"Saves of {rec.name} restored: {len(result.restored)} file(s): {', '.join(result.restored) or 'none'}"
+                + (f"; what they replaced is in {result.backup}" if result.backup else "")
+            )
+            self._keep_notice(rec, result)
+            self.win.message(f"Saves of {rec.name} restored. Check the log for more information.", "info")
             if then:
                 then()
         elif result.status == "incompatible":
@@ -404,7 +484,8 @@ class SaveSync:
         elif result.status == "needs-prefix":
             def apply() -> None:
                 def work() -> None:
-                    if sync.apply_pending(ctx):
+                    if done := sync.apply_pending(ctx):
+                        self.gui(lambda: self._keep_notice(rec, done))
                         self.say(f"Saves of {rec.name} restored", "info")
                     else:
                         self.say(f"Saves of {rec.name} are kept and go in once the game has made its prefix")
@@ -426,6 +507,15 @@ class SaveSync:
             self.choose_prefix(rec, then=apply, skip=skip)
         else:
             self.win.message(f"Saves of {rec.name} could not be restored ({result.status})", "error")
+
+    def _keep_notice(self, rec: InstalledGame, result: sync.RestoreResult) -> None:
+        """A server that cannot keep the notice of a restore (an older one) leaves the notifications silent, so this
+        client lists it itself."""
+        if not result.notified:
+            count = len(result.restored)
+            self.win.add_local_notification(
+                "save_restored", f"Saves restored: {rec.name}", f"On this machine, {count} file{'' if count == 1 else 's'}.", rec.game_id
+            )
 
     def restore_pick(self, rec: InstalledGame) -> None:
         """Choose any saved version, of any machine, to put back."""
