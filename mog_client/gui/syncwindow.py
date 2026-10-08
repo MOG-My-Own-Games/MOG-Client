@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from mog_client.config import InstalledGame, data_dir
 from mog_client.gui import gamepad
+from mog_client.gui.pictures import largest_pixmap
 from mog_client.gui.theme import STYLE
 from mog_client.launcher import icon_path
 
@@ -77,7 +78,7 @@ def _cover(rec: InstalledGame) -> QPixmap | None:
     server may be the very thing that is slow), else its small icon, else the client's own."""
     covers = sorted((data_dir() / "covers").glob(f"{rec.game_id}-*.img"), key=lambda f: f.stat().st_mtime, reverse=True)
     for path in [*covers[:1], icon_path(rec), Path(__file__).parent / "assets" / "icon.png"]:
-        pix = QPixmap(str(path)) if path.is_file() else QPixmap()
+        pix = largest_pixmap(path.read_bytes()) if path.is_file() else QPixmap()  # an icon file may hold several sizes
         if not pix.isNull():
             return pix
     return None
