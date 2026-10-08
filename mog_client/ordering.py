@@ -35,6 +35,18 @@ def last_played(group: Group, local: dict[int, float]) -> float | None:
     return max(known, default=None)
 
 
+def last_played_on(group: Group, local: dict[int, float], here: str | None) -> tuple[float | None, str | None]:
+    """When the title was last played and on which machine: this one (`here`, its name) when its own start is the
+    newest, else the machine the server says made the newest save."""
+    best: tuple[float | None, str | None] = (None, None)
+    for member in group.members:
+        candidates = ((local.get(member["id"]), here), (iso_to_epoch(member.get("last_played")), member.get("last_played_on")))
+        for when, name in candidates:
+            if when is not None and (best[0] is None or when > best[0]):
+                best = (when, name)
+    return best
+
+
 def released(group: Group) -> float | None:
     return ((group.game.get("igdb_metadata") or {}).get("first_release_date")) or None
 
