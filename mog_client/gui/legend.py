@@ -17,10 +17,10 @@ COMFORT = 28  # icons are shrunk to this before entries are dropped, and below i
 MIN_FIT = 20  # the smallest they are made, to keep the guide on one line
 GAP = "&nbsp;&nbsp;&nbsp;&nbsp;"
 
-LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING = (
-    "library", "page", "settings", "logs", "inbox", "typing", "message", "playing"
+LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY = (
+    "library", "page", "settings", "logs", "inbox", "typing", "message", "playing", "busy"
 )  # fmt: skip
-CONTEXTS = (LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING)
+CONTEXTS = (LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY)
 
 G = gamepad  # glyph names
 STICK_R = G.STICK_R
@@ -78,6 +78,7 @@ LEGENDS: dict[str, tuple[Entry, ...]] = {
     ),
     MESSAGE: (Entry("OK", (G.SOUTH,), ("enter",)),),
     PLAYING: (Entry("Stop", (G.SOUTH,), ("enter",)),),
+    BUSY: (Entry("Cancel", (G.SOUTH,), ("enter",)),),
 }
 
 

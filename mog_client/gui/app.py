@@ -78,6 +78,7 @@ from mog_client.gui.headerart import HeaderArt
 from mog_client.gui.instance import Listener, send_to_running
 from mog_client.gui.logview import LogView
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
+from mog_client.gui.busy import BusyOverlay
 from mog_client.gui.overlay import MessageOverlay
 from mog_client.gui.playing import PlayingOverlay
 from mog_client.gui import saves_ui as sync_ui
@@ -2918,6 +2919,8 @@ class MainWindow(QMainWindow):
         self.playing = PlayingOverlay(central, suspended=lambda: self.overlay.isVisible())
         self.playing.changed.connect(self.refresh_legend)
         self.playing.stop_clicked.connect(self.stop_playing)
+        self.busy = BusyOverlay(central, suspended=lambda: self.overlay.isVisible())
+        self.busy.changed.connect(self.refresh_legend)
         self.modal = ModalHost(central)  # a modal page's card, under any message
         self.modal.dismissed.connect(self.back)
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
@@ -3028,7 +3031,7 @@ class MainWindow(QMainWindow):
         self.refresh_items()
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
-        if self.overlay.showing or self.playing.showing:
+        if self.overlay.showing or self.playing.showing or self.busy.showing:
             return
         if e.key() == Qt.Key_Escape:
             self.back()
@@ -3049,7 +3052,24 @@ class MainWindow(QMainWindow):
         self.modal.fit_to_parent()
         self.overlay.fit_to_parent()
         self.playing.fit_to_parent()
+        self.busy.fit_to_parent()
         self.refresh_legend()  # its size follows the window
+
+    def show_busy(self, title: str, name: str, game_id: int | None = None, on_cancel=None) -> None:
+        """Cover the window with what is under way (a restore, a backup). Cancel is offered when `on_cancel` is."""
+        try:
+            self.busy.cancel_clicked.disconnect()
+        except RuntimeError:  # nothing was connected
+            pass
+        if on_cancel is not None:
+            self.busy.cancel_clicked.connect(lambda: (self.busy.cancelling(), on_cancel()))
+        self.busy.show_busy(title, name, self.covers.get(game_id) if game_id is not None else None, on_cancel is not None)
+
+    def busy_progress(self, done: int, total: int, detail: str | None = None) -> None:
+        self.busy.set_progress(done, total, detail)
+
+    def hide_busy(self) -> None:
+        self.busy.end()
 
     def choose(self, title: str, text: str, options: list, on_choose, skip: str | None = None) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip))
@@ -3234,6 +3254,8 @@ class MainWindow(QMainWindow):
             return legend.MESSAGE
         if self.playing.showing:
             return legend.PLAYING
+        if self.busy.showing:
+            return legend.BUSY
         if isinstance(page, KeyboardPage):
             return legend.TYPING
         if isinstance(page, NotificationsPage):
@@ -3269,6 +3291,11 @@ class MainWindow(QMainWindow):
             # A message is up: A and B answer it, nothing else reaches the page underneath.
             if name in (gamepad.ACCEPT, gamepad.BACK):
                 self.overlay.dismiss()
+            return
+        if self.busy.showing and name != gamepad.QUIT:
+            # Something is under way: A and B cancel it, nothing else reaches the page underneath.
+            if name in (gamepad.ACCEPT, gamepad.BACK) and self.busy.cancel_button.isEnabled():
+                self.busy.cancel_button.click()
             return
         if self.playing.showing and name != gamepad.QUIT:
             # A game is running: A stops it, nothing else reaches the page underneath.
