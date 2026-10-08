@@ -1,4 +1,4 @@
-"""The last library and user the server sent, kept on disk so the window has something to show at once on the next
+"""The last library, user and notifications the server sent, kept on disk so the window has something to show at once on the next
 start while the real list is fetched (stdlib only). Each file names the server it came from, and is ignored for
 another one."""
 
@@ -16,6 +16,10 @@ def _library_file() -> Path:
 
 def _user_file() -> Path:
     return data_dir() / "user.json"
+
+
+def _notifications_file() -> Path:
+    return data_dir() / "notifications.json"
 
 
 def _avatar_file() -> Path:
@@ -49,6 +53,19 @@ def load_library(server: str) -> tuple[list[dict], list[dict]]:
     return (games if isinstance(games, list) else []), (libraries if isinstance(libraries, list) else [])
 
 
+def save_notifications(server: str, data: dict) -> None:
+    _write(_notifications_file(), {"server": server, "notifications": data.get("notifications", []), "unread": data.get("unread", 0)})
+
+
+def load_notifications(server: str) -> dict | None:
+    """The last answer of the notifications call ({"notifications": [...], "unread": n}), None when there is none."""
+    data = _read(_notifications_file(), server)
+    if data is None or not isinstance(data.get("notifications"), list):
+        return None
+    unread = data.get("unread")
+    return {"notifications": data["notifications"], "unread": unread if isinstance(unread, int) else 0}
+
+
 def save_user(server: str, name: str, avatar: bytes | None) -> None:
     _write(_user_file(), {"server": server, "name": name})
     if avatar:
@@ -69,5 +86,5 @@ def load_user(server: str) -> tuple[str, bytes | None] | None:
 
 
 def forget() -> None:
-    for path in (_library_file(), _user_file(), _avatar_file()):
+    for path in (_library_file(), _user_file(), _avatar_file(), _notifications_file()):
         path.unlink(missing_ok=True)

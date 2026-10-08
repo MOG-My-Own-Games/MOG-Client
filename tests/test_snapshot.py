@@ -34,3 +34,20 @@ def test_a_damaged_file_is_ignored_and_forget_clears_everything(tmp_path, monkey
     snapshot.save_user(SERVER, "admin", b"x")
     snapshot.forget()
     assert snapshot.load_library(SERVER) == ([], []) and snapshot.load_user(SERVER) is None
+
+
+def test_the_notifications_come_back_for_the_same_server_only_and_forget_clears_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(snapshot, "data_dir", lambda: tmp_path)
+    assert snapshot.load_notifications(SERVER) is None
+
+    data = {"notifications": [{"id": 3, "title": "Stuck", "read": False}], "unread": 1}
+    snapshot.save_notifications(SERVER, data)
+
+    assert snapshot.load_notifications(SERVER) == data
+    assert snapshot.load_notifications("http://another:5000") is None
+    (tmp_path / "notifications.json").write_text('{"server": "%s", "notifications": 5}' % SERVER)
+    assert snapshot.load_notifications(SERVER) is None  # a damaged file is ignored
+
+    snapshot.save_notifications(SERVER, data)
+    snapshot.forget()
+    assert snapshot.load_notifications(SERVER) is None
