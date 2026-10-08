@@ -1,4 +1,4 @@
-<p align="center"><img src="mog_client/gui/assets/mascotte.png" width="200" alt="MOG" /></p>
+<p align="center"><img src="docs/logo.png" width="220" alt="MOG Client" /></p>
 
 # MOG Client
 
