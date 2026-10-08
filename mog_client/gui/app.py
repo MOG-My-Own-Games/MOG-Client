@@ -88,7 +88,8 @@ from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
 from mog_client.saves import devices, runner, sync
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, ParagraphLabel, FocusTabs, Toggle, accent_gradient, accent_qss, avatar_icon, clear_icon, scrollbar_qss
+from mog_client.gui.theme import STYLE
+from mog_client.gui.widgets import ROLE_DIVIDER, ROLE_KIND, ROLE_ON, BadgeButton, OptionDelegate, ParagraphLabel, FocusTabs, Toggle, accent_gradient, avatar_icon, clear_icon
 from mog_client.launcher import (
     available_launchers,
     client_command,
@@ -98,6 +99,7 @@ from mog_client.launcher import (
     launch_failure,
     launcher_label,
     list_executables,
+    remember_client,
 )
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.transfer import sha1_of
@@ -110,60 +112,6 @@ def asset_pixmap(name: str, height: int) -> QPixmap:
     return QPixmap(str(ASSETS / name)).scaledToHeight(height, Qt.SmoothTransformation)
 
 
-STYLE = """
-* { font-size: 18px; }
-QMainWindow { background: #14171c; color: #e8eaed; }
-QLabel { color: #e8eaed; }
-QLineEdit, QComboBox, QPlainTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
-QPushButton { background: {accent}; color: white; border: 2px solid transparent; border-radius: 8px; padding: 12px 22px; max-width: 460px; }
-QPushButton:hover { background: {accent_hover}; }
-QPushButton:focus { border-color: white; }
-QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; max-width: 16777215px; }
-QPushButton[danger="true"] { background: #e2574c; }
-QPushButton[danger="true"]:hover { background: #c94439; }
-QComboBox QAbstractItemView { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; outline: none; selection-background-color: #1e2733; selection-color: white; }
-QComboBox QAbstractItemView::item { color: #e8eaed; padding: 6px 8px; min-height: 28px; }
-QComboBox QAbstractItemView::item:selected { color: white; background: #1e2733; }
-QListWidget { background: transparent; border: none; outline: none; }
-QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius: 10px; padding: 6px; }
-QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
-*:focus { border-color: #4c8dff; }
-QTabWidget::pane { border: none; }
-QTabBar::tab { background: #1e232b; color: #9aa3b0; padding: 10px 24px; border-radius: 8px; margin-right: 6px; }
-QTabBar::tab:selected { background: {accent}; color: white; }
-QPushButton[filter="true"] { background: #2c333d; color: #9aa3b0; }
-QPushButton[filter="true"]:checked { background: {accent}; color: white; }
-QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; border-radius: 6px; padding: 8px; }
-#menuView, #menuView > QWidget > QWidget { background: transparent; }
-#menuSection { color: #9aa3b0; font-size: 14px; font-weight: bold; padding: 16px 4px 2px 4px; }
-#optionRow { background: #1b2028; border: 2px solid transparent; border-radius: 10px; }
-#optionRow[active="true"] { background: #1e2733; border-color: #4c8dff; }
-#optionTitle { font-size: 19px; font-weight: 600; }
-#optionDescription { color: #9aa3b0; font-size: 15px; }
-#optionStatus { color: #6fb1ff; font-size: 15px; }
-#overlay { background: rgba(0, 0, 0, 175); }
-#overlayCard { background: #1e232b; border: 2px solid #4c8dff; border-radius: 12px; padding: 18px; }
-#modalHost { background: rgba(0, 0, 0, 150); }
-#modalCard { background: #1a1f27; border: 2px solid #4c8dff; border-radius: 12px; }
-#modalTitle { font-size: 20px; font-weight: bold; padding-bottom: 4px; }
-#overlayCard[level="error"] { border-color: #e2574c; }
-#overlayCard[level="warning"] { border-color: #e8c547; }
-#overlayTitle { font-size: 22px; font-weight: bold; }
-#userButton { padding: 8px 18px 8px 10px; margin: 0 8px 0 0; }  /* room on the right for the unread dot */
-QMenu { background: #1e2733; color: #e8eaed; border: 1px solid #343c49; border-radius: 12px; padding: 6px; }
-QMenu::item { padding: 12px 34px 12px 18px; border-radius: 8px; font-size: 18px; }
-QMenu::item:selected { background: {accent}; color: white; }
-QMenu::separator { height: 1px; background: #343c49; margin: 6px 10px; }
-#metaKey { color: #8b94a3; font-size: 12px; font-weight: bold; padding-top: 3px; }
-#metaValue { color: #ffffff; font-size: 17px; }
-#summary { color: #c3c8d2; }
-#hltbBox { background: rgba(21, 25, 32, 205); border: 1px solid #343c49; border-radius: 10px; }
-#hltbTitle { color: #8b94a3; font-size: 12px; font-weight: bold; }
-#hltbLabel { color: #c3c8d2; font-size: 14px; }
-#hltbTime { color: #ffffff; font-size: 19px; font-weight: bold; }
-QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
-QProgressBar::chunk { background: {accent}; border-radius: 6px; }
-""".replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()
 
 def steam_outcome(rec: InstalledGame, done: str) -> tuple[str, str]:
     """(level, text) for what was done, with a note when Steam's own shortcut had to wait: Steam is
@@ -1364,6 +1312,10 @@ class SettingsPage(Page):
         self.sync_start_box.setChecked(s.sync_on_start)
         self.sync_start_box.setEnabled(s.sync_saves)  # greyed while saves are not synced at all
         self.sync_saves_box.toggled.connect(self.sync_start_box.setEnabled)
+        self.sync_window_box = Toggle()
+        self.sync_window_box.setChecked(s.sync_window)
+        self.sync_window_box.setEnabled(s.sync_saves)
+        self.sync_saves_box.toggled.connect(self.sync_window_box.setEnabled)
         self.sounds_box = Toggle()
         self.sounds_box.setChecked(s.sounds)
         self.check_updates_box = Toggle()
@@ -1470,6 +1422,14 @@ class SettingsPage(Page):
                 "When MOG starts, send what changed here and take a newer save another machine left (what it replaces "
                 "is backed up first). Greyed while saves are not backed up.",
                 self.sync_start_box,
+            )
+        )
+        menu.add(
+            OptionRow(
+                "Show a window when saving",
+                "When a game started outside MOG (a shortcut or Steam) ends, show a small window while its saves are "
+                "backed up (a newer save found when a game starts always shows one). Greyed while saves are not backed up.",
+                self.sync_window_box,
             )
         )
         menu.section("Games")
@@ -1622,6 +1582,7 @@ class SettingsPage(Page):
             check_updates=self.check_updates_box.isChecked(),
             sync_saves=self.sync_saves_box.isChecked(),
             sync_on_start=self.sync_start_box.isChecked(),
+            sync_window=self.sync_window_box.isChecked(),
             sounds=self.sounds_box.isChecked(),
         )
         save_settings(self.win.app.settings)
@@ -3729,6 +3690,11 @@ def run_gui(link: str | None = None) -> int:
     updater.cleanup_old()
     app = App()
     ensure_scanned(app.settings)
+    remember_client()  # where the launch scripts find this client, whatever it is called or wherever it was moved to
+    if app.settings.scripts_written_for != __version__:
+        app.settings.scripts_written_for = __version__
+        save_settings(app.settings)
+        app.run_bg(lambda: manager.refresh_launch_files(app.settings), on_error=logstore.warning)
     win = MainWindow(app)
     listener = Listener()
     if listener.listen():

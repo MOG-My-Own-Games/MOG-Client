@@ -70,6 +70,10 @@ class Settings:
     sync_on_start: bool = True
     # Back up each game's save files to the server (a game can opt out: InstalledGame.save_sync).
     sync_saves: bool = True
+    # Show a small "Syncing saves" window when a game that was started outside MOG ends.
+    sync_window: bool = True
+    # The MOG version that last wrote the games' launch scripts (they hold the client's whereabouts).
+    scripts_written_for: str = ""
 
     @property
     def install_roots(self) -> list[Path]:

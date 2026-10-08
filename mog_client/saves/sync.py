@@ -297,16 +297,26 @@ def startup_check(ctx: Context) -> StartupOutcome:
     """What to do about a game's saves when the client starts: send what changed here, or take the newer
     version another machine left when nothing changed here (what it replaces is backed up first). When
     both sides changed it does neither and says so, and when the game's folders are not known yet it waits."""
+    outcome = apply_newer(ctx)
+    if outcome is not None:
+        return outcome
+    result = backup(ctx, SYNC)
+    status = {"uploaded": "uploaded", "needs-prefix": "setup", "needs-confirmation": "setup"}.get(
+        result.status, "unchanged"
+    )
+    return StartupOutcome(status, version=result.version)
+
+
+def apply_newer(ctx: Context) -> StartupOutcome | None:
+    """Take the newer version another machine left, when there is one and nothing changed here. None when
+    there is no newer version (or the server cannot say); "conflict" when both sides changed, and the caller
+    decides (`restore` or `decline`)."""
     try:
         newer = newer_elsewhere(ctx)
     except RuntimeError:
-        newer = None
+        return None
     if newer is None:
-        result = backup(ctx, SYNC)
-        status = {"uploaded": "uploaded", "needs-prefix": "setup", "needs-confirmation": "setup"}.get(
-            result.status, "unchanged"
-        )
-        return StartupOutcome(status, version=result.version)
+        return None
     version, device = newer
     local = backup(ctx, SYNC, upload=False)
     if local.status in ("needs-prefix", "needs-confirmation"):

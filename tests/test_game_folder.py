@@ -135,6 +135,9 @@ def test_a_windows_shortcut_is_made_with_powershell(monkeypatch, tmp_path):
     script = launcher.windows_shortcut_script(tmp_path / "G O'Brien.lnk", "C:\\Games\\G\\g.exe", "C:\\Games\\G")
     assert "CreateShortcut('" in script and "G O''Brien.lnk" in script
     assert "$s.TargetPath='C:\\Games\\G\\g.exe'" in script and script.endswith("$s.Save()")
+    assert "$s.WindowStyle=7" in script and "IconLocation" not in script
+    with_icon = launcher.windows_shortcut_script(tmp_path / "x.lnk", "g.cmd", ".", icon="C:\\Games\\G\\g.exe")
+    assert "$s.IconLocation='C:\\Games\\G\\g.exe,0'" in with_icon
 
     def no_powershell(*args, **kwargs):
         raise FileNotFoundError("powershell")
@@ -147,11 +150,11 @@ def test_a_windows_shortcut_is_made_with_powershell(monkeypatch, tmp_path):
 def test_on_windows_the_entry_is_a_lnk_next_to_the_game(home, monkeypatch):
     made = []
     monkeypatch.setattr(launcher.sys, "platform", "win32")
-    monkeypatch.setattr(launcher, "create_windows_shortcut", lambda lnk, target, workdir: made.append((lnk, target, workdir)))
+    monkeypatch.setattr(launcher, "create_windows_shortcut", lambda lnk, target, workdir, icon=None: made.append((lnk, target, workdir, icon)))
     recorded = launcher.create_desktop_entry(home.rec)
     stem = "Jazz Jackrabbit 2_ The Secret Files"
     assert recorded == str(home.folder / f"{stem}.lnk")
-    assert made == [(home.folder / f"{stem}.lnk", str(home.exe), str(home.exe.parent))]
+    assert made == [(home.folder / f"{stem}.lnk", str(home.folder / f"{stem}.cmd"), str(home.exe.parent), str(home.exe))]
 
 
 # --- Steam shortcuts: Steam's own casing, and nothing touched while it runs ---
