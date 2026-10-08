@@ -84,6 +84,17 @@ def test_log_files_in_the_games_own_folder_are_not_offered_either(tmp_path):
     assert keys(install_candidates(game, {})) == ["game/Saves/profile.sav"]
 
 
+def test_compiled_python_the_game_writes_beside_its_files_is_not_a_save(tmp_path):
+    game = tmp_path / "game"
+    _touch(game / "saves/persistent")
+    _touch(game / "renpy/__init__.pyo")
+    _touch(game / "renpy/angle/__init__.pyc")
+    _touch(game / "tools/__pycache__/helper.cpython-312.opt-1.pyc")
+    _touch(game / "tools/__pycache__/notes.txt")  # nothing in a __pycache__ folder is
+    _touch(game / "scripts/data.py")  # the source itself is not compiled output
+    assert sorted(keys(install_candidates(game, {}))) == ["game/saves/persistent", "game/scripts/data.py"]
+
+
 def test_symbolic_links_are_never_followed(drive_c, tmp_path):
     home_documents = tmp_path / "home" / "Documents"
     _touch(home_documents / "private.txt")
