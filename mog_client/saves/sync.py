@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -368,15 +369,16 @@ def _restore_lock(game_id: int) -> threading.Lock:
         return _restore_locks.setdefault(game_id, threading.Lock())
 
 
-def restore(ctx: Context, version_id: int) -> RestoreResult:
+def restore(ctx: Context, version_id: int, on_progress: Callable[[int, int], None] | None = None) -> RestoreResult:
     """Put a server version back on this machine, keeping what it replaces in a backup archive.
+    `on_progress(received, total)` follows the download; what it raises stops the restore.
     When the archive holds profile files and the prefix is not known yet, it is kept to be applied
     once the prefix is found (see apply_pending)."""
     rec = ctx.rec
     with _restore_lock(rec.game_id):
         state = load_state(rec.game_id)
         archive = saves_dir(rec.game_id) / f"version-{version_id}.zip"
-        ctx.client.download_save(version_id, archive)
+        ctx.client.download_save(version_id, archive, on_progress)
         return _apply(ctx, state, archive, version_id)
 
 

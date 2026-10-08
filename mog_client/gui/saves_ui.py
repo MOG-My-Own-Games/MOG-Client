@@ -7,6 +7,8 @@ tested with a stand-in window. Work that talks to the server runs on worker thre
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,13 @@ from mog_client.saves.locations import describe_key
 from mog_client.saves.state import load_state
 
 SKIP = None
+PROGRESS_EVERY = 0.1  # seconds between updates of the progress shown while a save downloads
+
+
+class _Cancelled(Exception):
+    """The user cancelled a restore that was downloading."""
+
+
 # The entry of the folder list that opens the folder browser.
 OTHER_FOLDER = "*other*"
 
@@ -104,7 +113,7 @@ class SaveSync:
         def work() -> None:
             settings = app.settings
             if not sync.enabled(rec, settings):
-                return fail(None)
+                return fail("saving is off for this game" if ask else None)
             client = app.client()
             device = devices.known_device()
             if device is None:
@@ -151,8 +160,14 @@ class SaveSync:
 
     def backup_now(self, rec: InstalledGame) -> None:
         def run(ctx: sync.Context) -> None:
-            result = sync.backup(ctx, sync.MANUAL, force=True)
-            self.gui(lambda: self.after_backup(rec, result, lambda: self.backup_now(rec), quiet=False))
+            self.gui(lambda: self.win.show_busy("Backing up saves", rec.name, rec.game_id))
+            try:
+                result = sync.backup(ctx, sync.MANUAL, force=True)
+            except Exception as e:  # noqa: BLE001 - shown to the user
+                text = f"Could not back up: {e}"  # `e` is gone once this block ends, before the GUI thread runs the lambda
+                self.gui(lambda: (self.win.hide_busy(), self.win.message(text, "error")))
+                return
+            self.gui(lambda: (self.win.hide_busy(), self.after_backup(rec, result, lambda: self.backup_now(rec), quiet=False)))
 
         self.with_context(rec, run, ask=True)
 
@@ -349,16 +364,34 @@ class SaveSync:
     # --- restoring ---
 
     def _restore(self, rec: InstalledGame, ctx: sync.Context, version_id: int, then: Callable[[], None] | None = None) -> None:
+        cancelled = threading.Event()
+        self.gui(lambda: self.win.show_busy("Restoring saves", rec.name, rec.game_id, cancelled.set))
+        last = [0.0]
+
+        def progress(done: int, total: int) -> None:
+            if cancelled.is_set():
+                raise _Cancelled
+            now = time.monotonic()
+            if now - last[0] < PROGRESS_EVERY and done != total:
+                return
+            last[0] = now
+            self.gui(lambda: self.win.busy_progress(done, total, None if done < total else "Putting the files back..."))
+
         def run() -> None:
-            result = sync.restore(ctx, version_id)
-            self.gui(lambda: self._restored(rec, ctx, result, then))
+            try:
+                result = sync.restore(ctx, version_id, progress)
+            except _Cancelled:
+                self.gui(lambda: self._restore_stopped(rec, "Restore cancelled", then, "info"))
+                return
+            self.gui(lambda: (self.win.hide_busy(), self._restored(rec, ctx, result, then)))
 
-        def failed(m: str) -> None:
-            self.win.message(f"Could not restore: {m}", "error")
-            if then:
-                then()
+        self.app.run_bg(run, on_error=lambda m: self.gui(lambda: self._restore_stopped(rec, f"Could not restore: {m}", then)))
 
-        self.app.run_bg(run, on_error=lambda m: self.gui(lambda: failed(m)))
+    def _restore_stopped(self, rec: InstalledGame, text: str, then: Callable[[], None] | None, level: str = "error") -> None:
+        self.win.hide_busy()
+        self.win.message(text, level) if level == "error" else self.win.notify(text)
+        if then:
+            then()
 
     def _restored(self, rec, ctx, result: sync.RestoreResult, then) -> None:
         if result.status == "restored":
@@ -391,6 +424,8 @@ class SaveSync:
                     then()
 
             self.choose_prefix(rec, then=apply, skip=skip)
+        else:
+            self.win.message(f"Saves of {rec.name} could not be restored ({result.status})", "error")
 
     def restore_pick(self, rec: InstalledGame) -> None:
         """Choose any saved version, of any machine, to put back."""

@@ -42,8 +42,10 @@ class FakeServer:
             "keep_versions": 3,
         }
 
-    def download_save(self, version_id, dest):
+    def download_save(self, version_id, dest, on_progress=None):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        if on_progress:
+            on_progress(len(self.blobs[version_id]), len(self.blobs[version_id]))
         Path(dest).write_bytes(self.blobs[version_id])
 
     def add_foreign_version(self, files: dict[str, bytes], device_id=2):

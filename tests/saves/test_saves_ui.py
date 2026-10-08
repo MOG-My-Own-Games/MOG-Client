@@ -35,6 +35,9 @@ class FakeWin:
         self.asks: list[tuple] = []
         self.browsed: list[Path] = []
         self.errors: list[str] = []
+        self.busy = None
+        self.busy_log: list[str] = []
+        self.progress: list[tuple] = []
 
     def run_bg(self, fn, on_error=None):
         try:
@@ -43,6 +46,16 @@ class FakeWin:
             self.errors.append(str(e))
             if on_error:
                 on_error(str(e))
+
+    def show_busy(self, title, name, game_id=None, on_cancel=None):
+        self.busy = (title, name, on_cancel)
+        self.busy_log.append(title)
+
+    def busy_progress(self, done, total, detail=None):
+        self.progress.append((done, total, detail))
+
+    def hide_busy(self):
+        self.busy = None
 
     def notify(self, text, level="info"):
         self.notes.append(text)
@@ -448,3 +461,56 @@ def test_a_native_game_that_wrote_nothing_is_asked_for_its_folder_by_hand(native
 
     ui.win.on_pick(str(ui.tmp / "elsewhere"))
     assert ui.win.messages[-1][0] == "error" and load_state(7).includes is None
+
+
+def test_a_restore_shows_its_progress_and_ends_with_a_message(ui):
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+
+    assert ui.win.busy_log == ["Restoring saves"] and ui.win.busy is None  # shown, and gone once it ended
+    assert ui.win.progress and ui.win.progress[-1][2] == "Putting the files back..."
+    assert ui.win.messages[-1][0] == "info" and "restored" in ui.win.messages[-1][1]
+
+
+def test_a_restore_that_fails_says_so_and_clears_the_progress(ui, monkeypatch):
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+
+    def broken(vid, dest, on_progress=None):
+        raise RuntimeError("could not download save version 3: HTTP 404")
+
+    ui.server.download_save = broken
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+
+    assert ui.win.busy is None
+    assert ui.win.messages[-1] == ("error", "Could not restore: could not download save version 3: HTTP 404")
+
+
+def test_a_restore_can_be_cancelled_while_it_downloads(ui):
+    version = ui.server.add_foreign_version({"game/a.sav": b"theirs"}, device_id=2)
+    original = ui.server.download_save
+
+    def cancelling(vid, dest, on_progress=None):
+        ui.win.busy[2]()  # Cancel pressed
+        return original(vid, dest, on_progress)
+
+    ui.server.download_save = cancelling
+    ui.ui.restore_pick(ui.rec)
+    ui.win.choices[0][2](version["id"])
+
+    assert ui.win.busy is None and not (ui.install / "a.sav").exists()
+    assert ui.win.messages == [] and "Restore cancelled" in ui.win.notes
+
+
+def test_asking_for_a_restore_or_backup_of_a_game_with_saving_off_is_answered(ui):
+    ui.win.settings.sync_saves = False
+    ui.ui.restore_pick(ui.rec)
+    ui.ui.backup_now(ui.rec)
+    assert [m[1] for m in ui.win.messages] == ["Save sync: saving is off for this game"] * 2
+
+
+def test_a_backup_by_hand_shows_it_is_working(ui):
+    ui.ui.backup_now(ui.rec)
+    assert ui.win.busy_log == ["Backing up saves"] and ui.win.busy is None
+    assert ui.win.choices[0][0] == "Where is this game's Wine prefix?"  # no prefix yet: the answer is a question

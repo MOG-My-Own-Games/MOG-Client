@@ -665,8 +665,8 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
-    def download_save(self, version_id: int, dest: Path) -> None:
-        status = self.c.download_to(f"/api/saves/{version_id}/download", dest)
+    def download_save(self, version_id: int, dest: Path, on_progress: Callable[[int, int], None] | None = None) -> None:
+        status = self.c.download_to(f"/api/saves/{version_id}/download", dest, on_progress=on_progress)
         if status != 200:
             raise RuntimeError(f"could not download save version {version_id}: HTTP {status}")
 
