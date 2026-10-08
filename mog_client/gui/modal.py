@@ -3,13 +3,31 @@ still a page of the window (Back, Esc and the pad's B close it, and the stack of
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 MAX_WIDTH = 780
 MAX_HEIGHT = 540
+COMPACT_HEIGHT_SHARE = 0.94  # a compact card may take more of the window than a full-size one: it is only as tall as it needs
+COMPACT_WIDTH = 560  # a question or a short menu: a card as big as what it holds, not the full-size one
 SHARE = 0.82  # of the window, at most
+
+
+class FitScrollArea(QScrollArea):
+    """A scroll area that asks for as much room as what it holds, so a card sizes itself to a tall menu and
+    scrolls it only when the window is too short for it."""
+
+    def __init__(self, content: QWidget) -> None:
+        super().__init__()
+        self.setWidget(content)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def sizeHint(self) -> QSize:
+        return self.widget().sizeHint() + QSize(self.verticalScrollBar().sizeHint().width(), 8)  # a little over, so a menu that fits shows no scrollbar
 
 
 class ModalHost(QWidget):
@@ -44,6 +62,7 @@ class ModalHost(QWidget):
             self.page = page
             self.body.insertWidget(1, page)
             self.body.addWidget(self.close_button, 0, Qt.AlignHCenter)
+            self.close_button.setVisible(getattr(page, "show_close", True))
             page.show()
         self.title.setText(title)
         self.fit_to_parent()
@@ -70,8 +89,16 @@ class ModalHost(QWidget):
         if parent is None:
             return
         self.setGeometry(parent.rect())
-        width = min(MAX_WIDTH, int(self.width() * SHARE))
-        height = min(MAX_HEIGHT, int(self.height() * SHARE))
+        max_width = min(MAX_WIDTH, int(self.width() * SHARE))
+        max_height = min(MAX_HEIGHT, int(self.height() * SHARE))
+        width, height = max_width, max_height
+        if getattr(self.page, "compact", False):
+            max_height = int(self.height() * COMPACT_HEIGHT_SHARE)
+            width = min(COMPACT_WIDTH, max_width)
+            margins = self.body.contentsMargins()
+            inner = width - margins.left() - margins.right()
+            wanted = self.body.totalHeightForWidth(inner) if self.body.hasHeightForWidth() else self.body.sizeHint().height()
+            height = min(max_height, max(wanted, self.body.minimumSize().height()))
         self.card.setGeometry(QRect((self.width() - width) // 2, (self.height() - height) // 2, width, height))
 
     def mousePressEvent(self, e: QMouseEvent) -> None:
