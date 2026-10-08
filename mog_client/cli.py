@@ -152,7 +152,7 @@ def main() -> int:
 
         session = client.start_session(
             args.game_id, args.installer_path, args.proton_build, args.ttl, args.auto_mode, args.manual_mode or None,
-            extract_only=args.extract_only,
+            extract_only=True if args.extract_only else None,
         )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":

@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from mog_client import config, installdirs, launcher, logstore  # noqa: E402
 from mog_client.config import Settings, load_settings  # noqa: E402
@@ -94,7 +94,7 @@ def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qa
     win.on_pad(gamepad.TRIGGER_L)
     win.on_pad(gamepad.TRIGGER_L)
     win.on_pad(gamepad.TRIGGER_L)
-    assert name() == "About" and win.legend_context() == "settings"  # wraps round
+    assert name() == "Logs" and win.legend_context() == "logs"  # wraps round, and About is not a tab any more
 
 
 def test_the_log_is_coloured_by_level_filtered_and_follows_new_records(win, qapp):
@@ -1025,7 +1025,7 @@ def test_an_archive_with_an_installer_is_not_asked_about(win, qapp, monkeypatch)
     started = _extraction_win(win, monkeypatch, FakeServer(inside={"candidates": [{"path": "setup.exe"}], "extract_suggested": False}))
     win.install_game({"id": 7, "name": "Game"})
     assert _wait_for(qapp, lambda: started)
-    assert started == [False] and not isinstance(win.current_page(), gui.ConfirmPage)
+    assert started == [None] and not isinstance(win.current_page(), gui.ConfirmPage)
 
 
 def test_a_game_that_is_not_an_archive_is_not_looked_inside(win, qapp, monkeypatch):
@@ -1033,7 +1033,7 @@ def test_a_game_that_is_not_an_archive_is_not_looked_inside(win, qapp, monkeypat
     started = _extraction_win(win, monkeypatch, server)
     win.install_game({"id": 7, "name": "Game"})
     assert _wait_for(qapp, lambda: started)
-    assert started == [False] and server.asked == [None]
+    assert started == [None] and server.asked == [None]
 
 
 def test_a_failed_lookup_never_stops_the_install(win, qapp, monkeypatch):
@@ -1044,7 +1044,7 @@ def test_a_failed_lookup_never_stops_the_install(win, qapp, monkeypatch):
     started = _extraction_win(win, monkeypatch, Broken())
     win.install_game({"id": 7, "name": "Game"})
     assert _wait_for(qapp, lambda: started)
-    assert started == [False]
+    assert started == [None]
 
 
 def test_a_game_that_was_extracted_on_purpose_is_not_asked_again(win, qapp, monkeypatch, tmp_path):
@@ -1052,7 +1052,7 @@ def test_a_game_that_was_extracted_on_purpose_is_not_asked_again(win, qapp, monk
     started = _extraction_win(win, monkeypatch, server)
     config.save_library({7: config.InstalledGame(7, "Game", str(tmp_path / "Game"), state="installing", extract_only=True)})
     win.install_game({"id": 7, "name": "Game"})
-    assert started == [False] and server.asked == []  # it resumes; its record remembers the choice
+    assert started == [None] and server.asked == []  # it resumes; its record remembers the choice
 
 
 def test_a_game_whose_first_attempt_failed_is_asked_again(win, qapp, monkeypatch, tmp_path):
@@ -1080,7 +1080,7 @@ def test_a_game_whose_session_is_running_or_finished_is_not_asked(win, qapp, mon
     config.save_library({7: config.InstalledGame(7, "Game", str(tmp_path / "Game"), state="installing")})
     win.install_game({"id": 7, "name": "Game"})
     assert _wait_for(qapp, lambda: started)
-    assert started == [False] and server.asked == []
+    assert started == [None] and server.asked == []
 
 
 def test_a_message_from_the_bridge_shows_its_text_not_its_level(win, qapp):
@@ -1189,7 +1189,7 @@ def _menu_texts(win):
 
 
 def test_the_user_icon_is_the_last_thing_on_the_right_and_opens_a_menu(win, qapp):
-    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "Sign out"]
+    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "About", "Sign out"]
     assert win.user_btn.x() + win.user_btn.width() > win.search.x() + win.search.width()  # at the far right
 
     win.user_btn.click()  # looked at before events run: the offscreen display closes a popup that has no focus
@@ -1225,6 +1225,21 @@ def test_the_menu_rows_do_what_they_say(win, qapp, monkeypatch):
     win.user_menu.actions()[0].trigger()
     pump(qapp)
     assert isinstance(win.current_page(), gui.SettingsPage)
+
+
+def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_in_settings(win, qapp):
+    kinds = ["-" if a.isSeparator() else a.text() for a in win.user_menu.actions()]
+    assert kinds == ["Settings", "Notifications", "Refresh library", "-", "About", "-", "Sign out"]
+
+    win.user_menu.actions()[4].trigger()
+    pump(qapp)
+    page = win.current_page()
+    assert isinstance(page, gui.AboutPage) and page.title == "About" and page.about.github.text() == "Open the GitHub page"
+    win.back()
+
+    win.open_settings()
+    tabs = win.current_page().tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Logs"]
 
 
 def test_signing_out_asks_first_then_forgets_the_password_and_opens_settings(win, qapp):
@@ -1679,3 +1694,151 @@ def test_extracting_from_the_picker_goes_straight_to_the_install_without_asking_
     pump(qapp)
 
     assert started == [(None, True)] and asked == []
+
+
+# --- the mods and the file picker as small cards over the game's page -------------------------------
+
+
+def _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app.settings, "install_dirs", [str(tmp_path / "games")])
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    game = win.app.games[41]
+    win.app.mods[41] = [
+        {"name": "mod1", "kind": "folder", "size_bytes": 1, "file_count": 1},
+        {"name": "mod2.zip", "kind": "archive", "size_bytes": 1, "file_count": 1},
+    ]
+    folder = win.app.mod_folder(game)
+    folder.mkdir(parents=True)
+    (folder / "mod1.zip").write_bytes(b"zipped")
+    win.show_game(41)
+    pump(qapp)
+    return win.current_page(), folder
+
+
+def test_the_mods_open_in_a_small_card_over_the_game_page_and_back_closes_it(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+
+    game_page.open_mods()
+    pump(qapp)
+    mods_page = win.current_page()
+    assert isinstance(mods_page, gui.ModsPage) and win.modal.showing and win.modal.page is mods_page
+    assert win.stack.currentWidget() is game_page  # the game's page stays in view behind it
+    assert win.modal.card.width() < win.width() and win.modal.card.height() < win.height()
+    assert win.title.text() == "Eta"  # the window's header is still the game's
+
+    QApplication.sendEvent(win, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    pump(qapp)
+    assert win.current_page() is game_page and not win.modal.showing and win.modal.page is None
+
+
+def test_the_close_button_and_a_click_outside_the_card_both_close_it(win, qapp, monkeypatch, tmp_path):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    game_page.open_mods()
+    pump(qapp)
+    win.modal.close_button.click()
+    pump(qapp)
+    assert win.current_page() is game_page and not win.modal.showing
+
+    game_page.open_mods()
+    pump(qapp)
+    QTest.mouseClick(win.modal, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))  # on the backdrop
+    pump(qapp)
+    assert win.current_page() is game_page and not win.modal.showing
+
+    game_page.open_mods()
+    pump(qapp)
+    QTest.mouseClick(win.modal, Qt.LeftButton, Qt.NoModifier, win.modal.card.geometry().center() + QPoint(0, 60))  # on the card
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.ModsPage) and win.modal.showing
+
+
+def test_a_question_asked_from_the_card_comes_back_to_the_card(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    game_page.open_mods()
+    mods_page = win.current_page()
+    win.ask("Sure?", lambda: None)
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.ConfirmPage) and not win.modal.showing
+    win.current_page().no.click()
+    pump(qapp)
+    assert win.current_page() is mods_page and win.modal.showing and win.stack.currentWidget() is game_page
+
+
+def test_the_file_picker_is_a_small_card_too(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    picked = []
+    win.browse_folder(tmp_path, picked.append)
+    pump(qapp)
+    picker = win.current_page()
+    assert isinstance(picker, gui.BrowsePage) and win.modal.page is picker and win.stack.currentWidget() is game_page
+    assert win.modal.title.text() == "Choose a folder"
+    picker._activate(picker.list.item(0))  # "Use this folder"
+    assert picked == [str(tmp_path)] and win.current_page() is game_page and not win.modal.showing
+
+
+def test_a_mod_already_on_this_computer_shows_where_and_can_be_deleted(win, qapp, monkeypatch, tmp_path):
+    game_page, folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    game_page.open_mods()
+    page = win.current_page()
+    assert page.list.item(0).text() == f"mod1\nDownloaded to {folder / 'mod1.zip'}"
+    assert page.list.item(1).text().startswith("mod2.zip\narchive")
+
+    assert page.list.currentRow() == 0 and page.delete_button.isEnabled()
+    page.list.setCurrentRow(1)
+    assert not page.delete_button.isEnabled()  # nothing of it here
+    page.list.setCurrentRow(0)
+
+    page.delete_button.click()
+    pump(qapp)
+    ask = win.current_page()
+    assert isinstance(ask, gui.ConfirmPage) and "mod1.zip" in ask.text_label.text() and (folder / "mod1.zip").exists()
+    ask.yes.click()
+    pump(qapp)
+
+    assert not (folder / "mod1.zip").exists() and win.current_page() is page
+    assert page.list.item(0).text().startswith("mod1\nfolder") and not page.delete_button.isEnabled()
+
+
+def test_a_click_selects_a_mod_and_does_not_start_its_download(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(win.app, "download_mod", lambda game, mod: started.append(mod["name"]))
+    game_page.open_mods()
+    page = win.current_page()
+
+    page.list.itemClicked.emit(page.list.item(1))
+    assert started == []
+    page.list.itemActivated.emit(page.list.item(1))  # Enter
+    assert started == ["mod2.zip"]
+    page.list.setCurrentRow(0)
+    page.download_button.click()
+    assert started == ["mod2.zip", "mod1"]
+
+
+def test_a_mod_being_fetched_cannot_be_deleted_and_its_button_cancels(win, qapp, monkeypatch, tmp_path):
+    game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    game_page.open_mods()
+    page = win.current_page()
+    win.app.mod_jobs[(41, "mod1")] = ("Downloading", 30)
+    win.app.bridge.activity.emit()
+
+    assert page.download_button.text() == "Cancel fetching" and not page.delete_button.isEnabled()
+    win.app.mod_jobs.clear()
+    win.app.bridge.activity.emit()
+    assert page.download_button.text() == "Download" and page.delete_button.isEnabled()
+
+
+def test_sort_by_sits_right_under_the_libraries_not_at_the_bottom_of_the_sidebar(win, qapp):
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    pump(qapp)
+    libs, sorts = win.library.libs, win.library.sorts
+    assert libs.geometry().bottom() < sorts.geometry().top() < libs.geometry().bottom() + 80
+    assert sorts.geometry().bottom() < win.library.sidebar.height() - 40  # free space is left under it
+    heading = [lbl for lbl in win.library.sidebar.findChildren(QLabel) if lbl.text().lower() == "sort by"]
+    assert heading and heading[0].geometry().top() > libs.geometry().bottom()

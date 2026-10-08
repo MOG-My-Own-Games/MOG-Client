@@ -82,6 +82,7 @@ from mog_client.gui.overlay import MessageOverlay
 from mog_client.gui.playing import PlayingOverlay
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.loading import LoadingPanel
+from mog_client.gui.modal import ModalHost
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
 from mog_client.saves import devices, runner, sync
@@ -142,6 +143,9 @@ QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; bord
 #optionStatus { color: #6fb1ff; font-size: 15px; }
 #overlay { background: rgba(0, 0, 0, 175); }
 #overlayCard { background: #1e232b; border: 2px solid #4c8dff; border-radius: 12px; padding: 18px; }
+#modalHost { background: rgba(0, 0, 0, 150); }
+#modalCard { background: #1a1f27; border: 2px solid #4c8dff; border-radius: 12px; }
+#modalTitle { font-size: 20px; font-weight: bold; padding-bottom: 4px; }
 #overlayCard[level="error"] { border-color: #e2574c; }
 #overlayCard[level="warning"] { border-color: #e8c547; }
 #overlayTitle { font-size: 22px; font-weight: bold; }
@@ -557,7 +561,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def start_install(
-        self, game: dict, installer: dict | None = None, root: Path | None = None, extract_only: bool = False
+        self, game: dict, installer: dict | None = None, root: Path | None = None, extract_only: bool | None = None
     ) -> None:
         gid = game["id"]
         if gid in self.installs:
@@ -676,6 +680,7 @@ class Page(QWidget):
 
     title = ""
     searchable = False
+    modal = False  # drawn as a small card over the page beneath it (see ModalHost) instead of filling the window
 
     def focus_default(self) -> None:
         self.setFocus()
@@ -1319,6 +1324,20 @@ class InstallerPickerPage(Page):
             self.page.start_with(version, installer)
 
 
+class AboutPage(Page):
+    """What MOG is, who made it, under what licence and where to find it; opened from the user menu."""
+
+    title = "About"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.about = AboutTab()
+        QVBoxLayout(self).addWidget(self.about)
+
+    def focus_default(self) -> None:
+        self.about.focus_default()
+
+
 class SettingsPage(Page):
     """Settings in tabs (General, Server, Logs, About); the pad's L2 and R2 switch between them."""
 
@@ -1353,7 +1372,6 @@ class SettingsPage(Page):
             win.app.bridge.update_checked.connect(self.on_checked)
 
         self.logview = LogView()
-        self.about = AboutTab()
         self.tabs = FocusTabs()
         self.tabs.tabBar().setFocusPolicy(Qt.StrongFocus)  # reached with Up from the first row
         self.general = self._general_tab()
@@ -1361,7 +1379,6 @@ class SettingsPage(Page):
         self.tabs.addTab(self.general, "General")
         self.tabs.addTab(self.server, "Server")
         self.tabs.addTab(self.logview, "Logs")
-        self.tabs.addTab(self.about, "About")
         self.tabs.currentChanged.connect(self._on_tab)
         self.save_button = QPushButton("Save")
         self.save_button.setDefault(True)
@@ -1378,7 +1395,6 @@ class SettingsPage(Page):
             *self._focus_targets(self.server, enabled_only=False),
             *self.logview.findChildren(QPushButton),
             self.logview.view,
-            self.about.github,
         )
         for widget in listening:
             widget.installEventFilter(self)
@@ -1401,8 +1417,6 @@ class SettingsPage(Page):
         tab = self.tabs.currentWidget()
         if tab is self.logview:
             return self.logview.focus_targets()
-        if tab is self.about:
-            return [self.about.github]
         return [*self._focus_targets(tab), self.save_button]
 
     def navigate(self, down: bool) -> bool:
@@ -1588,7 +1602,7 @@ class SettingsPage(Page):
 
     def focus_default(self) -> None:
         tab = self.tabs.currentWidget()
-        if tab is self.logview or tab is self.about:
+        if tab is self.logview:
             tab.focus_default()
         elif tab is self.server:
             self.base.setFocus()
@@ -1726,9 +1740,10 @@ class InstallDirsPage(Page):
 
 
 class BrowsePage(Page):
-    """In-window file picker (no native dialog, so it stays gamepad friendly)."""
+    """In-window file picker (no native dialog, so it stays gamepad friendly), in a small card over its page."""
 
     title = "Browse for the executable"
+    modal = True
 
     def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False):
         super().__init__()
@@ -2624,9 +2639,10 @@ class LibraryPage(Page):
         side.setContentsMargins(0, 0, 0, 0)
         side.addWidget(self.installs_box)
         side.addWidget(self._heading("Libraries"))
-        side.addWidget(self.libs, 1)
+        side.addWidget(self.libs)
         side.addWidget(self._heading("Sort by"))
         side.addWidget(self.sorts)
+        side.addStretch(1)
         self._ranks: dict[int, tuple[bool, bool]] = {}
         self.syncing: set[int] = set()  # games whose saves are being backed up after they closed
         self._fill_sorts()
@@ -2660,6 +2676,8 @@ class LibraryPage(Page):
             self.library_filter = self.libraries[row - 1]["id"] if row else None
         self.libs.setCurrentRow(row)
         self.libs.blockSignals(False)
+        # As tall as its rows (up to a limit), so "Sort by" sits right under it and the space left is at the bottom.
+        self.libs.setFixedHeight(min(260, self.libs.sizeHintForRow(0) * self.libs.count() + 12))
 
     def set_libraries(self, libraries: list[dict]) -> None:
         self.libraries = libraries
@@ -2906,6 +2924,8 @@ class MainWindow(QMainWindow):
         self.notifications_action = self.user_menu.addAction("Notifications", self.open_notifications)
         self.user_menu.addAction("Refresh library", lambda: self.app.refresh())
         self.user_menu.addSeparator()
+        self.user_menu.addAction("About", self.open_about)
+        self.user_menu.addSeparator()
         self.user_menu.addAction("Sign out", self.sign_out)
         self.notifications: list[dict] = []
         self.seen_notification_id: int | None = None
@@ -2937,6 +2957,8 @@ class MainWindow(QMainWindow):
         self.playing = PlayingOverlay(central, suspended=lambda: self.overlay.isVisible())
         self.playing.changed.connect(self.refresh_legend)
         self.playing.stop_clicked.connect(self.stop_playing)
+        self.modal = ModalHost(central)  # a modal page's card, under any message
+        self.modal.dismissed.connect(self.back)
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
         self.overlay.changed.connect(self.refresh_legend)
         self.covers: dict[int, QPixmap] = {}
@@ -3007,7 +3029,14 @@ class MainWindow(QMainWindow):
         return self.history[-1]
 
     def _show(self, page: Page) -> None:
-        self.stack.setCurrentWidget(page)
+        # A modal page is drawn over the nearest page that is not one, which is the one the window's header is for.
+        base = next(p for p in reversed(self.history) if not p.modal) if page.modal else page
+        self.stack.setCurrentWidget(base)
+        if page.modal:
+            self.modal.show_page(page, page.title)
+        else:
+            self.modal.hide_page()
+        page, shown = base, page
         on_library = page is self.library
         self.back_btn.setVisible(not on_library)
         self.search.setVisible(page.searchable)
@@ -3016,10 +3045,10 @@ class MainWindow(QMainWindow):
         self.title.setVisible(not on_library)
         self.title.setText(page.title)
         self.refresh_legend()
-        page.focus_default()
+        shown.focus_default()
 
     def push(self, page: Page) -> None:
-        if self.stack.indexOf(page) < 0:
+        if not page.modal and self.stack.indexOf(page) < 0:
             self.stack.addWidget(page)
         self.history.append(page)
         self._show(page)
@@ -3028,7 +3057,10 @@ class MainWindow(QMainWindow):
         if len(self.history) <= 1:
             return
         page = self.history.pop()
-        if not isinstance(page, GamePage):
+        if page.modal:
+            self.modal.release(page)
+            page.deleteLater()
+        elif not isinstance(page, GamePage):
             self.stack.removeWidget(page)
             page.deleteLater()
         self._show(self.history[-1])
@@ -3053,6 +3085,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
+        self.modal.fit_to_parent()
         self.overlay.fit_to_parent()
         self.playing.fit_to_parent()
         self.refresh_legend()  # its size follows the window
@@ -3087,7 +3120,7 @@ class MainWindow(QMainWindow):
             self.message(f"{rec.name} was being installed in {rec.install_dir}, which is not available now. Connect it and try again.")
             return
 
-        def go(root: Path | None = None, extract: bool = False) -> None:
+        def go(root: Path | None = None, extract: bool | None = None) -> None:
             self.app.start_install(game, installer, root, extract)
             if then:
                 then()
@@ -3136,11 +3169,11 @@ class MainWindow(QMainWindow):
             name = None if live else client.portable_archive(game["id"], installer)
             self.app.bridge.call.emit(lambda: self._extraction_answer(name, proceed))
 
-        self.app.run_bg(work, on_error=lambda _m: self.app.bridge.call.emit(lambda: proceed(False)))
+        self.app.run_bg(work, on_error=lambda _m: self.app.bridge.call.emit(lambda: proceed(None)))
 
     def _extraction_answer(self, name: str | None, proceed) -> None:
         if name is None:
-            proceed(False)
+            proceed(None)  # nothing was asked: the server decides, and extracts an archive with no installer in it
             return
         self.ask(
             f"No installer was found in {name}: it looks like a game that needs none. Extract its contents and use "
@@ -3425,6 +3458,9 @@ class MainWindow(QMainWindow):
 
     def open_settings(self) -> None:
         self.push(SettingsPage(self))
+
+    def open_about(self) -> None:
+        self.push(AboutPage())
 
     def begin_play(self, rec: InstalledGame, proc, **timing) -> None:
         """A game was started from here: show that it is running, follow it to its end (a launcher that
