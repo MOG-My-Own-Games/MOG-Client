@@ -20,6 +20,7 @@ def watch(
     proc: subprocess.Popen | None,
     stopped: Callable[[], bool],
     on_prefix: Callable[[Path], None] | None = None,
+    native: bool = False,
     **timing,
 ) -> bool:
     """Block until the game has run and ended; False when it never started (the launcher failed, or
@@ -37,6 +38,7 @@ def watch(
         install_dir,
         on_prefix=on_prefix,
         abort_before_start=lambda: stopped() or launcher_failed(),
+        native=native,
         **timing,
     )
 
@@ -48,6 +50,7 @@ def stop_game(
     grace: float = STOP_GRACE,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    native: bool = False,
 ) -> list[int]:
     """Close the game: ask its processes to end, and kill what is still there after `grace` seconds.
     Returns the pids it signalled."""
@@ -56,7 +59,7 @@ def stop_game(
             proc.terminate()
         return []
     me = (os.getpid(),)
-    signalled = watcher.running_pids(install_dir, proc_root, me)
+    signalled = watcher.running_pids(install_dir, proc_root, me, native)
 
     def send(sig: int, pids: list[int]) -> None:
         for pid in pids:
@@ -72,9 +75,9 @@ def stop_game(
         except (ProcessLookupError, PermissionError):
             proc.terminate()
     deadline = clock() + grace
-    while clock() < deadline and watcher.running_pids(install_dir, proc_root, me):
+    while clock() < deadline and watcher.running_pids(install_dir, proc_root, me, native):
         sleep(0.2)
-    send(signal.SIGKILL, watcher.running_pids(install_dir, proc_root, me))
+    send(signal.SIGKILL, watcher.running_pids(install_dir, proc_root, me, native))
     if proc is not None and proc.poll() is None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)

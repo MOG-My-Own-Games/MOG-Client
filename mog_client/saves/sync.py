@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
+from mog_client.saves import native
 from mog_client.saves import prefix as prefixes
 from mog_client.saves.archive import build_archive, extract_archive, read_keys
 from mog_client.saves.devices import DeviceRecord
@@ -25,10 +26,12 @@ from mog_client.saves.locations import (
     USER_SUBDIRS,
     Candidate,
     install_candidates,
+    is_native_key,
+    native_key,
     profile_candidates,
     target_for_key,
 )
-from mog_client.saves.scan import attribute, sha256_of
+from mog_client.saves.scan import ScanResult, attribute, sha256_of
 from mog_client.saves.state import (
     FileInfo,
     SaveState,
@@ -55,14 +58,13 @@ class Context:
 
 
 def enabled(rec: InstalledGame, settings: Settings) -> bool:
-    if rec.native:
-        return False  # saves are found through the Wine prefix, which a native game does not have
     return settings.sync_saves if rec.save_sync is None else rec.save_sync
 
 
 @dataclass
 class BackupResult:
     # "uploaded" | "unchanged" | "nothing" | "needs-prefix" | "needs-confirmation" | "duplicate"
+    # | "needs-folder" (a native game, asked for by hand, with no folder known)
     status: str
     version: dict | None = None
     changed: list[str] = field(default_factory=list)
@@ -73,6 +75,7 @@ class BackupResult:
 @dataclass
 class RestoreResult:
     # "restored" | "needs-prefix" | "conflict" (only_if_free, and something is already there)
+    # | "incompatible" (the archive holds files for the other kind of game: native or Wine)
     status: str
     restored: list[str] = field(default_factory=list)
     backup: Path | None = None
@@ -128,7 +131,21 @@ def confirm_folders(game_id: int, folders: list[str]) -> None:
     """Record the folders the user said belong to this game (the prefix is shared with other programs)."""
     state = load_state(game_id)
     state.includes = sorted(set(folders))
+    state.pending_folders = []
     save_state(game_id, state)
+
+
+def add_folder(game_id: int, path: Path) -> str | None:
+    """Add a folder the user picked to a native game's saves. Returns its key, or None when it is outside
+    the home folder or is a whole root (the home folder, `~/.config`...), which holds far more than a game."""
+    key = native_key(path)
+    if key is None or "/" not in key:
+        return None
+    state = load_state(game_id)
+    state.includes = sorted({*(state.includes or []), key})
+    state.pending_folders = []
+    save_state(game_id, state)
+    return key
 
 
 def backup(
@@ -154,8 +171,9 @@ def _record_check(game_id: int, status: str, trigger: str) -> None:
 
 
 def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, upload: bool) -> BackupResult:
-    rec = ctx.rec
-    state = load_state(rec.game_id)
+    state = load_state(ctx.rec.game_id)
+    if ctx.rec.native:
+        return _backup_native(ctx, state, trigger, since_ns, force, upload)
     found = find_prefix(ctx, state)
     drive_c = _drive_c(found)
     candidates = _candidates(ctx, drive_c)
@@ -175,7 +193,67 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
         folders = sorted({_folder_of(k) for k in result.unattributed if not k.startswith(f"{GAME_KEY}/")})
         if folders:
             return BackupResult("needs-confirmation", folders=folders)
+    return _send(ctx, state, found, candidates, result, trigger, force, upload)
 
+
+def _backup_native(
+    ctx: Context, state: SaveState, trigger: str, since_ns: int | None, force: bool, upload: bool
+) -> BackupResult:
+    """A native game has no prefix. Its saves are the files in the folders the user confirmed and any
+    it wrote into its own folder; until then the folders it wrote to during the last session are offered."""
+    rec = ctx.rec
+    install_dir = Path(rec.install_dir)
+    known = _manifest_folders(ctx, state, upload)
+    # What the manifest names counts as confirmed, along with what the user confirmed.
+    confirmed = sorted({*(state.includes or []), *known})
+    candidates = list(install_candidates(install_dir, load_install_manifest(rec.game_id)))
+    candidates += list(native.included_files(confirmed, install_dir))
+
+    def accept(key: str) -> bool:
+        return key.startswith(f"{GAME_KEY}/") or any(key == p or key.startswith(p + "/") for p in confirmed)
+
+    result = attribute(candidates, state.tracked, since_ns, accept)
+    if state.includes is None and not result.tracked:
+        if since_ns is not None and upload:
+            # Only a session window tells the game's files from every other program's, so look now.
+            written = native.session_files(since_ns, [install_dir])
+            state.pending_folders = [f.key for f in native.suggest_folders((c.key for c in written), native.game_names(rec))]
+            save_state(rec.game_id, state)
+        if state.pending_folders:
+            return BackupResult("needs-confirmation", folders=list(state.pending_folders))
+    if not result.tracked and not confirmed and trigger == MANUAL:
+        return BackupResult("needs-folder")
+    return _send(ctx, state, None, candidates, result, trigger, force, upload)
+
+
+def _manifest_folders(ctx: Context, state: SaveState, remember: bool) -> list[str]:
+    """The folders the server's manifest names for a native game, asked once and then kept in the state."""
+    if state.manifest_folders is None:
+        try:
+            paths = ctx.client.save_paths(ctx.rec.game_id)
+        except (RuntimeError, OSError, AttributeError):
+            paths = None  # no answer: ask again next time
+        if paths is None:
+            return []
+        folders = native.manifest_folders(paths, Path(ctx.rec.install_dir))
+        if remember:
+            state.manifest_folders = folders
+            save_state(ctx.rec.game_id, state)
+        return folders
+    return state.manifest_folders
+
+
+def _send(
+    ctx: Context,
+    state: SaveState,
+    found: prefixes.Found | None,
+    candidates: list[Candidate],
+    result: ScanResult,
+    trigger: str,
+    force: bool,
+    upload: bool,
+) -> BackupResult:
+    rec = ctx.rec
     if not upload and result.changed:
         return BackupResult("changed", changed=result.changed)
 
@@ -297,8 +375,18 @@ def _apply(
 ) -> RestoreResult:
     rec = ctx.rec
     keys = read_keys(archive)
-    drive_c = _drive_c(find_prefix(ctx, state))
-    if drive_c is None and any(not k.startswith(f"{GAME_KEY}/") for k in keys):
+    if rec.native:
+        foreign = any(not (k.startswith(f"{GAME_KEY}/") or is_native_key(k)) for k in keys)
+    else:
+        foreign = any(is_native_key(k) for k in keys)
+    if foreign:
+        if version_id is not None:  # it will never fit this machine: do not offer it again
+            state.seen_version_id = max(state.seen_version_id or 0, version_id)
+            save_state(rec.game_id, state)
+        archive.unlink(missing_ok=True)
+        return RestoreResult("incompatible")
+    drive_c = None if rec.native else _drive_c(find_prefix(ctx, state))
+    if drive_c is None and not rec.native and any(not k.startswith(f"{GAME_KEY}/") for k in keys):
         state.pending_restore = str(archive)
         if version_id is not None:  # downloaded and kept: it is not "newer" any more, it only waits
             state.seen_version_id = max(state.seen_version_id or 0, version_id)
@@ -316,6 +404,9 @@ def _apply(
         except OSError:
             continue
         state.tracked[key] = FileInfo(stat.st_size, stat.st_mtime_ns, sha256_of(path))
+    if rec.native and (folders := {native.restored_folder(k) for k, _ in written if not k.startswith(f"{GAME_KEY}/")}):
+        state.includes = sorted({*(state.includes or []), *folders})  # the other machine's confirmation stands
+        state.pending_folders = []
     if version_id is not None:
         state.seen_version_id = max(state.seen_version_id or 0, version_id)
     state.pending_restore = None

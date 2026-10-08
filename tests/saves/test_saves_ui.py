@@ -379,3 +379,72 @@ def test_a_conflict_found_at_startup_is_only_logged_the_game_asks_when_it_is_ope
     ui.ui.check_all()
     assert ui.win.messages == []
     assert any("changed here and elsewhere" in n and "steamdeck" in n for n in ui.win.notes)
+
+
+@pytest.fixture
+def native_ui(ui, monkeypatch):
+    import os
+
+    for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(variable, raising=False)
+    script = ui.install / "start.sh"
+    script.write_bytes(b"#!/bin/sh")
+    ui.rec.executable = str(script)
+    save_library({7: ui.rec})
+    home = ui.tmp / "home"
+
+    def wrote(name: str, data: bytes = b"s") -> None:
+        path = home / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        os.utime(path, None)
+
+    ui.home, ui.wrote = home, wrote
+    return ui
+
+
+def test_a_native_game_asks_for_the_folders_it_wrote_to_with_the_likely_ones_ticked(native_ui):
+    ui = native_ui
+    ui.wrote(".local/share/SomeGame/slot.sav")
+    ui.wrote(".config/browser/state.json")
+    result = sync.backup(sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu")), sync.QUIT, since_ns=0)
+    assert result.status == "needs-confirmation"
+
+    ui.ui.backup_now(ui.rec)
+    title, items, done = ui.win.checklists[0]
+
+    assert title == "Which folders are this game's saves?"
+    assert items == [
+        ("~/.local/share/SomeGame", "xdg-data/SomeGame", True),
+        ("~/.config/browser", "xdg-config/browser", False),
+        ("Another folder...", saves_ui.OTHER_FOLDER),
+    ]
+    done(["xdg-data/SomeGame"])
+    assert ui.server.uploads == [("manual", ["xdg-data/SomeGame/slot.sav"])]
+
+
+def test_ticking_another_folder_opens_the_folder_browser_and_remembers_the_pick(native_ui):
+    ui = native_ui
+    ui.wrote(".config/browser/state.json")
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"))
+    sync.backup(ctx, sync.QUIT, since_ns=0)
+    ui.ui.backup_now(ui.rec)
+    done = ui.win.checklists[0][2]
+    ui.wrote(".somegame/profile.dat")
+
+    done([saves_ui.OTHER_FOLDER])
+    assert ui.win.browsed == [ui.home]
+    ui.win.on_pick(str(ui.home / ".somegame"))
+
+    assert load_state(7).includes == ["home/.somegame"]
+    assert ui.server.uploads == [("manual", ["home/.somegame/profile.dat"])]
+
+
+def test_a_native_game_that_wrote_nothing_is_asked_for_its_folder_by_hand(native_ui):
+    ui = native_ui
+    ui.ui.backup_now(ui.rec)
+    assert ui.win.checklists == [] and ui.win.browsed == [ui.home]
+    assert ui.win.messages and "Pick the folder" in ui.win.messages[0][1]
+
+    ui.win.on_pick(str(ui.tmp / "elsewhere"))
+    assert ui.win.messages[-1][0] == "error" and load_state(7).includes is None

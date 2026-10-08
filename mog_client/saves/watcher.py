@@ -3,7 +3,8 @@
 The game may have been started by anything, so nothing is asked of the launcher: a process whose
 command line has a .exe inside the game's install folder is the game (or what starts it). The
 prefix it runs in is read from that process's environment, which is how a game started by hand,
-in a setup MOG never saw, still gets its saves found.
+in a setup MOG never saw, still gets its saves found. A native game has no .exe: it is a process
+whose command line names the install folder or whose program file sits in it.
 """
 
 from __future__ import annotations
@@ -26,8 +27,19 @@ def _read(path: Path) -> str:
         return ""
 
 
-def running_pids(install_dir: Path, proc_root: Path = PROC, exclude: tuple[int, ...] = ()) -> list[int]:
-    """Processes running a .exe from the install folder (Wine writes its paths as `Z:\\home\\...`)."""
+def _runs_from(entry: Path, needle: str) -> bool:
+    """Whether the process's program file is inside the folder (a game started as `./game`)."""
+    try:
+        return (os.readlink(entry / "exe") + "/").startswith(needle)
+    except OSError:
+        return False
+
+
+def running_pids(
+    install_dir: Path, proc_root: Path = PROC, exclude: tuple[int, ...] = (), native: bool = False
+) -> list[int]:
+    """Processes running a .exe from the install folder (Wine writes its paths as `Z:\\home\\...`),
+    or, for a native game, anything started from it."""
     needle = str(install_dir).rstrip("/") + "/"
     found = []
     try:
@@ -38,7 +50,10 @@ def running_pids(install_dir: Path, proc_root: Path = PROC, exclude: tuple[int, 
         if not entry.name.isdigit() or int(entry.name) in exclude:
             continue
         cmdline = _read(entry / "cmdline").replace("\\", "/")
-        if needle in cmdline and ".exe" in cmdline.casefold():
+        if native:
+            if needle in cmdline or _runs_from(entry, needle):
+                found.append(int(entry.name))
+        elif needle in cmdline and ".exe" in cmdline.casefold():
             found.append(int(entry.name))
     return found
 
@@ -73,6 +88,7 @@ def wait_for_game(
     clock: Callable[[], float] = time.monotonic,
     stop: Callable[[], bool] = lambda: False,
     abort_before_start: Callable[[], bool] = lambda: False,
+    native: bool = False,
 ) -> bool:
     """Block until the game has started and then ended. Returns False when it never started.
 
@@ -85,7 +101,7 @@ def wait_for_game(
     gone_since: float | None = None
     reported = False
     while not stop():
-        pids = running_pids(install_dir, proc_root, me)
+        pids = running_pids(install_dir, proc_root, me, native)
         now = clock()
         if pids:
             started, gone_since = True, None

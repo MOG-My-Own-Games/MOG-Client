@@ -12,6 +12,8 @@ class FakeServer:
         self.blobs: dict[int, bytes] = {}
         self.devices = {1: {"id": 1, "name": "karasu"}, 2: {"id": 2, "name": "karasu-2"}}
         self.uploads = []
+        self.manifest: list[str] | None = []  # what save_paths answers; None is a server that cannot say
+        self.manifest_asked = 0
 
     def upload_save(self, game_id, device_id, archive, trigger):
         data = Path(archive).read_bytes()
@@ -26,6 +28,10 @@ class FakeServer:
         self.blobs[version["id"]] = data
         self.uploads.append((trigger, keys))
         return {"version": version, "created": True}
+
+    def save_paths(self, game_id):
+        self.manifest_asked += 1
+        return self.manifest
 
     def list_saves(self, game_id):
         by_device = {}

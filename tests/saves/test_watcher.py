@@ -113,3 +113,39 @@ def test_it_can_be_stopped(tmp_path):
     assert watcher.wait_for_game(
         INSTALL, proc_root=tmp_path, sleep=clock.sleep, clock=clock.time, stop=lambda: next(ticks)
     ) is False
+
+
+def test_a_native_game_is_a_process_started_from_the_install_folder(tmp_path):
+    proc = tmp_path / "proc"
+    _proc(proc, 200, "/bin/sh /home/x/mog-installed/Some Game/start.sh")  # named by its command line
+    _proc(proc, 201, "./game/Some.x86_64")  # started as `./game`: only its program file shows where it is
+    (proc / "201/exe").symlink_to("/home/x/mog-installed/Some Game/game/Some.x86_64")
+    _proc(proc, 202, "vim /home/x/mog-installed/Some Game/notes.txt")  # an editor on a file of the game
+    _proc(proc, 203, "/usr/bin/bash")
+    (proc / "203/exe").symlink_to("/usr/bin/bash")
+    _proc(proc, 204, "./other")
+    (proc / "204/exe").symlink_to("/home/x/mog-installed/Some Game 2/other")  # a folder that only starts alike
+
+    assert sorted(watcher.running_pids(INSTALL, proc, native=True)) == [200, 201, 202]
+    assert watcher.running_pids(INSTALL, proc) == []  # no .exe, so not a Windows game
+    assert sorted(watcher.running_pids(INSTALL, proc, exclude=(200,), native=True)) == [201, 202]
+
+
+def test_waiting_for_a_native_game_sees_it_start_and_end(tmp_path):
+    proc = tmp_path / "proc"
+    _proc(proc, 300, "./game")
+    (proc / "300/exe").symlink_to("/home/x/mog-installed/Some Game/game")
+    clock = [0.0]
+    steps = []
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        steps.append(clock[0])
+        if len(steps) == 3:
+            _gone(proc, 300)
+
+    done = watcher.wait_for_game(
+        INSTALL, proc_root=proc, appear_timeout=30, linger=4, poll=2, sleep=sleep, clock=lambda: clock[0], native=True
+    )
+
+    assert done is True and clock[0] >= 8

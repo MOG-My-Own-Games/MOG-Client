@@ -66,7 +66,8 @@ def watch_session(
     if ctx is None:
         return None
 
-    if not wait_for_game(Path(rec.install_dir), on_prefix=runtime_prefix_recorder(ctx), stop=stop):
+    on_prefix = None if rec.native else runtime_prefix_recorder(ctx)
+    if not wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native):
         return None
     result = sync.backup(ctx, sync.QUIT, since_ns=since_ns)
     log(f"save sync: {result.status}")

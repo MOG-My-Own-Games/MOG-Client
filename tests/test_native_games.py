@@ -128,10 +128,10 @@ def test_the_launch_script_of_a_native_game_just_runs_it(tmp_path, monkeypatch):
     assert not launcher.pfx_dir(game).exists()
 
 
-def test_save_sync_does_not_try_a_native_game(tmp_path):
+def test_save_sync_follows_the_settings_for_a_native_game_too(tmp_path):
     settings = Settings(sync_saves=True)
     assert sync.enabled(InstalledGame(1, "G", "/g", executable="/g/Game.exe"), settings) is True
-    assert sync.enabled(native_game(tmp_path), settings) is False
-    forced = native_game(tmp_path)
-    forced.save_sync = True
-    assert sync.enabled(forced, settings) is False  # saves are found through a prefix it does not have
+    assert sync.enabled(native_game(tmp_path), settings) is True
+    off = native_game(tmp_path)
+    off.save_sync = False
+    assert sync.enabled(off, settings) is False

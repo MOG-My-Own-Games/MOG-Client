@@ -25,6 +25,11 @@ class SaveState:
     # For a prefix shared with other programs: the folders the user confirmed are this game's
     # (archive-key prefixes). None until asked.
     includes: list[str] | None = None
+    # A native game: the folders it wrote to during its last session, waiting for the user to confirm.
+    pending_folders: list[str] = field(default_factory=list)
+    # A native game: the folders the server's manifest names for it, as keys. None until the server was asked
+    # (an older server, or no connection, leaves it None so the next backup asks again).
+    manifest_folders: list[str] | None = None
     last_version_id: int | None = None
     last_synced_at: str | None = None
     # The last time the saves were looked at for a backup (also when nothing had changed), and what came of it,
