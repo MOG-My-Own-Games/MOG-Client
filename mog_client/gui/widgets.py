@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QTabWidget
+from PySide6.QtCore import QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QTabBar, QTabWidget
 
 ACCENT_STOPS = ((0.0, "#9e3bf7"), (1.0, "#2859f9"))
 ACCENT_HOVER_STOPS = ((0.0, "#aa53f8"), (1.0, "#426dfa"))
@@ -139,7 +139,7 @@ class OptionDelegate(QStyledItemDelegate):
 
 
 def clear_icon(size: int = 18) -> QIcon:
-    """A round grey button with a white cross, for the corner of a text field that empties it."""
+    """A round button in the accent gradient with a white cross, for the corner of a text field that empties it."""
     ratio = 2
     d = size * ratio
     pix = QPixmap(d, d)
@@ -147,7 +147,7 @@ def clear_icon(size: int = 18) -> QIcon:
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor("#59616e"))
+    painter.setBrush(accent_gradient(0, 0, d, 0))
     painter.drawEllipse(QRectF(0, 0, d, d))
     painter.setPen(QPen(QColor("white"), d * 0.1, Qt.SolidLine, Qt.RoundCap))
     m = d * 0.32
@@ -274,3 +274,60 @@ class BadgeButton(QPushButton):
         font.setPixelSize(14 if self._count < 100 else 11)
         painter.setFont(font)
         painter.drawText(dot, Qt.AlignCenter, "99+" if self._count > 99 else str(self._count))
+
+
+class ParagraphLabel(QLabel):
+    """A paragraph that fits the height the layout gives it: `max_lines` when there is room, down to `min_lines`
+    when there is not, shortened with "..." as needed. A plain word-wrapped label in a nested layout reports its
+    height for the wrong width, and the rows beside it get squeezed instead."""
+
+    def __init__(self, text: str = "", max_lines: int = 6, min_lines: int = 2):
+        super().__init__()
+        self.full_text, self.max_lines, self.min_lines = text, max_lines, min_lines
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._shown = -1
+        self._fit(self.max_lines)
+
+    def set_paragraph(self, text: str) -> None:
+        self.full_text = text
+        self._fit(max(self.min_lines, min(self.max_lines, self.height() // self._line())))
+
+    def hasHeightForWidth(self) -> bool:
+        return False
+
+    def _line(self) -> int:
+        return QFontMetrics(self.font()).lineSpacing()
+
+    def _wanted(self) -> int:
+        """Lines the whole text takes at the current width, at most `max_lines`."""
+        return min(self._count(self.full_text), self.max_lines) if self.full_text else 0
+
+    def _count(self, text: str) -> int:
+        rect = QFontMetrics(self.font()).boundingRect(QRect(0, 0, max(self.width(), 200), 100000), Qt.TextWordWrap, text)
+        return rect.height() // self._line()
+
+    def sizeHint(self) -> QSize:
+        return QSize(200, self._wanted() * self._line() + 2)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, min(self.min_lines, self._wanted()) * self._line() + 2)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._fit(max(self.min_lines, min(self.max_lines, self.height() // self._line())))
+
+    def _fit(self, lines: int) -> None:
+        text = self.full_text
+        if self._count(text) > lines:
+            words = text.split()
+            while words and self._count(" ".join(words).rstrip(" ,.;:") + "...") > lines:
+                words.pop()
+            text = " ".join(words).rstrip(" ,.;:") + "..."
+        if text != self.text():
+            self.setText(text)
+        wanted = self._wanted()
+        if wanted != self._shown:
+            self._shown = wanted
+            self.updateGeometry()
