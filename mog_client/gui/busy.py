@@ -35,6 +35,7 @@ class BusyOverlay(QWidget):
         self.name.setWordWrap(True)
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
+        self.bar.setMinimumWidth(360)
         self.detail = QLabel()
         self.detail.setStyleSheet("color: #9aa3b0; font-size: 15px;")
         self.cancel_button = QPushButton("Cancel")
