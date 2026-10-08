@@ -22,6 +22,7 @@ from mog_client.launcher import (
     remove_entry_files,
     shortcut_lnk_path,
     write_directory_file,
+    write_launch_script,
 )
 from mog_client.saves import installed as ledger
 from mog_client.saves.state import forget_game, save_install_manifest
@@ -271,6 +272,22 @@ def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> b
             )
     _update(rec, launcher=engine, steam_pending=pending)
     return steam_changed
+
+
+def refresh_launch_files(settings: Settings) -> None:
+    """Write every installed game's launch script (a batch file on Windows) and entries again, so they
+    hold what this version knows. Run once after an update. On Linux the entries already run the script, so
+    only it is rewritten; on Windows they pointed at the exe, so they and the Steam shortcuts are edited in place."""
+    for rec in load_library().values():
+        if not (rec.state == "installed" and rec.executable and present(rec)):
+            continue
+        try:
+            if sys.platform == "win32":
+                set_launcher(rec, rec.launcher, settings.launcher)
+            else:
+                write_launch_script(rec, settings.launcher)
+        except (RuntimeError, OSError) as e:
+            logstore.warning(f"Could not rewrite the launch files of {rec.name}: {e}")
 
 
 def settle_steam_shortcuts(client: MogClient, preference: str = "auto") -> list[str]:

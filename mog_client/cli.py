@@ -83,6 +83,7 @@ def main() -> int:
         ("sync", "Back up a game's saves now"),
     ):
         parser.add_argument(f"--save-{action}", type=int, metavar="GAME_ID", default=None, help=text)
+    parser.add_argument("--window", action="store_true", help="With --save-sync: show a small window while the saves are backed up")
     parser.add_argument("url", nargs="?", help="A mog:// link from the web UI to open in the graphical client")
     parser.add_argument("--gui", action="store_true", help="Open the graphical client (default when no other action is given)")
     parser.add_argument("--out", type=Path, default=None, help="Output directory (default: ./<game name>)")
@@ -108,7 +109,7 @@ def main() -> int:
             if not (args.base and args.user and args.password):
                 warn("save sync needs the server settings saved from the GUI")
                 return 1
-            return run_command(action, game_id, saved, MogClient(Client(args.base, args.user, args.password)))
+            return run_command(action, game_id, saved, MogClient(Client(args.base, args.user, args.password)), window=args.window)
     if args.url:
         from mog_client.protocol import SCHEME
 

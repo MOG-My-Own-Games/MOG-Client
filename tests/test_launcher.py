@@ -250,6 +250,13 @@ def test_steam_shortcut_runs_the_launch_script_which_execs_the_launcher(monkeypa
     assert body.index("--save-pre") < body.index("exec ")
 
 
+def _script_env(tmp_path: Path) -> dict:
+    """The script's world: its own config folder and a PATH with the basic tools and nothing of the user's."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+
+
 def _run_script(monkeypatch, tmp_path, client: Path):
     import subprocess
 
@@ -258,22 +265,31 @@ def _run_script(monkeypatch, tmp_path, client: Path):
     monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "wine")
     game = _game(tmp_path)
     script = launcher.write_launch_script(game)
-    return game, subprocess.run(["/bin/sh", script], capture_output=True, text=True, timeout=10)
+    return game, subprocess.run(["/bin/sh", script], capture_output=True, text=True, timeout=10, env=_script_env(tmp_path))
+
+
+def _fake_client(path: Path, calls: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    path.chmod(0o755)
+    return path
+
+
+def _wait_for_calls(calls: Path, count: int) -> list[str]:
+    deadline = time.time() + 5
+    while time.time() < deadline and len(calls.read_text().splitlines() if calls.exists() else []) < count:
+        time.sleep(0.05)
+    return sorted(calls.read_text().splitlines()) if calls.exists() else []
 
 
 def test_the_launch_script_runs_the_save_hooks_then_execs_the_game(monkeypatch, tmp_path):
     calls = tmp_path / "calls.log"
-    client = tmp_path / "mog"
-    client.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
-    client.chmod(0o755)
+    client = _fake_client(tmp_path / "mog", calls)
 
     game, done = _run_script(monkeypatch, tmp_path, client)
 
     assert done.returncode == 0 and done.stdout.strip() == "game started"
-    deadline = time.time() + 5
-    while time.time() < deadline and len(calls.read_text().splitlines() if calls.exists() else []) < 2:
-        time.sleep(0.05)
-    assert sorted(calls.read_text().splitlines()) == ["--save-pre 7", "--save-watch 7"]
+    assert _wait_for_calls(calls, 2) == ["--save-pre 7", "--save-watch 7"]
     body = launcher.launch_script_path(game).read_text().splitlines()
     assert body[-1].startswith("exec ") and body[-3].endswith("&") and "--save-pre" in body[-4]
 
@@ -283,10 +299,74 @@ def test_the_launch_script_still_starts_the_game_when_the_client_is_gone(monkeyp
     assert done.returncode == 0 and done.stdout.strip() == "game started" and done.stderr == ""
 
 
-def test_host_environ_drops_bundle_directories_handed_on_as_the_original_path(monkeypatch):
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/.mount_MOG-Cabc/usr/bin/_internal:/usr/local/lib")
-    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/tmp/.mount_MOG-Cold/usr/bin/_internal:/tmp/.mount_MOG-Cold/usr/lib:/opt/x")
-    monkeypatch.setattr(sys, "_MEIPASS", "/somewhere/_internal", raising=False)
-    assert launcher.host_environ()["LD_LIBRARY_PATH"] == "/opt/x"
-    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/somewhere/_internal:/somewhere/_internal/lib")
-    assert "LD_LIBRARY_PATH" not in launcher.host_environ()
+def test_the_launch_script_finds_a_client_that_was_moved_and_renamed(monkeypatch, tmp_path):
+    calls = tmp_path / "calls.log"
+    moved = _fake_client(tmp_path / "elsewhere" / "My Games Thing.AppImage", calls)
+    pointer = tmp_path / "cfg" / "mog-client" / "client-path"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text(f"{moved}\n")
+
+    _, done = _run_script(monkeypatch, tmp_path, tmp_path / "where-it-used-to-be")
+
+    assert done.returncode == 0 and done.stdout.strip() == "game started"
+    assert _wait_for_calls(calls, 2) == ["--save-pre 7", "--save-watch 7"]
+
+
+def test_the_launch_script_falls_back_to_a_client_on_the_path(monkeypatch, tmp_path):
+    calls = tmp_path / "calls.log"
+    _fake_client(tmp_path / "bin" / "mog", calls)
+
+    _, done = _run_script(monkeypatch, tmp_path, tmp_path / "gone")
+
+    assert done.returncode == 0
+    assert _wait_for_calls(calls, 2) == ["--save-pre 7", "--save-watch 7"]
+
+
+def test_the_client_leaves_a_pointer_to_itself_for_the_scripts(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "config_dir", lambda: tmp_path / "cfg" / "mog-client")
+    monkeypatch.setattr(launcher, "client_command", lambda: "/opt/MOG Client.AppImage")
+
+    launcher.remember_client()
+    assert launcher.client_pointer_path().read_text() == "/opt/MOG Client.AppImage\n"
+
+    monkeypatch.setattr(launcher, "client_command", lambda: "/home/me/mog")
+    launcher.remember_client()
+    assert launcher.client_pointer_path().read_text() == "/home/me/mog\n"
+
+
+def test_a_pointer_that_cannot_be_written_is_not_an_error(monkeypatch, tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    monkeypatch.setattr(launcher, "config_dir", lambda: blocker / "mog-client")
+    launcher.remember_client()
+
+
+def test_the_windows_launch_file_restores_runs_the_game_and_waits_then_syncs(tmp_path):
+    game = _game(tmp_path)
+    game.name = "G 100%"
+
+    text = launcher.launch_cmd_text(game, r"C:\Apps\MOG 100%\MOG-Client.exe")
+
+    assert text.endswith("\r\n") and "\n" not in text.replace("\r\n", "")
+    lines = text.splitlines()
+    pre = next(i for i, ln in enumerate(lines) if "--save-pre 7" in ln)
+    run = next(i for i, ln in enumerate(lines) if ln.startswith("start /wait"))
+    end = next(i for i, ln in enumerate(lines) if "--save-sync 7 --window" in ln)
+    assert pre < run < end
+    assert r'set /p MOG=<"%APPDATA%\mog-client\client-path"' in text
+    assert 'set "MOG=C:\\Apps\\MOG 100%%\\MOG-Client.exe"' in text  # a percent sign must not start a variable
+    assert f'start /wait "" "{game.executable}"' in text and f'cd /d "{Path(game.executable).parent}"' in text
+    assert all("%MOG%" not in ln or ln.startswith(("if ", "set ")) for ln in lines)  # nothing runs without the check
+
+
+def test_on_windows_the_entries_run_the_launch_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "client_command", lambda: r"C:\MOG\mog.exe")
+    game = _game(tmp_path)
+
+    command = launcher.entry_command(game)
+
+    assert command == [str(launcher.launch_cmd_path(game))]
+    assert launcher.launch_cmd_path(game).read_bytes().startswith(b"@echo off\r\n")
+    launcher.remove_entry_files(game)
+    assert not launcher.launch_cmd_path(game).exists()

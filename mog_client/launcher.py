@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from mog_client.api import safe_dirname
-from mog_client.config import InstalledGame, data_dir
+from mog_client.config import InstalledGame, config_dir, data_dir
 
 # Redistributables, helpers and uninstallers: never the game's own executable.
 _NOT_A_GAME = re.compile(
@@ -352,6 +352,23 @@ def client_command() -> str:
     return shutil.which("mog") or str(Path(sys.argv[0]).resolve())
 
 
+def client_pointer_path() -> Path:
+    return config_dir() / "client-path"
+
+
+def remember_client() -> None:
+    """Write where this client is into a file the launch scripts read, so moving or renaming the
+    AppImage or exe only needs one start from the new place."""
+    command = client_command()
+    path = client_pointer_path()
+    try:
+        if not path.is_file() or path.read_text().strip() != command:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(command + "\n")
+    except OSError:
+        pass  # the scripts fall back to the path they were written with
+
+
 def standalone_command(game: InstalledGame, preference: str = "auto") -> list[str]:
     """The whole command that starts the game by itself, environment included (through `env`),
     for shortcuts that must work without MOG. Faugus fetches its own umu-run on first use, so
@@ -411,7 +428,9 @@ def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
         f"# {game.name.replace(chr(10), ' ')}: started through {engine}. Written by MOG and rewritten\n"
         "# when the game's launcher is changed there; it does not need MOG to run.\n"
         f"cd {shlex.quote(str(Path(game.executable).parent))} || exit 1\n"
-        f"MOG={shlex.quote(client_command())}\n"
+        'MOG=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/mog-client/client-path" 2>/dev/null)\n'
+        f'[ -x "$MOG" ] || MOG={shlex.quote(client_command())}\n'
+        '[ -x "$MOG" ] || MOG=$(command -v mog || command -v mog-client)\n'
         'if [ -x "$MOG" ]; then\n'
         f'  "$MOG" --save-pre {game.game_id} >/dev/null 2>&1\n'
         f'  "$MOG" --save-watch {game.game_id} >/dev/null 2>&1 &\n'
@@ -422,10 +441,46 @@ def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
     return str(path)
 
 
+def launch_cmd_path(game: InstalledGame) -> Path:
+    return _in_game_folder(game, f"{entry_stem(game)}.cmd")
+
+
+def _cmd_quote(value: str | Path) -> str:
+    return '"' + str(value).replace("%", "%%") + '"'
+
+
+def launch_cmd_text(game: InstalledGame, client: str) -> str:
+    """The Windows twin of the launch script: restore, run the game and wait for it, then back the saves up
+    (a batch file keeps running after the game, which a shell script that execs cannot). The client is looked up
+    like the script does; without it the game just starts."""
+    pointer = r"%APPDATA%\mog-client\client-path"
+    exe = Path(game.executable)
+    lines = [
+        "@echo off",
+        f"rem {game.name.replace(chr(10), ' ')}: written by MOG; it does not need MOG to run.",
+        'set "MOG="',
+        f'if exist "{pointer}" set /p MOG=<"{pointer}"',
+        f'if not exist "%MOG%" set "MOG={client.replace("%", "%%")}"',
+        'if not exist "%MOG%" set "MOG="',
+        f"cd /d {_cmd_quote(exe.parent)}",
+        f'if defined MOG "%MOG%" --save-pre {game.game_id} >nul 2>&1',
+        f'start /wait "" {_cmd_quote(exe)}',
+        f'if defined MOG "%MOG%" --save-sync {game.game_id} --window >nul 2>&1',
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def write_launch_cmd(game: InstalledGame) -> str:
+    path = launch_cmd_path(game)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(launch_cmd_text(game, client_command()).encode("utf-8"))
+    return str(path)
+
+
 def entry_command(game: InstalledGame, preference: str = "auto") -> list[str]:
-    """What a desktop or Steam entry runs: the game's launch script, or the exe itself on Windows."""
+    """What a desktop or Steam entry runs: the game's launch script (a batch file on Windows)."""
     if sys.platform == "win32":
-        return [game.executable]
+        return [write_launch_cmd(game)]
     return [write_launch_script(game, preference)]
 
 
@@ -451,9 +506,11 @@ def desktop_entries_dir() -> Path:
 def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preference: str = "auto") -> str | None:
     """The game's entry point next to its files: a `.desktop` that starts the game through its launch
     script (not through MOG), with a symlink to it in the applications menu; on Windows a `.lnk`
-    to the executable. Returns the path to record (the menu symlink, or the `.lnk`)."""
+    to the game's batch file. Returns the path to record (the menu symlink, or the `.lnk`)."""
     if sys.platform == "win32":
-        create_windows_shortcut(shortcut_lnk_path(game), game.executable, str(Path(game.executable).parent))
+        create_windows_shortcut(
+            shortcut_lnk_path(game), write_launch_cmd(game), str(Path(game.executable).parent), icon=game.executable
+        )
         return str(shortcut_lnk_path(game))
     name = game.name.replace("\n", " ")
     icon = icon or (icon_path(game) if icon_path(game).is_file() else None)
@@ -490,8 +547,9 @@ def write_directory_file(game: InstalledGame) -> None:
         path.unlink(missing_ok=True)
 
 
-def windows_shortcut_script(lnk: Path, target: str, workdir: str) -> str:
-    """The PowerShell that makes a `.lnk` (WScript.Shell is the only stock way to write one)."""
+def windows_shortcut_script(lnk: Path, target: str, workdir: str, icon: str | None = None) -> str:
+    """The PowerShell that makes a `.lnk` (WScript.Shell is the only stock way to write one). The window is
+    minimized: a batch file target would otherwise flash a console."""
 
     def quote(value) -> str:
         return "'" + str(value).replace("'", "''") + "'"
@@ -501,16 +559,18 @@ def windows_shortcut_script(lnk: Path, target: str, workdir: str) -> str:
             f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({quote(lnk)})",
             f"$s.TargetPath={quote(target)}",
             f"$s.WorkingDirectory={quote(workdir)}",
+            "$s.WindowStyle=7",
+            *([f"$s.IconLocation={quote(icon + ',0')}"] if icon else []),
             "$s.Save()",
         ]
     )
 
 
-def create_windows_shortcut(lnk: Path, target: str, workdir: str) -> None:
+def create_windows_shortcut(lnk: Path, target: str, workdir: str, icon: str | None = None) -> None:
     lnk.parent.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", windows_shortcut_script(lnk, target, workdir)],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", windows_shortcut_script(lnk, target, workdir, icon)],
             check=True,
             capture_output=True,
             creationflags=0x08000000 if sys.platform == "win32" else 0,  # no console window
@@ -523,6 +583,7 @@ def remove_entry_files(game: InstalledGame) -> None:
     """Delete what MOG generated for the game: its script, entries, folder icon and menu link."""
     for path in (
         launch_script_path(game),
+        launch_cmd_path(game),
         desktop_file_path(game),
         shortcut_lnk_path(game),
         directory_file_path(game),
