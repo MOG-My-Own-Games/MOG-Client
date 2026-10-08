@@ -14,10 +14,13 @@ from pathlib import Path
 from mog_client import installdirs, logstore
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import detect_launcher, effective_launcher, pfx_dir
-from mog_client.saves import devices, prefix as prefixes, sync
+from mog_client.saves import devices, native, prefix as prefixes, sync
+from mog_client.saves.locations import describe_key
 from mog_client.saves.state import load_state
 
 SKIP = None
+# The entry of the folder list that opens the folder browser.
+OTHER_FOLDER = "*other*"
 
 
 def when(iso: str) -> str:
@@ -38,6 +41,7 @@ _CHECK_RESULT = {
     "nothing": "no save files found",
     "needs-prefix": "needs the prefix to be set",
     "needs-confirmation": "needs the save folders to be confirmed",
+    "needs-folder": "needs the folder it saves in",
     "failed": "failed, the server could not be reached",
 }
 _CHECK_TRIGGER = {"quit": "after the game closed", "launch": "at start", "manual": "by hand", "sync": "at start", "uninstall": "on uninstall"}
@@ -171,7 +175,9 @@ class SaveSync:
             if quiet:
                 self.win.message(f"Confirm which folders are {rec.name}'s saves: Options > Back up saves now", "warning")
             else:
-                self.confirm_folders(rec, result.folders, retry)
+                self.confirm_folders(rec, result.folders, retry, native=rec.native)
+        elif status == "needs-folder" and not quiet:
+            self.choose_folder(rec, retry)
 
     def choose_prefix(self, rec: InstalledGame, then: Callable[[], None] | None = None, skip: Callable[[], None] | None = None) -> None:
         """Ask where the game's Wine prefix is. This only tells save sync where to look; it does not
@@ -210,7 +216,12 @@ class SaveSync:
             skip="Not now" if skip is not None else None,
         )
 
-    def confirm_folders(self, rec: InstalledGame, folders: list[str], then: Callable[[], None]) -> None:
+    def confirm_folders(
+        self, rec: InstalledGame, folders: list[str], then: Callable[[], None], native: bool = False
+    ) -> None:
+        if native:
+            return self._confirm_native_folders(rec, folders, then)
+
         def done(picked: list[str]) -> None:
             sync.confirm_folders(rec.game_id, picked)
             then()
@@ -221,6 +232,40 @@ class SaveSync:
             [(f, f) for f in folders],
             done,
         )
+
+    def _confirm_native_folders(self, rec: InstalledGame, folders: list[str], then: Callable[[], None]) -> None:
+        """The folders a native game wrote to while it ran. The ones named like the game start ticked."""
+        names = native.game_names(rec)
+        items = [(describe_key(f), f, native.folder_score(f, names) == 2) for f in folders] + [("Another folder...", OTHER_FOLDER)]
+
+        def done(picked: list[str]) -> None:
+            sync.confirm_folders(rec.game_id, [p for p in picked if p != OTHER_FOLDER])
+            if OTHER_FOLDER in picked:
+                self.choose_folder(rec, then)
+            else:
+                then()
+
+        self.win.checklist(
+            "Which folders are this game's saves?",
+            f"{rec.name} wrote to these while it ran, and other programs may have too. Tick the ones that "
+            "hold its saves; the ones named like the game are ticked already.",
+            items,
+            done,
+        )
+
+    def choose_folder(self, rec: InstalledGame, then: Callable[[], None] | None = None) -> None:
+        """Ask for a folder a native game keeps its saves in (MOG found none, or not the right one)."""
+
+        def store(picked: str) -> None:
+            if sync.add_folder(rec.game_id, Path(picked)) is None:
+                self.win.message(f"{picked} is not a folder below your home folder that can hold a game's saves", "error")
+                return
+            self.win.notify(f"Saves of {rec.name} will be backed up from {picked}")
+            if then:
+                then()
+
+        self.win.message(f"Pick the folder {rec.name} keeps its saves in, usually below ~/.config or ~/.local/share", "info")
+        self.win.browse_folder(Path.home(), store)
 
     # --- before the game starts ---
 
@@ -321,6 +366,8 @@ class SaveSync:
             self.win.message(f"Saves of {rec.name} restored ({len(result.restored)} files){kept}", "info")
             if then:
                 then()
+        elif result.status == "incompatible":
+            self.win.message(f"That save of {rec.name} is for the other version of the game (Windows or Linux)", "warning")
         elif result.status == "needs-prefix":
             def apply() -> None:
                 def work() -> None:
