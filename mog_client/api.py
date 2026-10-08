@@ -652,6 +652,16 @@ class MogClient:
             return None
         return data if status == 200 and isinstance(data, dict) else None
 
+    def save_restored(self, version_id: int, device_id: int, files: int) -> bool:
+        """Tell the server this machine has put a version back, so the person finds it in their notifications. Best
+        effort: False when the server cannot keep the notice (an older one) or cannot be reached."""
+        query = urllib.parse.urlencode({"device_id": device_id, "files": files})
+        try:
+            status, _ = self.c.post_json(f"/api/saves/{version_id}/restored?{query}", {})
+        except RuntimeError:
+            return False
+        return status in (200, 204)
+
     def get_save(self, version_id: int) -> dict:
         status, data = self.c.get_json(f"/api/saves/{version_id}")
         if status != 200:

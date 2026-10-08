@@ -7,6 +7,7 @@ A restore never replaces a file without first copying it to a backup archive.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mog_client import logstore
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import native
@@ -80,6 +82,8 @@ class RestoreResult:
     status: str
     restored: list[str] = field(default_factory=list)
     backup: Path | None = None
+    # False when the files are back but the server could not keep a notice of it (an older server): the caller says it itself.
+    notified: bool = True
 
 
 def _now() -> str:
@@ -423,8 +427,22 @@ def _apply(
         state.seen_version_id = max(state.seen_version_id or 0, version_id)
     state.pending_restore = None
     save_state(rec.game_id, state)
+    told = _tell_restored(ctx, archive, len(written))
     archive.unlink(missing_ok=True)
-    return RestoreResult("restored", [k for k, _ in written], backup_zip if backup_zip.exists() else None)
+    return RestoreResult("restored", [k for k, _ in written], backup_zip if backup_zip.exists() else None, told)
+
+
+def _tell_restored(ctx: Context, archive: Path, files: int) -> bool:
+    """Let the server keep a notice that this machine has the version now (the archive is named after it, so one that
+    waited for the prefix is told too). Never gets in the way of the restore."""
+    match = re.fullmatch(r"version-(\d+)\.zip", archive.name)
+    if match is None:
+        return False
+    try:
+        return bool(ctx.client.save_restored(int(match.group(1)), ctx.device.device_id, files))
+    except Exception as e:  # noqa: BLE001 - the files are back; the notice is a courtesy
+        logstore.warning(f"Could not tell the server about the restore: {e}")
+        return False
 
 
 def apply_pending(ctx: Context, only_if_free: bool = False) -> RestoreResult | None:

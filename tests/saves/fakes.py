@@ -42,6 +42,11 @@ class FakeServer:
             "keep_versions": 3,
         }
 
+    def save_restored(self, version_id, device_id, files):
+        self.restored_notices = getattr(self, "restored_notices", [])
+        self.restored_notices.append((version_id, device_id, files))
+        return True
+
     def download_save(self, version_id, dest, on_progress=None):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         if on_progress:

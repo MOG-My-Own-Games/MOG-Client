@@ -156,6 +156,7 @@ def test_a_server_version_is_put_back_under_this_machines_user_with_a_backup_of_
     assert (world.install / "extra.sav").read_bytes() == b"g"
     assert result.backup is not None and zipfile.ZipFile(result.backup).read("users/USER/Saved Games/slot1.sav") == b"mine"
     assert load_state(7).seen_version_id == version["id"]
+    assert world.server.restored_notices == [(version["id"], 1, 3)]  # the server keeps a notice of it
     assert sync.backup(world.ctx, sync.SYNC).status == "unchanged"  # the restored files are not "changes"
 
 
@@ -176,6 +177,18 @@ def test_a_restore_that_needs_a_prefix_waits_for_one(world, monkeypatch):
     assert result.status == "restored"
     assert mine.read_bytes() == b"theirs"
     assert load_state(7).pending_restore is None
+    assert world.server.restored_notices == [(version["id"], 1, 1)]  # told when it really went in, not before
+
+
+def test_a_server_that_cannot_keep_the_notice_does_not_undo_the_restore(world):
+    version = world.server.add_foreign_version({"game/profile.sav": b"p"})
+
+    def broken(*args):
+        raise RuntimeError("older server")
+
+    world.server.save_restored = broken
+    assert sync.restore(world.ctx, version["id"]).status == "restored"
+    assert (world.install / "profile.sav").read_bytes() == b"p"
 
 
 def test_a_game_only_save_is_restored_without_any_prefix(world):
