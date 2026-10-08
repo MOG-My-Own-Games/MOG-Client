@@ -64,7 +64,7 @@ def run_install(
     on_bytes: Callable[[int, int], None],
     installer: dict | None = None,
     root: Path | None = None,
-    extract_only: bool = False,
+    extract_only: bool | None = None,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
 
@@ -94,7 +94,7 @@ def run_install(
             None,
             None,
             source_path=installer["path"] if archive else None,
-            extract_only=rec.extract_only,
+            extract_only=True if rec.extract_only else extract_only,  # None leaves it to the server
         )
         session_id = session.get("id")
         if session.get("state") == "awaiting_installer":

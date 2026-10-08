@@ -355,13 +355,15 @@ class MogClient:
         auto_mode: bool | None = None,
         manual_mode: bool | None = None,
         source_path: str | None = None,
-        extract_only: bool = False,
+        extract_only: bool | None = None,
     ) -> dict:
+        """`extract_only` True unpacks the game's archive as it is, False runs the installer inside it even when it
+        has none, and None leaves it to the server (which extracts an archive that holds no installer)."""
         body = {"installer_path": installer_path, "proton_build": proton_build}
         if source_path is not None:
             body["source_path"] = source_path
-        if extract_only:
-            body["extract_only"] = True  # the archive is unpacked as it is, nothing is run
+        if extract_only is not None:
+            body["extract_only"] = extract_only
         if auto_mode is not None:
             body["auto_mode"] = auto_mode
         if manual_mode is not None:

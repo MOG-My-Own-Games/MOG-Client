@@ -109,3 +109,35 @@ def test_a_game_that_is_extracted_remembers_it_and_a_restart_does_too(tmp_path, 
 
 def test_installed_game_records_default_to_not_extracted():
     assert InstalledGame(1, "G", "/x").extract_only is False
+
+
+def test_saying_no_to_extracting_is_sent_outright_and_not_deciding_sends_nothing():
+    posts = Posts({})
+    MogClient(posts).start_session(3, None, None, None, extract_only=False)
+    assert posts.calls[0][2]["extract_only"] is False
+    posts.calls.clear()
+    MogClient(posts).start_session(3, None, None, None, extract_only=None)
+    assert "extract_only" not in posts.calls[0][2]
+
+
+def test_an_install_nobody_decided_for_leaves_it_to_the_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    started = []
+
+    class Server:
+        c = SimpleNamespace(base="http://s")
+
+        def get_session(self, gid):
+            return {}
+
+        def start_session(self, gid, installer_path, proton, ttl, **kw):
+            started.append(kw["extract_only"])
+            raise RuntimeError("stop here")
+
+    settings = Settings(install_dirs=[str(tmp_path / "games")])
+    for extract in (None, False):
+        try:
+            manager.run_install(Server(), {"id": 4, "name": "Metroid"}, settings, SimpleNamespace(is_set=lambda: False), lambda m: None, lambda s: None, lambda a, b: None, None, None, extract)
+        except RuntimeError:
+            pass
+    assert started == [None, False]
