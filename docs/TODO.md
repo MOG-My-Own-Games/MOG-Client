@@ -20,6 +20,7 @@ of what it replaces, finding the game's prefix (see README, "Save sync").
 
 Still open:
 
+- Windows: the game's `.cmd` waits only for the process it starts, so a game that hands over to another program and exits is backed up too early; waiting for the whole process tree (a job object) would fix it. The `.cmd` and the `.lnk` it is started from have only been checked as text, not on Windows.
 - Windows: only the game's own folder is covered. The profile folders need the shell's known-folder
   lookup (Documents can be redirected, e.g. to OneDrive) and must not be scanned without a session window.
 - Detecting when a game ends works from the process table on Linux and has only been exercised against

@@ -36,6 +36,9 @@ mog_client/
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
     widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
     keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
+    busy.py     the message over the window while a restore or backup is under way (progress, Cancel)
+    syncwindow.py the small "Syncing saves" window `--save-sync --window` and the end-of-game watch show (own process, never the main window; Qt only here)
+    theme.py    STYLE, the stylesheet every window shares
     saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`message`/`notify`)
     overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
     logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
