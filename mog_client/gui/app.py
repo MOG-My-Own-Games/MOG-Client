@@ -834,33 +834,46 @@ class NotificationsPage(Page):
 
 
 class ModsPage(Page):
-    """A game's mods, one row each; Enter downloads the one on it (the server zips a folder first), or asks to cancel
-    it while it is being fetched. Mods are only fetched, never installed. Each row shows its own progress, and where
-    the file went once it is done."""
+    """A game's mods, one row each, in a small card over the game's page. Enter (or Download) fetches the one on it
+    (the server zips a folder first) or, while it is being fetched, asks to cancel it; Delete removes the copy
+    already on this computer. Mods are only fetched, never installed. Each row shows its own progress, and where
+    the file is once it is done."""
 
     title = "Mods"
+    modal = True
 
     def __init__(self, win: "MainWindow", game: dict, mods: list[dict]):
         super().__init__()
         self.win, self.game, self.mods = win, game, mods
         note = QLabel(
             "Pick a mod to download it. Nothing is installed: the file is saved in "
-            f"{win.app.mod_folder(game)}. A folder is zipped by the server first; its progress is shown on its row."
+            f"{win.app.mod_folder(game)}. A folder is zipped by the server first."
         )
         note.setWordWrap(True)
         self.list = QListWidget()
+        self.download_button = QPushButton("Download")
+        self.download_button.clicked.connect(lambda: self._current_then(self.fetch))
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.setProperty("danger", True)
+        self.delete_button.clicked.connect(lambda: self._current_then(self.delete))
         self.render()
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(self.fetch)
-        self.list.itemClicked.connect(self.fetch)
+        self.list.itemActivated.connect(self.fetch)  # Enter, A on the pad, a double click: not a single click
+        self.list.currentRowChanged.connect(lambda _row: self._sync_buttons())
         win.app.bridge.activity.connect(self.render)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
+        lay.addLayout(_row(self.download_button, self.delete_button))
+        self._sync_buttons()
+
+    def _local(self, mod: dict) -> list[Path]:
+        return mods_download.local_files(self.win.app.mod_folder(self.game), mod)
 
     def render(self) -> None:
-        """One row per mod: what it is, or how its fetch is going, or where its last fetch was saved."""
+        """One row per mod: what it is, or how its fetch is going, or where its copy on this computer is."""
         app = self.win.app
         row = self.list.currentRow()
         self.list.clear()
@@ -871,6 +884,8 @@ class ModsPage(Page):
                 what = f"{stage}... {percent}%"
             elif key in app.mod_saved:
                 what = f"Downloaded to {app.mod_saved[key]}"
+            elif local := self._local(mod):
+                what = f"Downloaded to {local[0]}"
             else:
                 kind = "folder, zipped on download" if mod.get("kind") == "folder" else mod.get("kind", "file")
                 what = f"{kind}, {fmt_bytes(mod.get('size_bytes') or 0)}"
@@ -879,6 +894,20 @@ class ModsPage(Page):
             self.list.addItem(item)
         if row >= 0:
             self.list.setCurrentRow(min(row, self.list.count() - 1))
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        item = self.list.currentItem()
+        mod = item.data(Qt.UserRole) if item is not None else None
+        busy = mod is not None and (self.game["id"], mod["name"]) in self.win.app.mod_jobs
+        self.download_button.setEnabled(mod is not None)
+        self.download_button.setText("Cancel fetching" if busy else "Download")
+        self.delete_button.setEnabled(mod is not None and not busy and bool(self._local(mod)))
+
+    def _current_then(self, action) -> None:
+        item = self.list.currentItem()
+        if item is not None:
+            action(item)
 
     def focus_default(self) -> None:
         self.list.setFocus()
@@ -891,6 +920,26 @@ class ModsPage(Page):
             return
         app.download_mod(self.game, mod)
         self.win.notify(f"Fetching the mod {mod['name']}")
+
+    def delete(self, item: QListWidgetItem) -> None:
+        """Remove the mod's copy from this computer, after asking."""
+        mod = item.data(Qt.UserRole)
+        files = self._local(mod)
+        if not files:
+            return
+        names = ", ".join(p.name for p in files)
+        self.win.ask(f"Delete {names} from this computer? The mod stays on the server.", lambda: self._delete(mod), danger=True)
+
+    def _delete(self, mod: dict) -> None:
+        app = self.win.app
+        try:
+            removed = mods_download.remove_local(app.mod_folder(self.game), mod)
+        except OSError as e:
+            self.win.message(f"Could not delete {mod['name']}: {e}", "error")
+            return
+        app.mod_saved.pop((self.game["id"], mod["name"]), None)
+        self.win.notify(f"Deleted the mod {mod['name']} ({len(removed)} file{'s' if len(removed) != 1 else ''})")
+        self.render()
 
 
 class OptionsPage(Page):
