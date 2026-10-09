@@ -53,12 +53,13 @@ DENY_DIRS = frozenset(
     {
         "temp", "tmp", "microsoft", "packages", "crashdumps", "crashes", "d3dscache", "dxcache",
         "glcache", "shadercache", "cache", "code cache", "gpucache", "logs", "wine", "__pycache__",
+        "crashreportclient", "package cache", "analytics",
     }
 )  # fmt: skip
 # Compiled Python (a Ren'Py or Python game writes it beside its own files as it runs, and writes it again): never a save.
 DENY_SUFFIXES = (".tmp", ".dmp", ".etl", ".pyo", ".pyc")
-# Log files, by name (any case): `output_log.txt`, `Player.log`, `crash_log.log`...
-DENY_NAME_PATTERNS = ("*.log", "*log*.txt", "*log*.log")
+# Log and cache files, by name (any case): `output_log.txt`, `Player.log`, `crash_log.log`, `vkd3d-proton.cache`...
+DENY_NAME_PATTERNS = ("*.log", "*log*.txt", "*log*.log", "*cache*")
 
 
 class UnsafeKey(ValueError):

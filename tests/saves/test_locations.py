@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -53,6 +53,25 @@ def test_cache_log_and_system_noise_is_skipped(drive_c):
         _touch(drive_c / noise)
     assert not [k for k in keys(profile_candidates(drive_c)) if any(n in k for n in ("Temp", "Microsoft", "Cache", ".log", ".dmp"))]
     assert len(keys(profile_candidates(drive_c))) == 6
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "users/USER/AppData/Local/PokemonEmerald/Saved/Config/CrashReportClient/UECC-Windows-08C5/CrashReportClient.ini",
+        "ProgramData/Package Cache/{b49c10dd-4d54-45f8-ad13-fa25704456a4}/state.rsm",
+        "game/PokemonEmerald/Binaries/Win64/vkd3d-proton.cache",
+        "users/USER/AppData/Local/Game/shader_Cache.bin",
+        "users/USER/AppData/LocalLow/Eek/House Party/Unity/08e3df3f/Analytics/ArchivedEvents/1791.52393e08/c",
+    ],
+)
+def test_launcher_telemetry_installer_and_shader_files_are_never_saves(path):
+    assert locations.is_denied(tuple(PurePosixPath(path).parts))
+
+
+def test_real_saves_next_to_that_noise_are_still_saves():
+    for path in ("users/USER/Saved Games/Game/slot1.sav", "users/USER/AppData/Local/PokemonEmerald/Saved/SaveGames/slot0.sav"):
+        assert not locations.is_denied(tuple(PurePosixPath(path).parts))
 
 
 def test_log_files_are_never_saves_whatever_their_case(drive_c):
