@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import time
+import urllib.parse
 import zlib
 from pathlib import Path
 
@@ -67,6 +71,67 @@ def persona_name(user_dir: Path) -> str | None:
         return None
     found = _PERSONA.search(text)
     return (_unquote(found.group(1)) or None) if found else None
+
+
+def active_account() -> str | None:
+    """The userdata folder name of the account signed in to the running Steam (its `ActiveUser`), else the one that signed
+    in last; None when neither is known."""
+    for root in steam_roots():
+        for registry in (root.parent / "registry.vdf", Path.home() / ".steam" / "registry.vdf"):
+            try:
+                found = re.search(r'"ActiveUser"\s+"(\d+)"', registry.read_text(errors="replace"))
+            except OSError:
+                continue
+            if found and found.group(1) != "0":
+                return found.group(1)
+        try:
+            text = (root / "config" / "loginusers.vdf").read_text(errors="replace")
+        except OSError:
+            continue
+        for steamid, body in _LOGIN_USER.findall(text):
+            if re.search(r'"MostRecent"\s+"1"', body):
+                return str(int(steamid) - STEAMID64_BASE)
+    return None
+
+
+def steam_command() -> list[str] | None:
+    """How to talk to the Steam that is installed: its own command, or the Flatpak's."""
+    if shutil.which("steam"):
+        return ["steam"]
+    if shutil.which("flatpak") and subprocess.run(
+        ["flatpak", "info", "com.valvesoftware.Steam"], capture_output=True, check=False
+    ).returncode == 0:
+        return ["flatpak", "run", "com.valvesoftware.Steam"]
+    return None
+
+
+def add_through_steam(path: Path) -> bool:
+    """Ask the running Steam to add a `.desktop` file (or an executable) to the account signed in to it, the way SteamOS's
+    "Add to Steam" does (`steam://addnonsteamgame/<encoded path>`). Steam writes its own entry, so closing it undoes
+    nothing. True when the request was handed over."""
+    command = steam_command()
+    if command is None:
+        return False
+    url = "steam://addnonsteamgame/" + urllib.parse.quote(str(path), safe="")
+    try:
+        return subprocess.run([*command, url], capture_output=True, timeout=20, check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def wait_for_shortcut(user_dir: Path, name: str, timeout: float = 10.0, interval: float = 0.5) -> dict | None:
+    """The entry called `name` in the account's shortcuts file once Steam has written it, or None when it has not within
+    `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        path = shortcuts_path(user_dir)
+        if path.is_file():
+            for entry in load_shortcuts(path)["shortcuts"].values():
+                if entry.get("appname") == name:
+                    return {"shortcuts_path": str(path), "appid": entry.get("appid", 0) & 0xFFFFFFFF, "artwork": []}
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
 
 
 def steam_running() -> bool:

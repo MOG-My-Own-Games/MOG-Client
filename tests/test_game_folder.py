@@ -284,3 +284,71 @@ def test_changing_the_accounts_writes_every_game_at_once_even_with_steam_open(st
     rec = load_library()[138]
     assert done == [rec.name] and rec.steam_users == [str(second)] and rec.steam_pending is True
     assert [e["shortcuts_path"] for e in rec.steam_entries] == [str(second / "config/shortcuts.vdf")]
+
+
+def test_with_steam_open_the_signed_in_account_gets_the_game_through_steam_itself(steam_home, monkeypatch):
+    from mog_client import steam
+
+    steam_home.steam.running = True
+    requests = []
+    monkeypatch.setattr(steam, "active_account", lambda: steam_home.steam_user.name)
+
+    def steam_adds(path):
+        requests.append(path)
+        text = path.read_text()
+        name = next(line[5:] for line in text.splitlines() if line.startswith("Name="))
+        steam.save_shortcuts(  # what Steam writes for the entry it was asked to add
+            steam_home.vdf,
+            {"shortcuts": {"0": {"appid": 3_000_000_000 - 2**32, "appname": name, "exe": '"/x"', "LaunchOptions": ""}}},
+        )
+        return True
+
+    monkeypatch.setattr(steam, "add_through_steam", steam_adds)
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], False, "auto", None)
+
+    rec = load_library()[138]
+    assert [p.name for p in requests] == [".mog-steam.desktop"] and "Exec=" in requests[0].read_text()
+    assert [e["appid"] for e in rec.steam_entries] == [3_000_000_000]
+    assert rec.steam_pending is False  # Steam wrote it itself: nothing for the next start to check
+    assert len(steam.load_shortcuts(steam_home.vdf)["shortcuts"]) == 1  # not written a second time
+
+
+def test_when_steam_does_not_take_it_the_shortcuts_file_is_written_as_before(steam_home, monkeypatch):
+    from mog_client import steam
+
+    steam_home.steam.running = True
+    monkeypatch.setattr(steam, "active_account", lambda: steam_home.steam_user.name)
+    monkeypatch.setattr(steam, "add_through_steam", lambda path: False)
+
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], False, "auto", None)
+
+    rec = load_library()[138]
+    assert len(rec.steam_entries) == 1 and rec.steam_pending is True
+    assert _entry(steam_home.vdf, rec.steam_entries[0]["appid"])["appname"] == rec.name
+
+
+def test_an_account_that_is_not_signed_in_is_written_to_its_file_even_with_steam_open(steam_home, monkeypatch):
+    from mog_client import steam
+
+    steam_home.steam.running = True
+    monkeypatch.setattr(steam, "active_account", lambda: "999")
+    monkeypatch.setattr(steam, "add_through_steam", lambda path: pytest.fail("only the signed-in account goes through Steam"))
+
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], False, "auto", None)
+
+    assert len(load_library()[138].steam_entries) == 1
+
+
+def test_the_add_request_is_the_one_steamos_makes_and_only_when_steam_can_be_asked(monkeypatch):
+    from mog_client import steam
+
+    calls = []
+    monkeypatch.setattr(steam, "steam_command", lambda: ["steam"])
+    monkeypatch.setattr(
+        steam.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0)
+    )
+    assert steam.add_through_steam(Path("/games/My Game/.mog-steam.desktop")) is True
+    assert calls == [["steam", "steam://addnonsteamgame/%2Fgames%2FMy%20Game%2F.mog-steam.desktop"]]
+
+    monkeypatch.setattr(steam, "steam_command", lambda: None)
+    assert steam.add_through_steam(Path("/x.desktop")) is False
