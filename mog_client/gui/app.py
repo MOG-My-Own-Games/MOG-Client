@@ -160,14 +160,11 @@ def asset_pixmap(name: str, height: int) -> QPixmap:
 
 
 def steam_outcome(rec: InstalledGame, done: str) -> tuple[str, str]:
-    """(level, text) for what was done, with a note when Steam's own shortcut had to wait: Steam is
-    running, and it would put its old one back when it quits."""
+    """(level, text) for what was done, with a note when Steam's own shortcut was written while it ran: Steam shows
+    it after a restart, and MOG puts it back at its next start with Steam closed if Steam undid it."""
     if not rec.steam_pending:
         return "info", done
-    return "warning", (
-        f"{done}. Steam is running, so its shortcut for {rec.name} is updated the next time MOG starts "
-        "with Steam closed."
-    )
+    return "info", f"{done}. Restart Steam to see the shortcut for {rec.name}."
 
 
 COVER_SIZE = QSize(200, 270)
@@ -341,6 +338,18 @@ class App:
         base = Path(rec.install_dir) if rec else installdirs.default_root(self.settings) / safe_dirname(game["name"])
         return mods_download.mods_dir(base)
 
+    def prune_mod_folder(self, game: dict) -> None:
+        """Drop the empty folders a mod left behind: the mods folder, and without the game installed its folder too. Not
+        while another mod of the game is being fetched, which may be about to write there."""
+        if any(gid == game["id"] for gid, _name in self.mod_jobs):
+            return
+        folder = self.mod_folder(game)
+        rec = load_library().get(game["id"])
+        if rec is not None:
+            installdirs.prune_empty(folder, [Path(rec.install_dir)])
+        else:
+            installdirs.prune_empty(folder.parent, self.settings.install_roots)
+
     def _note_mod_file(self, game_id: int, path: Path) -> None:
         """A mod saved inside an installed game's folder is one of the game's own files, so it is not taken for a save."""
         rec = load_library().get(game_id)
@@ -400,6 +409,7 @@ class App:
                 self.mod_jobs.pop(key, None)
                 self.mod_stops.pop(key, None)
                 activity.remove_mod(game["id"], mod["name"])
+                self.prune_mod_folder(game)
                 changed()
 
         changed()
@@ -987,6 +997,7 @@ class ModsPage(Page):
             self.win.message(f"Could not delete {mod['name']}: {e}", "error")
             return
         app.mod_saved.pop((self.game["id"], mod["name"]), None)
+        app.prune_mod_folder(self.game)
         self.win.notify(f"Deleted the mod {mod['name']} ({len(removed)} file{'s' if len(removed) != 1 else ''})")
         self.render()
 
@@ -1140,6 +1151,54 @@ class ChecklistPage(Page):
         ]
         self.win.back()
         self.on_done(picked)
+
+
+class SteamAccountsPage(Page):
+    """Which Steam accounts MOG and its installed games go into. "All users" takes every account, present and future;
+    Continue takes the ticked ones, and none turns the integration off."""
+
+    modal = True
+    title = "Steam integration"
+
+    def __init__(self, win: "MainWindow", users: list[Path], chosen: list[str] | None, on_done):
+        super().__init__()
+        self.win, self.on_done = win, on_done
+        note = QLabel("Do you want to add MOG and its installed games to Steam?")
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        for user in users:
+            item = QListWidgetItem(f"{selfsteam.label(user, users)} ({user.name})")
+            item.setData(Qt.UserRole, user.name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if chosen is None or user.name in chosen else Qt.Unchecked)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemActivated.connect(self.toggle)
+        self.everyone = QPushButton("All users")
+        self.everyone.setDefault(True)
+        self.everyone.clicked.connect(lambda: self.finish(None))
+        go = QPushButton("Continue")
+        go.clicked.connect(lambda: self.finish(self.ticked()))
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.list, 1)
+        lay.addLayout(_centered_row(self.everyone, go))
+
+    def focus_default(self) -> None:
+        self.everyone.setFocus()
+
+    def ticked(self) -> list[str]:
+        return [
+            self.list.item(i).data(Qt.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.Checked
+        ]
+
+    def toggle(self, item: QListWidgetItem) -> None:
+        item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+
+    def finish(self, accounts: list[str] | None) -> None:
+        self.win.back()
+        self.on_done(accounts)
 
 
 class LauncherPage(Page):
@@ -1428,6 +1487,10 @@ class SettingsPage(Page):
         self.sync_window_box.setChecked(s.sync_window)
         self.sync_window_box.setEnabled(s.sync_saves)
         self.sync_saves_box.toggled.connect(self.sync_window_box.setEnabled)
+        self.upload_logs_box = Toggle()
+        self.upload_logs_box.setChecked(s.upload_logs)
+        self.upload_logs_box.setEnabled(s.sync_saves)
+        self.sync_saves_box.toggled.connect(self.upload_logs_box.setEnabled)
         self.sounds_box = Toggle()
         self.sounds_box.setChecked(s.sounds)
         self.check_updates_box = Toggle()
@@ -1544,6 +1607,14 @@ class SettingsPage(Page):
                 self.sync_window_box,
             )
         )
+        menu.add(
+            OptionRow(
+                "Send the log with saves",
+                "When saves are backed up, also send this device's log to the server, so a problem on a machine you cannot "
+                "reach can be read (Profile > My devices > Log). Off by default. Greyed while saves are not backed up.",
+                self.upload_logs_box,
+            )
+        )
         menu.section("Games")
         self._folders_row = menu.add(
             OptionRow(
@@ -1587,13 +1658,13 @@ class SettingsPage(Page):
             row = menu.add(OptionRow("Check for updates", "Look for a new version right now.", check_now))
             self.update_status = row.status
             self._update_row = row
-        self.steam_button = QPushButton()
-        self.steam_button.clicked.connect(self.toggle_steam_client)
+        self.steam_button = QPushButton("Settings")
+        self.steam_button.clicked.connect(self.win.open_steam_integration)
         self._steam_row = menu.add(
             OptionRow(
-                "MOG Client in Steam",
-                "Put MOG Client in Steam's library as a game of its own, with its artwork, so it opens from Steam and "
-                "from Game Mode.",
+                "Steam Integration",
+                "Put MOG Client and the games installed from it in Steam's library, with their artwork, so they open from "
+                "Steam and from Game Mode. Choose which Steam accounts get them.",
                 self.steam_button,
             )
         )
@@ -1619,24 +1690,8 @@ class SettingsPage(Page):
         return menu
 
     def _update_steam_row(self) -> None:
-        if not selfsteam.available():
-            self.steam_button.setText("Add to Steam")
-            self.steam_button.setEnabled(False)
-            self._steam_row.set_status("Steam was not found on this computer.")
-        elif self.win.app.settings.steam_client:
-            self.steam_button.setText("Remove from Steam")
-            self.steam_button.setEnabled(True)
-            self._steam_row.set_status("In your Steam library.")
-        else:
-            self.steam_button.setText("Add to Steam")
-            self.steam_button.setEnabled(True)
-            self._steam_row.set_status("")
-
-    def toggle_steam_client(self) -> None:
-        if self.win.app.settings.steam_client:
-            self.win.remove_client_from_steam()
-        else:
-            self.win.add_client_to_steam()
+        self.steam_button.setEnabled(selfsteam.available())
+        self._steam_row.set_status(selfsteam.status(self.win.app.settings))
 
     def _server_tab(self) -> MenuView:
         menu = MenuView()
@@ -1737,6 +1792,7 @@ class SettingsPage(Page):
             sync_saves=self.sync_saves_box.isChecked(),
             sync_on_start=self.sync_start_box.isChecked(),
             sync_window=self.sync_window_box.isChecked(),
+            upload_logs=self.upload_logs_box.isChecked(),
             sounds=self.sounds_box.isChecked(),
         )
         save_settings(self.win.app.settings)
@@ -1935,14 +1991,10 @@ class ExecutablePage(Page):
         self.desktop = Toggle("Create a desktop entry")
         self.desktop.setChecked(sys.platform != "win32")
         self.desktop.setVisible(sys.platform != "win32")
-        self.steam_users = steam.steam_user_dirs()
         self.steam = Toggle("Add to Steam")
-        self.steam.setChecked(bool(self.steam_users))
-        self.steam.setEnabled(bool(self.steam_users))
-        self.steam_user = QComboBox()
-        for d in self.steam_users:
-            self.steam_user.addItem(selfsteam.label(d, self.steam_users), str(d))
-        self.steam_user.setVisible(len(self.steam_users) > 1)
+        self.account_toggles: dict[Path, Toggle] = {}
+        self.steam.toggled.connect(lambda _: self._update_steam_toggles())
+        self.refresh_steam()
         ok = QPushButton("Use this executable")
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
@@ -1951,8 +2003,11 @@ class ExecutablePage(Page):
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Which file starts the game?"))
         lay.addWidget(self.list, 1)
-        for w in (self.desktop, self.steam, self.steam_user):
-            lay.addWidget(w)
+        lay.addWidget(self.desktop)
+        lay.addWidget(self.steam)
+        self.accounts_box = QVBoxLayout()
+        lay.addLayout(self.accounts_box)
+        self._fill_accounts()
         row = QHBoxLayout()
         row.addWidget(browse)
         row.addStretch()
@@ -1962,6 +2017,39 @@ class ExecutablePage(Page):
 
     def focus_default(self) -> None:
         self.list.setFocus()
+
+    def refresh_steam(self) -> None:
+        """The Steam switches as the integration settings stand: off where the user left an account out (or all of them)."""
+        settings = self.win.app.settings
+        self.steam_found = steam.steam_user_dirs()
+        self.steam_wanted = selfsteam.accounts(settings)
+        self.steam.setEnabled(bool(self.steam_wanted))
+        self.steam.setChecked(bool(self.steam_wanted))
+        if hasattr(self, "accounts_box"):
+            self._fill_accounts()
+
+    def _fill_accounts(self) -> None:
+        while self.accounts_box.count():
+            self.accounts_box.takeAt(0).widget().deleteLater()
+        self.account_toggles = {}
+        if len(self.steam_found) > 1:  # one account needs no choosing
+            for user in self.steam_found:
+                toggle = Toggle(selfsteam.label(user, self.steam_found))
+                toggle.setChecked(user in self.steam_wanted)
+                self.account_toggles[user] = toggle
+                self.accounts_box.addWidget(toggle)
+        self._update_steam_toggles()
+
+    def _update_steam_toggles(self) -> None:
+        for user, toggle in self.account_toggles.items():
+            toggle.setEnabled(self.steam.isChecked() and user in self.steam_wanted)
+
+    def steam_users(self) -> list[Path]:
+        if not self.steam.isChecked():
+            return []
+        if not self.account_toggles:
+            return list(self.steam_wanted)
+        return [user for user, toggle in self.account_toggles.items() if toggle.isChecked() and user in self.steam_wanted]
 
     def _browse(self) -> None:
         def picked(path: str) -> None:
@@ -1976,9 +2064,9 @@ class ExecutablePage(Page):
         item = self.list.currentItem()
         if item is None:
             return
-        steam_user = Path(self.steam_user.currentData()) if self.steam.isChecked() else None
+        users = self.steam_users()
         self.win.back()
-        self.on_done(item.data(Qt.UserRole), steam_user, self.desktop.isChecked())
+        self.on_done(item.data(Qt.UserRole), users, self.desktop.isChecked())
 
 
 SHOT_SIZE = QSize(224, 126)
@@ -2588,21 +2676,24 @@ class GamePage(Page):
         self.win.push(LauncherPage(self.win, rec, done))
 
     def choose_executable(self, rec: InstalledGame) -> None:
-        def done(exe: str, steam_user: Path | None, desktop: bool) -> None:
+        def done(exe: str, steam_users: list[Path], desktop: bool) -> None:
             logstore.info(f"{rec.name}: updating entries and fetching artwork...")
 
             def work():
                 manager.finish_setup(
-                    rec, self.game, exe, steam_user, desktop, self.app.settings.launcher, self.app.client()
+                    rec, self.game, exe, steam_users, desktop, self.app.settings.launcher, self.app.client()
                 )
                 if rec.steam_pending:
-                    self.app.bridge.message.emit("warning", steam_outcome(rec, f"{rec.name} is ready")[1])
+                    self.app.bridge.message.emit(*steam_outcome(rec, f"{rec.name} is ready"))
                 self.app.bridge.finished.emit(rec.game_id, "")
                 self.app.bridge.call.emit(lambda: self.win.saves.offer_after_install(rec))
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.finished.emit(rec.game_id, m))
 
-        self.win.push(ExecutablePage(self.win, rec, done))
+        page = ExecutablePage(self.win, rec, done)
+        self.win.push(page)
+        if selfsteam.undecided(self.app.settings):  # the first install: ask which accounts, over the page
+            self.win.open_steam_integration(then=page.refresh_steam)
 
     def uninstall(self, rec: InstalledGame, and_server_cache: bool = False) -> None:
         def remove(delete_prefix: bool) -> None:
@@ -3957,68 +4048,57 @@ class MainWindow(QMainWindow):
     def open_first_run(self, rerun: bool = False) -> None:
         self.push(FirstRunPage(self, rerun))
 
-    # --- MOG Client in Steam ---
+    # --- Steam integration ---
 
-    def add_client_to_steam(self) -> None:
-        """Put MOG Client in Steam's library; with several Steam accounts on the computer, ask which."""
+    def open_steam_integration(self, then=None) -> None:
+        """Ask which Steam accounts MOG and its installed games go into, and bring Steam in line with the answer. `then`
+        runs once answered (not when the page is left with Back)."""
         users = selfsteam.users()
         if not users:
             self.message("Steam was not found on this computer.", "warning")
             return
-        if len(users) == 1:
-            self._add_client_for(users[0])
-            return
-        self.choose(
-            "Which Steam account?",
-            "Steam has more than one account on this computer. MOG Client goes in the library of the one you pick.",
-            [(selfsteam.label(user, users), user) for user in users],
-            lambda user: user is not None and self._add_client_for(user),
-        )
+        settings = self.app.settings
 
-    def _add_client_for(self, user_dir: Path) -> None:
-        self._finish_steam_add(selfsteam.add(self.app.settings, user_dir))
+        def answered(accounts: list[str] | None) -> None:
+            settings.steam_accounts = accounts
+            settings.steam_decided = True
+            settings.steam_asked_for = __version__
+            save_settings(settings)
+            self._apply_steam()
+            if then:
+                then()
 
-    def _finish_steam_add(self, outcome: str) -> None:
-        if outcome == "added":
-            self.message(f"{selfsteam.NAME} is in your Steam library. Steam shows it the next time it starts.", "info")
-        elif outcome == "added-open":
-            self.message(
-                f"{selfsteam.NAME} is in your Steam library. Restart Steam to see it. If Steam undoes the change when it "
-                "closes, MOG puts it back the next time it starts.",
-                "info",
-            )
-        else:
+        self.push(SteamAccountsPage(self, users, settings.steam_accounts, answered))
+
+    def _apply_steam(self) -> None:
+        """Write MOG's own entries and every installed game's shortcuts for the accounts chosen, in the background."""
+        settings = self.app.settings
+
+        def work() -> None:
+            outcome = selfsteam.apply(settings)
+            if settings.configured:
+                manager.apply_steam_accounts(selfsteam.accounts(settings), self.app.client(), settings.launcher)
+            self.app.bridge.call.emit(lambda: self._steam_applied(outcome))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Steam integration: {m}"))
+
+    def _steam_applied(self, outcome: str) -> None:
+        if outcome == "no-steam":
             self.message("Steam was not found on this computer.", "warning")
-        self.steam_changed.emit()
-
-    def remove_client_from_steam(self) -> None:
-        if selfsteam.remove(self.app.settings):
-            self.message(f"{selfsteam.NAME} is out of your Steam library. If Steam is open, restart it to see that.", "info")
+        elif outcome in ("added", "added-open"):
+            self.message("MOG and its games are in your Steam library. Restart Steam to see them.", "info")
+        elif selfsteam.accounts(self.app.settings) == []:
+            self.message("MOG and its games are out of Steam. If Steam is open, restart it to see that.", "info")
         self.steam_changed.emit()
 
     def offer_steam_client(self) -> None:
-        """After an update (and at the first start with Steam), once per version: offer to put MOG Client in Steam."""
+        """After an update (and at the first start with Steam), once per version until answered: ask which accounts."""
         settings = self.app.settings
         if not selfsteam.should_ask(settings, __version__):
             return
         settings.steam_asked_for = __version__
         save_settings(settings)
-
-        def answered(answer: str | None) -> None:
-            if answer == "add":
-                self.add_client_to_steam()
-            elif answer == "never":
-                settings.steam_never_ask = True
-                save_settings(settings)
-                self.notify("MOG Client will not be offered to Steam again; Settings > General > Application has the button")
-
-        self.choose(
-            "Add MOG Client to Steam?",
-            "MOG Client can sit in your Steam library like any game, with its own artwork, so it opens from Steam and from "
-            "Game Mode. You can do this later in Settings > General > Application.",
-            [("Add to Steam", "add"), ("Not now (ask again after the next update)", "later"), ("Never ask again", "never")],
-            answered,
-        )
+        self.open_steam_integration()
 
     def open_about(self) -> None:
         self.push(AboutPage())
@@ -4082,7 +4162,7 @@ class MainWindow(QMainWindow):
             self.saves.after_backup(rec, result, lambda: None, quiet=True)
 
     def settle_steam(self) -> None:
-        """Once per session, with Steam closed: the shortcut changes that had to wait for it."""
+        """Once per session, with Steam closed: check the shortcuts written while it ran are still there."""
         if self._steam_settled or not self.app.settings.configured:
             return
         self._steam_settled = True

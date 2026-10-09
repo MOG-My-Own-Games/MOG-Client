@@ -130,12 +130,12 @@ def test_a_shortcut_deleted_in_steam_is_put_back_by_regenerating(setup, monkeypa
 def test_choosing_not_to_have_a_steam_entry_removes_it_and_a_new_user_gets_one(setup, monkeypatch, tmp_path):
     game, record = setup
     _art(monkeypatch)
-    manager.finish_setup(game, {}, game.executable, None, desktop=False, launcher="wine")
+    manager.finish_setup(game, {}, game.executable, [], desktop=False, launcher="wine")
     assert game.steam_entries == []
     assert steam.load_shortcuts(Path(record["shortcuts_path"]))["shortcuts"] == {}
 
     other = tmp_path / "steam" / "userdata" / "2"
-    assert manager.finish_setup(game, {}, game.executable, other, desktop=False, launcher="wine") is True
+    assert manager.finish_setup(game, {}, game.executable, [other], desktop=False, launcher="wine") is True
     assert len(game.steam_entries) == 1 and game.steam_entries[0]["shortcuts_path"].endswith("2/config/shortcuts.vdf")
 
 

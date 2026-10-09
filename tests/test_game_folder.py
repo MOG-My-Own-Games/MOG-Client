@@ -30,7 +30,7 @@ def home(monkeypatch, tmp_path):
 
 
 def finish(h, desktop=True):
-    return manager.finish_setup(h.rec, {"id": 138}, str(h.exe), None, desktop, "auto", None)
+    return manager.finish_setup(h.rec, {"id": 138}, str(h.exe), [], desktop, "auto", None)
 
 
 def test_everything_the_game_needs_sits_in_its_folder(home):
@@ -108,6 +108,16 @@ def test_uninstalling_without_consent_leaves_only_the_prefix(home):
     assert not (home.tmp / "xdg/applications/mog-138.desktop").is_symlink() and 138 not in load_library()
 
 
+def test_a_kept_prefix_with_no_file_in_it_does_not_leave_its_folder_behind(home):
+    config.save_settings(config.Settings(install_dirs=[str(home.tmp / "games")]))
+    finish(home)
+    (home.folder / "pfx/drive_c/users").mkdir(parents=True)  # a prefix that holds folders only
+
+    assert manager.uninstall(load_library()[138], delete_prefix=False) == []
+
+    assert not home.folder.exists() and (home.tmp / "games").is_dir()
+
+
 def test_a_game_installed_before_this_has_everything_removed(home):
     rec = home.rec  # no prefix recorded, no pfx folder
     assert manager.uninstall(rec, delete_prefix=False) == [] and not home.folder.exists()
@@ -178,20 +188,20 @@ def steam_home(home, monkeypatch):
 
 
 def test_a_new_shortcut_is_written_the_way_steam_writes_its_own_and_gets_its_icon(steam_home):
-    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], True, "auto", None)
 
     rec = load_library()[138]
     entry = _entry(steam_home.vdf, rec.steam_entries[0]["appid"])
     assert entry["appname"] == rec.name and entry["exe"].endswith('.sh"')
     assert "Exe" not in entry and "AppName" not in entry
     assert Path(entry["icon"]).stem.endswith("_icon") and Path(entry["icon"]).read_bytes() == b"PNG"
-    assert rec.steam_user == str(steam_home.steam_user) and rec.steam_pending is False
+    assert rec.steam_users == [str(steam_home.steam_user)] and rec.steam_pending is False
 
 
 def test_a_shortcut_steam_has_rewritten_is_still_updated_and_not_given_a_second_copy_of_its_keys(steam_home):
     from mog_client import steam
 
-    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], True, "auto", None)
     appid = load_library()[138].steam_entries[0]["appid"]
     data = steam.load_shortcuts(steam_home.vdf)  # what Steam leaves when it has rewritten the file
     entry = next(iter(data["shortcuts"].values()))
@@ -206,16 +216,29 @@ def test_a_shortcut_steam_has_rewritten_is_still_updated_and_not_given_a_second_
     assert sorted(k for k in entry if k.lower() in ("exe", "appname")) == ["appname", "exe"]  # one of each
 
 
-def test_while_steam_runs_its_shortcut_is_left_alone_and_settled_later(steam_home):
+def test_while_steam_runs_its_shortcut_is_written_all_the_same_and_checked_at_the_next_start(steam_home):
     steam_home.steam.running = True
-    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
-
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], True, "auto", None)
     rec = load_library()[138]
-    assert rec.steam_entries == [] and rec.steam_pending is True and rec.steam_user == str(steam_home.steam_user)
-    assert not steam_home.vdf.exists()  # Steam would have undone it when it quits
+    client = SimpleNamespace(get_game=lambda gid: {"id": gid})
 
-    assert manager.settle_steam_shortcuts(SimpleNamespace(get_game=lambda gid: {"id": gid})) == []  # still running
+    assert len(rec.steam_entries) == 1 and rec.steam_pending is True
+    assert _entry(steam_home.vdf, rec.steam_entries[0]["appid"])["appname"] == rec.name
+    assert manager.settle_steam_shortcuts(client) == []  # still running: nothing to look at yet
+
     steam_home.steam.running = False
+    assert manager.settle_steam_shortcuts(client) == []  # Steam kept it: only the mark goes
+    assert load_library()[138].steam_pending is False
+
+
+def test_a_shortcut_steam_undid_when_it_quit_is_written_again_at_the_next_start(steam_home):
+    from mog_client import steam
+
+    steam_home.steam.running = True
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], True, "auto", None)
+    steam.save_shortcuts(steam_home.vdf, {"shortcuts": {}})  # what Steam wrote when it quit
+    steam_home.steam.running = False
+
     done = manager.settle_steam_shortcuts(SimpleNamespace(get_game=lambda gid: {"id": gid}))
 
     rec = load_library()[138]
@@ -223,13 +246,41 @@ def test_while_steam_runs_its_shortcut_is_left_alone_and_settled_later(steam_hom
     assert _entry(steam_home.vdf, rec.steam_entries[0]["appid"])["appname"] == rec.name
 
 
-def test_changing_the_engine_while_steam_runs_waits_too(steam_home, monkeypatch):
-    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), steam_home.steam_user, True, "auto", None)
+def test_changing_the_engine_while_steam_runs_edits_the_shortcut_and_marks_it(steam_home, monkeypatch):
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user], True, "auto", None)
     rec = load_library()[138]
-    before = steam_home.vdf.read_bytes()
+    monkeypatch.setattr(manager, "entry_command", lambda *a, **k: ["/new/launcher", "--game"])
     steam_home.steam.running = True
-    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
 
-    assert manager.set_launcher(rec, "umu") is False
+    assert manager.set_launcher(rec, "wine", "auto") is True
 
-    assert steam_home.vdf.read_bytes() == before and load_library()[138].steam_pending is True
+    assert _entry(steam_home.vdf, rec.steam_entries[0]["appid"])["exe"] == '"/new/launcher"'
+    assert load_library()[138].steam_pending is True
+
+
+def test_a_game_gets_a_shortcut_in_each_account_and_loses_the_one_left_out(steam_home):
+    second = steam_home.tmp / "steam/userdata/2"
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [steam_home.steam_user, second], True, "auto", None)
+    rec = load_library()[138]
+    assert {e["shortcuts_path"] for e in rec.steam_entries} == {str(steam_home.vdf), str(second / "config/shortcuts.vdf")}
+    assert rec.steam_users == [str(steam_home.steam_user), str(second)]
+
+    manager.finish_setup(rec, {"id": 138}, str(steam_home.exe), [second], True, "auto", None)
+    rec = load_library()[138]
+    assert [e["shortcuts_path"] for e in rec.steam_entries] == [str(second / "config/shortcuts.vdf")]
+    from mog_client import steam
+
+    assert list(steam.load_shortcuts(steam_home.vdf)["shortcuts"].values()) == []
+
+
+def test_changing_the_accounts_writes_every_game_at_once_even_with_steam_open(steam_home):
+    manager.finish_setup(steam_home.rec, {"id": 138}, str(steam_home.exe), [], True, "auto", None)
+    second = steam_home.tmp / "steam/userdata/2"
+    client = SimpleNamespace(get_game=lambda gid: {"id": gid})
+    steam_home.steam.running = True
+
+    done = manager.apply_steam_accounts([second], client)
+
+    rec = load_library()[138]
+    assert done == [rec.name] and rec.steam_users == [str(second)] and rec.steam_pending is True
+    assert [e["shortcuts_path"] for e in rec.steam_entries] == [str(second / "config/shortcuts.vdf")]

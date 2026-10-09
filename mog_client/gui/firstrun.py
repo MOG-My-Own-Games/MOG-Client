@@ -185,14 +185,15 @@ class FirstRunPage(QWidget):
         )
 
     def _steam(self) -> QWidget:
-        self.steam_button = QPushButton("Add MOG Client to Steam")
-        self.steam_button.clicked.connect(self.win.add_client_to_steam)
+        self.steam_button = QPushButton("Choose Steam accounts")
+        self.steam_button.clicked.connect(self.win.open_steam_integration)
         self.steam_status = self._text("")
+        self.win.steam_changed.connect(self._update_steam)
         return self._step(
-            "MOG Client in Steam",
+            "Steam integration",
             self._text(
-                "Steam is on this computer. MOG Client can sit in its library as a game of its own, with its artwork, "
-                "so it opens from Steam and from Game Mode."
+                "Steam is on this computer. MOG Client and the games you install can sit in its library, with their artwork, "
+                "so they open from Steam and from Game Mode. By default they go into every Steam account found."
             ),
             self.steam_button,
             self.steam_status,
@@ -317,11 +318,7 @@ class FirstRunPage(QWidget):
     # --- steam ---
 
     def _update_steam(self) -> None:
-        settings = self.win.app.settings
-        if selfsteam.added(settings):
-            self.steam_status.setText("MOG Client is in your Steam library.")
-        else:
-            self.steam_status.setText("")
+        self.steam_status.setText(selfsteam.status(self.win.app.settings))
 
     # --- the end ---
 
@@ -333,8 +330,8 @@ class FirstRunPage(QWidget):
             f"Games go in: {self._folder()}",
             f"Saves are {saves}.",
         ]
-        if selfsteam.added(settings):
-            lines.append("MOG Client is in your Steam library.")
+        if selfsteam.available():
+            lines.append(selfsteam.status(settings))
         self.summary.setText("\n".join(lines))
 
     def _apply(self) -> None:

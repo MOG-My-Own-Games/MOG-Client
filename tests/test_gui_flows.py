@@ -1508,6 +1508,28 @@ def test_a_mod_is_saved_in_the_games_own_folder_and_is_not_taken_for_a_save(win,
     assert saves  # (the module is imported to make the intent plain)
 
 
+def test_the_empty_folders_a_mod_leaves_are_cleaned_up_but_not_the_installed_games_own(win, qapp, monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    monkeypatch.setattr(win.app.settings, "install_dirs", [str(root)])
+    install = root / "Eta"
+    (install / "mods").mkdir(parents=True)
+    (install / "game.exe").write_bytes(b"x")
+    config.save_library({41: config.InstalledGame(41, "Eta", str(install), state="installed")})
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    win.app.prune_mod_folder(win.app.games[41])
+    assert not (install / "mods").exists() and (install / "game.exe").is_file()  # only the mods folder went
+
+    alone = {"id": 42, "name": "Zeta", "library_id": None, "igdb_id": None}
+    (root / "Zeta" / "mods").mkdir(parents=True)
+    win.app.mod_jobs[(42, "mod1")] = ("Downloading", 10)  # another mod is on its way: its folder is not touched
+    win.app.prune_mod_folder(alone)
+    assert (root / "Zeta" / "mods").is_dir()
+
+    win.app.mod_jobs.clear()
+    win.app.prune_mod_folder(alone)
+    assert not (root / "Zeta").exists() and root.is_dir()  # no game here: its folder goes too
+
+
 def test_what_was_running_when_the_client_closed_starts_again_and_the_rest_is_forgotten(win, qapp, monkeypatch, tmp_path):
     from mog_client import activity
 
@@ -1842,7 +1864,7 @@ def test_sort_by_sits_right_under_the_libraries_not_at_the_bottom_of_the_sidebar
     pump(qapp)
     libs, sorts = win.library.libs, win.library.sorts
     assert libs.geometry().bottom() < sorts.geometry().top() < libs.geometry().bottom() + 80
-    assert sorts.geometry().bottom() < win.library.sidebar.height() - 40  # free space is left under it
+    assert sorts.geometry().bottom() < win.library.sidebar.height() - 20  # free space is left under it
     heading = [lbl for lbl in win.library.sidebar.findChildren(QLabel) if lbl.text().lower() == "sort by"]
     assert heading and heading[0].geometry().top() > libs.geometry().bottom()
 

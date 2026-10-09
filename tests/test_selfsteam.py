@@ -28,32 +28,32 @@ def test_the_artwork_made_for_the_client_is_in_the_build():
 
 
 def test_the_client_is_added_with_its_artwork_and_remembered(world):
-    assert selfsteam.add(world.settings) == "added"
+    assert selfsteam.apply(world.settings) == "added"
 
     (entry,) = entries(world.user)
     assert entry["appname"] == "MOG - My Own Games" and entry["exe"] == '"/opt/MOG/MOG-Client.AppImage"'
     assert entry["StartDir"] == '"/opt/MOG"'
-    appid = world.settings.steam_client["appid"]
+    appid = world.settings.steam_clients[0]["appid"]
     grid = world.user / "config" / "grid"
     assert {p.name for p in grid.iterdir()} == {f"{appid}p.png", f"{appid}.png", f"{appid}_hero.png", f"{appid}_logo.png", f"{appid}_icon.png"}
-    assert selfsteam.added(world.settings) and config.load_settings().steam_client == world.settings.steam_client
+    assert selfsteam.added(world.settings) and config.load_settings().steam_clients == world.settings.steam_clients
 
 
 def test_asking_twice_leaves_one_entry(world):
-    selfsteam.add(world.settings)
-    selfsteam.add(world.settings)
+    selfsteam.apply(world.settings)
+    selfsteam.apply(world.settings)
     assert len(entries(world.user)) == 1
 
 
 def test_with_steam_running_the_entry_is_written_all_the_same(world):
     world.state["running"] = True
-    assert selfsteam.add(world.settings) == "added-open"
+    assert selfsteam.apply(world.settings) == "added-open"
     assert len(entries(world.user)) == 1 and world.settings.steam_client_verify is True
 
 
 def test_an_entry_steam_undid_when_it_quit_is_put_back_at_the_next_start(world):
     world.state["running"] = True
-    selfsteam.add(world.settings)
+    selfsteam.apply(world.settings)
     assert selfsteam.settle(world.settings) is None  # still running: nothing to look at yet
 
     steam.save_shortcuts(steam.shortcuts_path(world.user), {"shortcuts": {}})  # what Steam wrote when it quit
@@ -64,11 +64,73 @@ def test_an_entry_steam_undid_when_it_quit_is_put_back_at_the_next_start(world):
 
 def test_an_entry_steam_kept_is_left_alone_and_not_looked_at_again(world):
     world.state["running"] = True
-    selfsteam.add(world.settings)
+    selfsteam.apply(world.settings)
     world.state["running"] = False
     assert selfsteam.settle(world.settings) is None and world.settings.steam_client_verify is False
     steam.save_shortcuts(steam.shortcuts_path(world.user), {"shortcuts": {}})
     assert selfsteam.settle(world.settings) is None  # it was seen to stay once: not checked again
+
+
+@pytest.fixture
+def two_accounts(world, monkeypatch):
+    second = world.user.parent / "2002"
+    (second / "config").mkdir(parents=True)
+    monkeypatch.setattr(steam, "steam_user_dirs", lambda: [world.user, second])
+    world.second = second
+    return world
+
+
+def test_by_default_the_client_goes_into_every_account(two_accounts):
+    selfsteam.apply(two_accounts.settings)
+
+    assert len(entries(two_accounts.user)) == 1 and len(entries(two_accounts.second)) == 1
+    assert len(two_accounts.settings.steam_clients) == 2
+
+
+def test_only_the_accounts_picked_get_it_and_a_change_moves_it(two_accounts):
+    two_accounts.settings.steam_accounts = ["2002"]
+    selfsteam.apply(two_accounts.settings)
+    assert entries(two_accounts.user) == [] and len(entries(two_accounts.second)) == 1
+
+    two_accounts.settings.steam_accounts = ["1001"]
+    assert selfsteam.apply(two_accounts.settings) == "added"
+    assert len(entries(two_accounts.user)) == 1 and entries(two_accounts.second) == []
+
+    two_accounts.settings.steam_accounts = []
+    assert selfsteam.apply(two_accounts.settings) == "removed"
+    assert entries(two_accounts.user) == [] and selfsteam.accounts(two_accounts.settings) == []
+
+
+def test_settling_puts_back_the_entry_of_each_account_steam_undid(two_accounts):
+    two_accounts.state["running"] = True
+    selfsteam.apply(two_accounts.settings)
+    steam.save_shortcuts(steam.shortcuts_path(two_accounts.second), {"shortcuts": {}})
+    two_accounts.state["running"] = False
+
+    assert selfsteam.settle(two_accounts.settings) == "added"
+    assert len(entries(two_accounts.user)) == 1 and len(entries(two_accounts.second)) == 1
+    assert len(two_accounts.settings.steam_clients) == 2
+
+
+def test_settings_of_an_earlier_version_keep_their_account(world, monkeypatch):
+    world.settings.steam_clients = []
+    selfsteam.apply(world.settings)
+    record = world.settings.steam_clients[0]
+    config.save_settings(world.settings)
+    raw = config._read_json(config.settings_path(), {})
+    raw.pop("steam_clients"), raw.pop("steam_accounts"), raw.pop("steam_decided")
+    raw["steam_client"] = record
+    config._write_json(config.settings_path(), raw, private=True)
+
+    loaded = config.load_settings()
+
+    assert loaded.steam_clients == [record] and loaded.steam_accounts == ["1001"] and loaded.steam_decided is True
+
+
+def test_an_earlier_never_ask_turns_the_integration_off(world):
+    config._write_json(config.settings_path(), {"steam_never_ask": True}, private=True)
+    loaded = config.load_settings()
+    assert loaded.steam_accounts == [] and loaded.steam_decided is True and selfsteam.accounts(loaded) == []
 
 
 def test_a_request_an_earlier_version_left_waiting_is_carried_out(world):
@@ -78,7 +140,7 @@ def test_a_request_an_earlier_version_left_waiting_is_carried_out(world):
 
 
 def test_a_client_that_moved_is_followed_by_its_shortcut(world, monkeypatch):
-    selfsteam.add(world.settings)
+    selfsteam.apply(world.settings)
     assert selfsteam.settle(world.settings) is None  # nothing changed
 
     monkeypatch.setattr(selfsteam, "client_command", lambda: "/home/me/Games/mog.AppImage")
@@ -88,29 +150,30 @@ def test_a_client_that_moved_is_followed_by_its_shortcut(world, monkeypatch):
 
 
 def test_the_client_can_be_taken_out_again(world):
-    selfsteam.add(world.settings)
+    selfsteam.apply(world.settings)
     world.state["running"] = True
     assert selfsteam.remove(world.settings) is True
-    assert entries(world.user) == [] and world.settings.steam_client is None
+    assert entries(world.user) == [] and world.settings.steam_clients == []
     assert selfsteam.remove(world.settings) is False
 
 
 def test_without_steam_there_is_nothing_to_add_or_ask(world, monkeypatch):
     monkeypatch.setattr(steam, "steam_user_dirs", lambda: [])
-    assert selfsteam.add(world.settings) == "no-steam" and not selfsteam.available()
+    assert selfsteam.apply(world.settings) == "no-steam" and not selfsteam.available()
     assert selfsteam.should_ask(world.settings, "1.0") is False
 
 
-def test_the_question_comes_once_per_version_and_never_when_refused_or_done(world):
+def test_the_question_comes_once_per_version_and_never_once_answered(world):
     assert selfsteam.should_ask(world.settings, "1.0") is True
     world.settings.steam_asked_for = "1.0"
     assert selfsteam.should_ask(world.settings, "1.0") is False
     assert selfsteam.should_ask(world.settings, "1.1") is True  # an update asks again
 
-    world.settings.steam_never_ask = True
+    world.settings.steam_decided = True
     assert selfsteam.should_ask(world.settings, "1.2") is False
-    world.settings.steam_never_ask = False
-    selfsteam.add(world.settings)
+    world.settings.steam_decided = False
+    selfsteam.apply(world.settings)
+    world.settings.steam_decided = True
     assert selfsteam.should_ask(world.settings, "1.3") is False
 
 

@@ -59,70 +59,104 @@ def available() -> bool:
     return bool(users())
 
 
+def accounts(settings: Settings) -> list[Path]:
+    """The Steam accounts MOG goes into: every one found, or the ones the user picked (none when it is turned off)."""
+    found = users()
+    if settings.steam_accounts is None:
+        return found
+    return [d for d in found if d.name in settings.steam_accounts]
+
+
+def account_of(record: dict) -> Path:
+    return Path(record["shortcuts_path"]).parent.parent
+
+
 def _target() -> tuple[str, str]:
     exe = client_command()
     return exe, str(Path(exe).parent)
 
 
 def added(settings: Settings) -> bool:
-    return bool(settings.steam_client)
+    return bool(settings.steam_clients)
 
 
-def add(settings: Settings, user_dir: Path | None = None) -> str:
-    """Put the client in Steam's library now. "added", "added-open" (Steam was running: it shows the entry after a restart,
-    and the next start of MOG makes sure Steam did not undo it) or "no-steam"."""
-    user_dir = user_dir or next(iter(users()), None)
-    if user_dir is None:
+def apply(settings: Settings) -> str:
+    """Bring the client's entries in line with the accounts wanted: one in each, none anywhere else. "added" or
+    "added-open" (Steam was running: it shows the entry after a restart, and the next start of MOG makes sure Steam did
+    not undo it) when one was written, "removed" when only entries went, "unchanged", or "no-steam"."""
+    if not users():
         return "no-steam"
+    wanted = accounts(settings)
+    kept = []
+    for record in settings.steam_clients:
+        if account_of(record) in wanted:
+            kept.append(record)
+        else:
+            steam.remove_shortcut(record)
+    removed = len(kept) != len(settings.steam_clients)
     exe, start_dir = _target()
-    if settings.steam_client:  # one entry only: a new one replaces what an earlier request made
-        steam.remove_shortcut(settings.steam_client)
-    settings.steam_client = steam.add_shortcut(user_dir, NAME, exe, start_dir, "", artwork=artwork())
+    have = {account_of(r) for r in kept}
+    new = [steam.add_shortcut(d, NAME, exe, start_dir, "", artwork=artwork()) for d in wanted if d not in have]
+    settings.steam_clients = kept + new
     settings.steam_client_pending = ""
-    settings.steam_client_verify = steam.steam_running()
+    if new:
+        settings.steam_client_verify = steam.steam_running()
     save_settings(settings)
-    return "added-open" if settings.steam_client_verify else "added"
+    if new:
+        return "added-open" if settings.steam_client_verify else "added"
+    return "removed" if removed else "unchanged"
 
 
 def remove(settings: Settings) -> bool:
     """Take the client out of Steam's library. False when it is not there."""
-    if not settings.steam_client:
+    if not settings.steam_clients:
         return False
-    steam.remove_shortcut(settings.steam_client)
-    settings.steam_client = None
+    for record in settings.steam_clients:
+        steam.remove_shortcut(record)
+    settings.steam_clients = []
     settings.steam_client_verify = False
     save_settings(settings)
     return True
 
 
 def settle(settings: Settings) -> str | None:
-    """At start: put the entry back if Steam undid it, follow the client if it was moved or renamed (the shortcut holds its
-    path), give it pictures added since it was made. Returns "added" or "updated" when something was written."""
+    """At start, and whenever Steam has closed: put the entries back if Steam undid them, follow the client if it was moved
+    or renamed (the shortcut holds its path), give them pictures added since they were made. Returns "added" or "updated"
+    when something was written."""
     running = steam.steam_running()
-    if settings.steam_client_pending and not settings.steam_client:  # a request an earlier version left waiting
+    if settings.steam_client_pending and not settings.steam_clients:  # a request an earlier version left waiting
         user_dir = Path(settings.steam_client_pending)
         settings.steam_client_pending = ""
         save_settings(settings)
         if not user_dir.is_dir():
             return None
-        add(settings, user_dir)
+        settings.steam_accounts = [user_dir.name]
+        settings.steam_decided = True
+        apply(settings)
         return "added"
-    record = settings.steam_client
-    if not record:
+    if not settings.steam_clients:
         return None
+    outcome = None
     if settings.steam_client_verify and not running:
         settings.steam_client_verify = False
-        if not steam.has_shortcut(record):  # Steam wrote its own copy of the file when it quit
-            add(settings, Path(record["shortcuts_path"]).parent.parent)
-            return "added"
+        gone = [r for r in settings.steam_clients if not steam.has_shortcut(r)]  # Steam wrote its own copy when it quit
+        if gone:
+            exe, start_dir = _target()
+            for record in gone:
+                settings.steam_clients[settings.steam_clients.index(record)] = steam.add_shortcut(
+                    account_of(record), NAME, exe, start_dir, "", artwork=artwork()
+                )
+            outcome = "added"
         save_settings(settings)
     exe, start_dir = _target()
-    changed = bool(steam.update_shortcut(record, exe, start_dir, "", name=NAME)) | _add_missing_artwork(record)
+    changed = False
+    for record in settings.steam_clients:
+        changed |= bool(steam.update_shortcut(record, exe, start_dir, "", name=NAME)) | _add_missing_artwork(record)
     if changed:
         settings.steam_client_verify = settings.steam_client_verify or running
         save_settings(settings)
-        return "updated"
-    return None
+        outcome = outcome or "updated"
+    return outcome
 
 
 def _add_missing_artwork(record: dict) -> bool:
@@ -139,11 +173,22 @@ def _add_missing_artwork(record: dict) -> bool:
 
 
 def should_ask(settings: Settings, version: str) -> bool:
-    """Whether to offer the shortcut now: Steam is here, it is not in yet, the user did not say never, and they were not
-    asked already for this version (so an update brings the question back once)."""
-    return (
-        not settings.steam_client
-        and not settings.steam_never_ask
-        and settings.steam_asked_for != version
-        and available()
-    )
+    """Whether to offer the integration now: Steam is here, the user has not answered yet, and they were not asked already
+    for this version (so an update brings the question back once)."""
+    return not settings.steam_decided and settings.steam_asked_for != version and available()
+
+
+def undecided(settings: Settings) -> bool:
+    """Steam is here and the user has not said which accounts MOG goes into."""
+    return not settings.steam_decided and available()
+
+
+def status(settings: Settings) -> str:
+    """What the settings row says: where MOG stands in Steam."""
+    if not available():
+        return "Steam was not found on this computer."
+    wanted = accounts(settings)
+    if not wanted:
+        return "Off: MOG and its games are not added to Steam."
+    names = ", ".join(label(d, users()) for d in wanted)
+    return f"MOG and its games go into: {names}."

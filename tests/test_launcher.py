@@ -240,7 +240,7 @@ def test_steam_shortcut_runs_the_launch_script_which_execs_the_launcher(monkeypa
     monkeypatch.setattr(manager.steam, "add_shortcut", lambda user, name, exe, start_dir, options, artwork=None: seen.update(exe=exe, dir=start_dir, options=options) or {})
     game = _game(tmp_path)
 
-    manager.finish_setup(game, {}, game.executable, tmp_path / "steamuser", desktop=False)
+    manager.finish_setup(game, {}, game.executable, [tmp_path / "steamuser"], desktop=False)
 
     script = launcher.launch_script_path(game)
     assert seen["exe"] == str(script) and seen["options"] == ""

@@ -78,41 +78,68 @@ def buttons(window):
     return [b.text() for b in window.current_page().findChildren(QPushButton)]
 
 
-# --- MOG Client in Steam ---
+# --- Steam integration ---
 
 
-def test_the_settings_button_adds_and_removes_the_client(win, qapp, steam_world):
+def second_account(steam_world, tmp_path):
+    second = tmp_path / "Steam" / "userdata" / "2002"
+    (second / "config").mkdir(parents=True)
+    steam_world.state["users"] = [steam_world.user, second]
+    return second
+
+
+def test_the_settings_button_opens_the_accounts_and_all_users_puts_the_client_in(win, qapp, steam_world):
     win.open_settings()
     page = win.current_page()
-    assert page.steam_button.text() == "Add to Steam" and page.steam_button.isEnabled()
+    assert page.steam_button.text() == "Settings" and page.steam_button.isEnabled()
 
     page.steam_button.click()
     pump(qapp)
-    assert win.overlay.showing and "My Own Games is in your Steam library" in win.overlay.body.text()
-    assert page.steam_button.text() == "Remove from Steam" and win.app.settings.steam_client
-    win.overlay.dismiss()
-
-    page.steam_button.click()
+    accounts = win.current_page()
+    assert isinstance(accounts, gui.SteamAccountsPage) and accounts.everyone.isDefault()
+    accounts.everyone.click()
     pump(qapp)
-    assert page.steam_button.text() == "Add to Steam" and win.app.settings.steam_client is None
+
+    settings = win.app.settings
+    assert settings.steam_accounts is None and settings.steam_decided and len(settings.steam_clients) == 1
+    assert win.overlay.showing and "Steam library" in win.overlay.body.text()
+    assert "Account 1001" in page._steam_row.status.text()
 
 
-def test_with_steam_open_the_client_is_added_at_once_and_the_message_says_what_to_do(win, qapp, steam_world):
+def test_with_steam_open_the_client_is_written_at_once_and_the_message_says_to_restart(win, qapp, steam_world):
     steam_world.state["running"] = True
-    win.open_settings()
-    page = win.current_page()
-    page.steam_button.click()
+    win.open_steam_integration()
+    win.current_page().everyone.click()
     pump(qapp)
-    assert not isinstance(win.current_page(), gui.ChoicePage)  # nothing is asked: it is done
     assert win.overlay.showing and "Restart Steam" in win.overlay.body.text()
-    assert win.app.settings.steam_client and win.app.settings.steam_client_verify is True
-    assert page.steam_button.text() == "Remove from Steam"
+    assert win.app.settings.steam_clients and win.app.settings.steam_client_verify is True
 
 
-def test_the_message_is_shorter_when_steam_is_closed(win, qapp, steam_world):
-    win.add_client_to_steam()
+def test_continue_takes_the_ticked_accounts_only(win, qapp, steam_world, tmp_path):
+    second = second_account(steam_world, tmp_path)
+    win.open_steam_integration()
+    page = win.current_page()
+    assert [page.list.item(i).text() for i in range(2)] == ["Account 1001 (1001)", "Account 2002 (2002)"]
+    assert page.ticked() == ["1001", "2002"]  # everyone, until told otherwise
+
+    page.list.item(0).setCheckState(gui.Qt.Unchecked)
+    page.finish(page.ticked())
     pump(qapp)
-    assert "next time it starts" in win.overlay.body.text() and not win.app.settings.steam_client_verify
+
+    settings = win.app.settings
+    assert settings.steam_accounts == ["2002"] and [str(second) in c["shortcuts_path"] for c in settings.steam_clients] == [True]
+
+
+def test_continuing_with_nobody_ticked_turns_the_integration_off(win, qapp, steam_world):
+    win.app.settings.steam_accounts = None
+    win.open_steam_integration()
+    page = win.current_page()
+    page.list.item(0).setCheckState(gui.Qt.Unchecked)
+    page.finish(page.ticked())
+    pump(qapp)
+    settings = win.app.settings
+    assert settings.steam_accounts == [] and settings.steam_decided and settings.steam_clients == []
+    assert "Off" in selfsteam.status(settings)
 
 
 def test_without_steam_the_button_says_so(win, qapp, steam_world):
@@ -122,56 +149,55 @@ def test_without_steam_the_button_says_so(win, qapp, steam_world):
     assert not page.steam_button.isEnabled() and "not found" in page._steam_row.status.text()
 
 
-def test_several_steam_accounts_are_asked_which(win, qapp, steam_world, tmp_path):
-    second = tmp_path / "Steam" / "userdata" / "2002"
-    (second / "config").mkdir(parents=True)
-    steam_world.state["users"] = [steam_world.user, second]
-    win.add_client_to_steam()
-    pump(qapp)
-    page = win.current_page()
-    assert isinstance(page, gui.ChoicePage) and page.title == "Which Steam account?"
-    assert [page.list.item(i).text() for i in range(2)] == ["Account 1001", "Account 2002"]  # no name known: the number
-    page.list.setCurrentRow(1)
-    page.accept()
-    assert str(second) in win.app.settings.steam_client["shortcuts_path"]
-
-
-def test_an_update_asks_once_and_each_answer_is_kept(win, qapp, steam_world):
+def test_an_update_asks_until_answered_and_then_never_again(win, qapp, steam_world):
     win.offer_steam_client()
     pump(qapp)
-    page = win.current_page()
-    assert isinstance(page, gui.ChoicePage) and page.title == "Add MOG Client to Steam?"
+    assert isinstance(win.current_page(), gui.SteamAccountsPage)
     assert win.app.settings.steam_asked_for == __version__
 
-    page.list.setCurrentRow(1)  # not now
-    page.accept()
-    pump(qapp)
+    win.back()  # left without answering
     win.offer_steam_client()
-    assert not isinstance(win.current_page(), gui.ChoicePage)  # not asked again for this version
+    assert not isinstance(win.current_page(), gui.SteamAccountsPage)  # not asked again for this version
 
     win.app.settings.steam_asked_for = "older"
     win.offer_steam_client()
     pump(qapp)
-    win.current_page().list.setCurrentRow(2)  # never
-    win.current_page().accept()
-    assert win.app.settings.steam_never_ask is True
+    assert isinstance(win.current_page(), gui.SteamAccountsPage)
+    win.current_page().everyone.click()
+    pump(qapp)
+    win.overlay.dismiss()
+
     win.app.settings.steam_asked_for = "older"
     win.offer_steam_client()
-    assert not isinstance(win.current_page(), gui.ChoicePage)
-
-
-def test_saying_yes_to_the_question_puts_the_client_in(win, qapp, steam_world):
-    win.offer_steam_client()
-    pump(qapp)
-    win.current_page().accept()  # the first answer: Add to Steam
-    pump(qapp)
-    assert win.app.settings.steam_client and "Steam library" in win.overlay.body.text()
+    assert not isinstance(win.current_page(), gui.SteamAccountsPage)
 
 
 def test_nothing_is_asked_when_steam_is_not_there(win, qapp, steam_world):
     steam_world.state["users"] = []
     win.offer_steam_client()
-    assert not isinstance(win.current_page(), gui.ChoicePage)
+    assert not isinstance(win.current_page(), gui.SteamAccountsPage)
+
+
+def test_the_executable_page_offers_the_accounts_that_are_on_and_greys_the_others(win, qapp, steam_world, tmp_path):
+    from mog_client.config import InstalledGame
+
+    second_account(steam_world, tmp_path)
+    win.app.settings.steam_accounts = ["2002"]
+    rec = InstalledGame(game_id=5, name="G", install_dir=str(tmp_path))
+    page = gui.ExecutablePage(win, rec, lambda *a: None)
+
+    first, second = page.account_toggles.values()
+    assert page.steam.isChecked() and not first.isEnabled() and not first.isChecked()
+    assert second.isEnabled() and second.isChecked()
+    assert [d.name for d in page.steam_users()] == ["2002"]
+
+
+def test_the_executable_page_cannot_add_to_steam_when_no_account_is_on(win, qapp, steam_world, tmp_path):
+    from mog_client.config import InstalledGame
+
+    win.app.settings.steam_accounts = []
+    page = gui.ExecutablePage(win, InstalledGame(game_id=5, name="G", install_dir=str(tmp_path)), lambda *a: None)
+    assert not page.steam.isEnabled() and not page.steam.isChecked() and page.steam_users() == []
 
 
 # --- the first-start guide ---
@@ -261,9 +287,11 @@ def test_the_steam_step_adds_the_client_and_says_so(fresh, qapp, monkeypatch):
     page.go(page.steps.index("steam"))
     page.steam_button.click()
     pump(qapp)
+    fresh.current_page().everyone.click()
+    pump(qapp)
     fresh.overlay.dismiss()
     page._update_steam()
-    assert page.steam_status.text() == "MOG Client is in your Steam library." and fresh.app.settings.steam_client
+    assert "Account 1001" in page.steam_status.text() and fresh.app.settings.steam_clients
 
 
 def test_setting_up_later_marks_the_guide_done_and_opens_settings(fresh, qapp):
