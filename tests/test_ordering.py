@@ -36,6 +36,17 @@ def test_release_date_puts_the_undated_last_in_both_directions():
     assert order(groups, order="oldest") == ["Old", "New", "None"]
 
 
+def test_size_puts_the_unmeasured_last_in_both_directions():
+    def sized(gid, name, size):
+        g = game(gid, name)
+        g.game["size_bytes"] = size
+        return g
+
+    groups = [sized(1, "Small", 10), sized(2, "Unknown", None), sized(3, "Big", 900), sized(4, "Also", 10)]
+    assert order(groups, order="largest") == ["Big", "Also", "Small", "Unknown"]
+    assert order(groups, order="smallest") == ["Also", "Small", "Big", "Unknown"]
+
+
 def test_last_played_beats_installed_and_installed_beats_the_order_even_when_not_installed():
     groups = [game(1, "A"), game(2, "B"), game(3, "C"), game(4, "D")]
     installed = {1, 2}

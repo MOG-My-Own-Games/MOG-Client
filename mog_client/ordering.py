@@ -13,6 +13,8 @@ ORDERS = {
     "oldest": "Oldest release",
     "az": "A to Z",
     "za": "Z to A",
+    "largest": "Largest first",
+    "smallest": "Smallest first",
 }
 
 
@@ -51,6 +53,10 @@ def released(group: Group) -> float | None:
     return ((group.game.get("igdb_metadata") or {}).get("first_release_date")) or None
 
 
+def size_of(group: Group) -> int | None:
+    return group.game.get("size_bytes")
+
+
 def sort_groups(
     groups: list[Group],
     *,
@@ -62,11 +68,14 @@ def sort_groups(
     installed_first: bool,
 ) -> list[Group]:
     """Stable passes from the least to the most important rule, so each later rule only breaks the ties of the
-    ones after it. A game without a release date, or never played, goes after the rest."""
+    ones after it. A game without a release date or a size, or never played, goes after the rest."""
     items = sorted(groups, key=lambda g: g.game["name"].lower(), reverse=order == "za")
     if order in ("newest", "oldest"):
         dated = sorted((g for g in items if released(g) is not None), key=released, reverse=order == "newest")
         items = dated + [g for g in items if released(g) is None]
+    if order in ("largest", "smallest"):
+        sized = sorted((g for g in items if size_of(g) is not None), key=size_of, reverse=order == "largest")
+        items = sized + [g for g in items if size_of(g) is None]
     if installed_first:
         items.sort(key=lambda g: not installed(g))
     if last_played_first:
