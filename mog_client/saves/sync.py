@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mog_client import logstore
+from mog_client import logsend, logstore
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import native
@@ -153,6 +153,10 @@ def add_folder(game_id: int, path: Path) -> str | None:
     return key
 
 
+# Outcomes with nothing to explain: the saves did not change, so the log is not sent.
+QUIET_STATUSES = ("unchanged", "nothing", "duplicate")
+
+
 def backup(
     ctx: Context, trigger: str, since_ns: int | None = None, force: bool = False, upload: bool = True
 ) -> BackupResult:
@@ -163,10 +167,17 @@ def backup(
     except Exception:
         if upload:
             _record_check(ctx.rec.game_id, "failed", trigger)
+            _send_log(ctx)
         raise
     if upload:
         _record_check(ctx.rec.game_id, result.status, trigger)
+        if result.status not in QUIET_STATUSES:
+            _send_log(ctx)
     return result
+
+
+def _send_log(ctx: Context) -> None:
+    logsend.send(ctx.client, ctx.device.device_id, ctx.settings, ctx.rec.game_id)
 
 
 def _record_check(game_id: int, status: str, trigger: str) -> None:

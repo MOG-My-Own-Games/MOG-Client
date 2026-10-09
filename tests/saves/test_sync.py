@@ -382,3 +382,31 @@ def test_a_backup_that_fails_is_noted_as_failed(world, monkeypatch):
     with pytest.raises(RuntimeError):
         sync.backup(world.ctx, sync.QUIT, since_ns=0)
     assert load_state(7).last_check_status == "failed"
+
+
+@pytest.mark.parametrize(
+    ("status", "sent"), [("uploaded", True), ("needs-prefix", True), ("unchanged", False), ("nothing", False), ("duplicate", False)]
+)
+def test_the_log_goes_along_when_a_backup_has_something_to_explain(world, monkeypatch, status, sent):
+    calls = []
+    monkeypatch.setattr(sync, "_backup", lambda *a: sync.BackupResult(status))
+    monkeypatch.setattr(sync.logsend, "send", lambda *args: calls.append(args))
+
+    sync.backup(world.ctx, sync.QUIT)
+
+    assert bool(calls) is sent
+    if sent:
+        assert calls[0][1:] == (1, world.ctx.settings, 7)
+
+
+def test_the_log_goes_along_when_a_backup_fails(world, monkeypatch):
+    calls = []
+
+    def broken(*args):
+        raise RuntimeError("server down")
+
+    monkeypatch.setattr(sync, "_backup", broken)
+    monkeypatch.setattr(sync.logsend, "send", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError):
+        sync.backup(world.ctx, sync.QUIT)
+    assert len(calls) == 1

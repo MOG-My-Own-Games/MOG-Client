@@ -71,10 +71,16 @@ class Client:
         return h
 
     def request(
-        self, method: str, path: str, body: dict | None = None, headers: dict | None = None, timeout: float | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        headers: dict | None = None,
+        timeout: float | None = None,
+        data: bytes | None = None,
     ) -> tuple[int, bytes, dict]:
+        """`body` is sent as JSON; `data` is sent as it is (the caller says its type in `headers`)."""
         url = self.base + path
-        data = None
         if body is not None:
             data = json.dumps(body).encode()
             headers = headers or {}
@@ -667,6 +673,21 @@ class MogClient:
         if status != 200:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
+
+    def upload_device_log(self, device_id: int, text: str) -> bool:
+        """Replace this device's log on the server. False when the server cannot keep it (an older one) or cannot
+        be reached: the log is a courtesy, never a reason to fail."""
+        try:
+            status, _, _ = self.c.request(
+                "PUT",
+                f"/api/devices/{device_id}/log",
+                data=text.encode("utf-8", errors="replace"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+                timeout=30.0,
+            )
+        except RuntimeError:
+            return False
+        return status in (200, 204)
 
     def upload_save(self, game_id: int, device_id: int, archive: Path, trigger: str) -> dict:
         query = urllib.parse.urlencode({"device_id": device_id, "trigger": trigger})
