@@ -108,3 +108,51 @@ def test_total_free_sums_connected_folders_once_per_disk():
     disks = {"/a": 1, "/b": 1, "/c": 2, "/d": 3}
     total = installdirs.total_free([Path(r) for r in ("/a", "/b", "/c", "/d")], usable, free_of, lambda root: disks[str(root)])
     assert total == 15 * GB  # /b shares /a's disk, /d is not connected
+
+
+def test_pruning_removes_a_folder_with_no_file_anywhere_and_the_empty_folders_above_it(tmp_path):
+    root = tmp_path / "games"
+    (root / "Game" / "mods" / "deeper").mkdir(parents=True)
+
+    installdirs.prune_empty(root / "Game" / "mods", [root])
+
+    assert not (root / "Game" / "mods").exists() and not (root / "Game").exists()
+    assert root.is_dir()  # the install folder itself stays
+
+
+def test_pruning_stops_at_the_first_folder_that_still_holds_something(tmp_path):
+    root = tmp_path / "games"
+    (root / "Game" / "mods").mkdir(parents=True)
+    (root / "Game" / "game.exe").write_bytes(b"x")
+    (root / "Other").mkdir()
+
+    installdirs.prune_empty(root / "Game" / "mods", [root])
+
+    assert not (root / "Game" / "mods").exists() and (root / "Game" / "game.exe").is_file()
+    assert (root / "Other").is_dir()  # a sibling is not this folder's business
+
+
+def test_a_folder_with_a_file_inside_is_left_whole(tmp_path):
+    root = tmp_path / "games"
+    (root / "Game" / "mods").mkdir(parents=True)
+    (root / "Game" / "mods" / "a.zip").write_bytes(b"x")
+
+    installdirs.prune_empty(root / "Game" / "mods", [root])
+
+    assert (root / "Game" / "mods" / "a.zip").is_file()
+
+
+def test_pruning_never_goes_outside_the_keep_folders_or_into_a_link(tmp_path):
+    outside = tmp_path / "elsewhere" / "Empty"
+    outside.mkdir(parents=True)
+    root = tmp_path / "games"
+    (root / "Game").mkdir(parents=True)
+
+    installdirs.prune_empty(outside, [root])
+    assert outside.is_dir()
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (root / "Game" / "link").symlink_to(target)
+    installdirs.prune_empty(root / "Game", [root])
+    assert (root / "Game" / "link").is_symlink() and target.is_dir()

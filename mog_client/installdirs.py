@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +59,39 @@ def _disk(root: Path) -> int:
     while not probe.exists() and probe.parent != probe:
         probe = probe.parent
     return probe.stat().st_dev
+
+
+def _holds_files(folder: Path) -> bool:
+    """Whether anything but plain folders is anywhere under `folder` (a link counts: it is not ours to delete)."""
+    for dirpath, dirs, files in os.walk(folder):
+        if files or any(os.path.islink(os.path.join(dirpath, d)) for d in dirs):
+            return True
+    return False
+
+
+def prune_empty(folder: Path, keep: Iterable[Path]) -> None:
+    """Remove `folder` when no file is anywhere under it, then each folder above it that has become empty. Never
+    removes a `keep` folder (an install folder, say) or anything outside them."""
+    stops = {p.resolve() for p in keep}
+    folder = Path(folder)
+
+    def inside() -> bool:
+        here = folder.resolve()
+        return here not in stops and any(here.is_relative_to(s) for s in stops)
+
+    if not (folder.is_dir() and inside()) or _holds_files(folder):
+        return
+    try:
+        shutil.rmtree(folder)
+    except OSError:
+        return
+    folder = folder.parent
+    while inside():
+        try:
+            folder.rmdir()
+        except OSError:
+            return
+        folder = folder.parent
 
 
 @dataclass
