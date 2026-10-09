@@ -26,7 +26,7 @@ STREAM_CHUNK = 1024 * 1024
 REQUEST_RETRIES = 3
 MANIFEST_INTERVAL = 3
 
-ACTIVE_STATES = {"detecting", "awaiting_installer", "installing", "streaming"}
+ACTIVE_STATES = {"detecting", "awaiting_installer", "queued", "installing", "streaming"}
 
 # Distinguishes this client process from another one in the server's own
 # per-(user, device) tracking, should that land later (see MOG-Server's

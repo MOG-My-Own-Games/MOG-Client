@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace
 
 from mog_client import config, manager
@@ -141,3 +142,69 @@ def test_an_install_nobody_decided_for_leaves_it_to_the_server(tmp_path, monkeyp
         except RuntimeError:
             pass
     assert started == [None, False]
+
+
+# --- more installs than the server runs at once: they wait, they do not fail ---
+
+
+def test_a_server_that_refuses_a_start_for_lack_of_places_is_asked_again_not_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    seen, waits = [], []
+
+    class Stop:
+        def is_set(self):
+            return False
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            return False  # not cancelled
+
+    class Server:
+        c = SimpleNamespace(base="http://s")
+        asked = 0
+
+        def get_session(self, gid):
+            return {}
+
+        def start_session(self, gid, installer_path, proton, ttl, **kw):
+            Server.asked += 1
+            if Server.asked < 3:
+                raise RuntimeError("HTTP 429: Too many concurrent installs")
+            raise RuntimeError("stop here")  # what follows is the download, not under test
+
+    settings = Settings(install_dirs=[str(tmp_path / "games")])
+    with pytest.raises(RuntimeError, match="stop here"):
+        manager.run_install(Server(), {"id": 4, "name": "Metroid"}, settings, Stop(), lambda m: None, seen.append, lambda a, b: None, None, None, None)
+
+    assert Server.asked == 3 and waits == [manager.QUEUE_RETRY_SECONDS] * 2  # it waited, twice, and asked again
+    assert seen == [{"state": "queued"}, {"state": "queued"}]  # and the window knew it was waiting
+
+
+def test_cancelling_while_waiting_for_a_place_ends_quietly(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+
+    class Stop:
+        def is_set(self):
+            return True
+
+        def wait(self, seconds):
+            return True
+
+    class Server:
+        c = SimpleNamespace(base="http://s")
+
+        def get_session(self, gid):
+            return {}
+
+        def start_session(self, *a, **kw):
+            raise RuntimeError("HTTP 429: Too many concurrent installs")
+
+    settings = Settings(install_dirs=[str(tmp_path / "games")])
+    rec = manager.run_install(Server(), {"id": 4, "name": "Metroid"}, settings, Stop(), lambda m: None, lambda s: None, lambda a, b: None, None, None, None)
+    assert rec.game_id == 4  # no error
+
+
+def test_a_queued_session_is_one_the_client_keeps_waiting_for():
+    from mog_client.api import ACTIVE_STATES
+
+    assert "queued" in ACTIVE_STATES

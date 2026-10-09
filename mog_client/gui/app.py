@@ -175,6 +175,8 @@ OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
 CARD_PULSE_MS, CARD_RING, PAGE_RING = 900, 8, 22  # a task starting: the ring around the game's cover, how long it lasts and how far it spreads
 SPIN_MS = 1100  # one turn of the wedge on the cover and of the ring on Play
+REPORT_EVERY = 0.25  # seconds between the progress reports of a download that reach the window
+LABELS_EVERY_MS = 250  # the library redraws what a download changed this often, however many reports came
 ACTIVE_ICON = QSize(32, 32)
 NOTIFICATION_ICON = QSize(64, 64)
 # What the server records about something the client did itself; every other kind comes from the server.
@@ -240,6 +242,7 @@ class App:
         self.games: dict[int, dict] = {}
         self.installs: dict[int, threading.Event] = {}
         self.progress: dict[int, tuple[int, int, str]] = {}
+        self.queued: dict[int, int] = {}  # games the server holds in its queue -> their place (1 is next; 0 when not said)
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
@@ -591,9 +594,16 @@ class App:
         meter = RateMeter()
         meter_lock = threading.Lock()  # several files report at once
 
+        last_report = [0.0]
+
         def report(written: int, total: int) -> None:
             with meter_lock:
-                meter.add(time.monotonic(), written)
+                now = time.monotonic()
+                meter.add(now, written)
+                if now - last_report[0] < REPORT_EVERY and not (total and written >= total):
+                    self.progress[gid] = (written, total, self.progress.get(gid, (0, 0, ""))[2])
+                    return  # every chunk of every file reports: the window is told a few times a second
+                last_report[0] = now
                 speed, eta = meter.speed(), meter.eta(written, total)
             label = f"Downloading {fmt_bytes(written)} / {fmt_bytes(total)}"
             if speed:
@@ -607,6 +617,10 @@ class App:
             bridge.progress.emit(gid, written, total, label)
 
         def on_session(s: dict) -> None:
+            if s.get("state") == "queued":
+                self.queued[gid] = s.get("queue_position") or 0
+            elif self.queued.pop(gid, None) is not None:
+                bridge.activity.emit()  # its turn came: the sidebar moves it up among the running ones
             detail = s.get("phase_detail")
             server_state["label"] = s.get("state", "") + (f": {detail}" if detail else "")
             if s.get("auto_status") == "running" and s.get("auto_detail"):
@@ -637,6 +651,7 @@ class App:
                 err = str(e)
             self.installs.pop(gid, None)
             self.progress.pop(gid, None)
+            self.queued.pop(gid, None)
             self.stopping.discard(gid)
             activity.remove_install(gid)
             follow_up = self.after_stop.take(gid)
@@ -2825,10 +2840,9 @@ def grid_scale(room: int) -> float:
 
 class CoverDelegate(QStyledItemDelegate):
     """Cover art with an install progress bar along its bottom edge, then the title. A game with a task going on has a
-    ring turning round its cover (`angle` is where its head is, moved by the library page). `scale` sizes the cell and
-    the cover to fit the columns (see grid_scale); the title stays the same size."""
+    pie filling over its cover (see paint_pie). `scale` sizes the cell and the cover to fit the columns (see
+    grid_scale); the title stays the same size."""
 
-    angle = 0.0
     scale = 1.0
 
     def cell_size(self) -> QSize:
@@ -2869,8 +2883,9 @@ class CoverDelegate(QStyledItemDelegate):
         if state := index.data(ROLE_CORNER):
             paint_state_badge(painter, cover, state)
         painter.setClipping(False)
-        if index.data(ROLE_BUSY):
-            paint_spin_ring(painter, cover.adjusted(-2, -2, 2, 2), self.angle)
+        if index.data(ROLE_BUSY):  # dimmed, with a pie as full as the task is; nothing turns (see _refresh_rings)
+            progress = index.data(ROLE_PROGRESS)
+            paint_pie(painter, cover, "download", progress // 10 if progress else None)
         if (pulse := index.data(ROLE_PULSE)) is not None:
             paint_ring(painter, cover, pulse)
         painter.setPen(QColor("#6b7380" if absent else "#e8eaed"))
@@ -3124,12 +3139,11 @@ class LibraryPage(Page):
         self._card_pulses: dict[int, QVariantAnimation] = {}
         self._cards_due: set[int] = set()  # the games whose task started while this page was not in front
         self._busy_gids: set[int] = set()  # the games with a task going on: their covers carry the turning ring
-        self._spin = QVariantAnimation(self)
-        self._spin.setStartValue(0.0)
-        self._spin.setEndValue(360.0)
-        self._spin.setDuration(SPIN_MS)
-        self._spin.setLoopCount(-1)
-        self._spin.valueChanged.connect(self._turn_rings)
+        self._labels_due: set[int] = set()  # games whose download moved since the grid was last redrawn
+        self._labels_timer = QTimer(self)
+        self._labels_timer.setSingleShot(True)
+        self._labels_timer.timeout.connect(self._flush_labels)
+        self._task_rows: list[tuple] = []  # the sidebar's list of tasks as it was last drawn
         self._fill_sorts()
         self.installs_box.setVisible(False)  # only while an install runs (see update_active)
         self.sidebar.setVisible(win.app.settings.show_sidebar)
@@ -3319,16 +3333,34 @@ class LibraryPage(Page):
         item.setData(ROLE_CORNER, corner_state(self.win.app.active_version(group)))
         item.setData(ROLE_BUSY, any(m["id"] in self._busy_gids for m in group.members))
 
+    def queue_label(self, gid: int) -> None:
+        """A download moved: redraw its game soon, once for however many reports come before then."""
+        self._labels_due.add(gid)
+        if not self._labels_timer.isActive():
+            self._labels_timer.start(LABELS_EVERY_MS)
+
+    def _flush_labels(self) -> None:
+        due, self._labels_due = self._labels_due, set()
+        if not due:
+            return
+        lib = load_library()
+        for gid in due:
+            self._update_label(gid, lib)
+        self.update_active()
+
     def update_label(self, gid: int) -> None:
+        self._update_label(gid, load_library())
+        self.update_active()
+
+    def _update_label(self, gid: int, lib: dict) -> None:
         item = self.items.get(gid)
         group = self.win.app.group_of.get(gid)
         if item is not None and group is not None:
-            self._fill_item(item, group, load_library())
-            now = self._rank(group, load_library())
+            self._fill_item(item, group, lib)
+            now = self._rank(group, lib)
             if self._ranks.get(id(group), now) != now:
                 # Started or finished installing, or removed: the game belongs elsewhere in the order.
                 QTimer.singleShot(0, lambda: self.populate(self.win.search.text().lower()))
-        self.update_active()
 
     def refresh_space(self) -> None:
         free = installdirs.total_free(self.win.app.settings.install_roots)
@@ -3372,35 +3404,20 @@ class LibraryPage(Page):
         self._card_pulses[gid] = animation
         animation.start()
 
-    def update_active(self) -> None:
-        """What is going on in the background, one row each: installs, saves being synced and mods being fetched."""
+    def _draw_tasks(self, rows: list[tuple]) -> None:
+        """The sidebar's list of tasks. Drawn again only when it changed, and only its words when the same tasks are listed
+        (a download's percent): rebuilding the list for every report made the whole window crawl."""
+        if rows == self._task_rows:
+            return
+        same_tasks = len(rows) == len(self._task_rows) and all(
+            (a[0], a[2], a[3]) == (b[0], b[2], b[3]) for a, b in zip(rows, self._task_rows)
+        )
+        self._task_rows = list(rows)
         app = self.win.app
-        installing = [gid for gid in app.installs if gid in app.games]
-        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None, "install") for gid in installing]
-        rows += [
-            (gid, "Syncing saves...", None, "sync") for gid in sorted(self.syncing) if gid in app.games and gid not in installing
-        ]
-        rows += [
-            (gid, "Backing up saves...", None, "backup")
-            for gid in sorted(self.win.saves.uploading)
-            if gid in app.games and gid not in installing and gid not in self.syncing
-        ]
-        rows += [
-            (gid, "Putting the saves back..." if job.applying else f"Restoring saves... {job.percent}%", None, "restore")
-            for gid, job in self.win.saves.restoring.items()
-            if gid in app.games and gid not in installing
-        ]
-        rows += [
-            (gid, f"Mod {name}\n{stage}... {pct}%", name, "mod")
-            for (gid, name), (stage, pct) in app.mod_jobs.items()
-            if gid in app.games
-        ]
-        keys = {(gid, mod_name or kind) for gid, _doing, mod_name, kind in rows}
-        if keys != self._task_keys:
-            QTimer.singleShot(0, self.refresh_space)  # an install or a removal moved the free space
-        new_games = {gid for gid, _what in keys - self._task_keys}
-        started = bool(keys - self._task_keys)
-        self._task_keys = keys
+        if same_tasks:
+            for index, (gid, doing, _mod_name, _kind) in enumerate(rows):
+                self.installs.item(index).setText(f"{app.games[gid]['name']}\n{doing}")
+            return
         row = self.installs.currentRow()
         self.installs.clear()
         for gid, doing, mod_name, _kind in rows:
@@ -3420,6 +3437,44 @@ class LibraryPage(Page):
         height = self.installs.sizeHintForRow(0) if rows else 0
         self.installs.setFixedHeight(min(300, height * len(rows) + 12))  # as tall as its rows, up to a limit
         self.installs_box.setVisible(bool(rows))
+
+    def update_active(self) -> None:
+        """What is going on in the background, one row each: installs, saves being synced and mods being fetched."""
+        app = self.win.app
+        installing = [gid for gid in app.installs if gid in app.games]
+        running = [gid for gid in installing if gid not in app.queued]
+        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None, "install") for gid in running]
+        rows += [
+            (gid, "Syncing saves...", None, "sync") for gid in sorted(self.syncing) if gid in app.games and gid not in installing
+        ]
+        rows += [
+            (gid, "Backing up saves...", None, "backup")
+            for gid in sorted(self.win.saves.uploading)
+            if gid in app.games and gid not in installing and gid not in self.syncing
+        ]
+        rows += [
+            (gid, "Putting the saves back..." if job.applying else f"Restoring saves... {job.percent}%", None, "restore")
+            for gid, job in self.win.saves.restoring.items()
+            if gid in app.games and gid not in installing
+        ]
+        rows += [
+            (gid, f"Mod {name}\n{stage}... {pct}%", name, "mod")
+            for (gid, name), (stage, pct) in app.mod_jobs.items()
+            if gid in app.games
+        ]
+        # Installs the server holds in its queue go last, below everything that is going on, in the order they will start.
+        waiting = sorted((gid for gid in installing if gid in app.queued), key=lambda gid: app.queued[gid] or 1_000_000)
+        rows += [
+            (gid, f"Waiting in the queue, number {app.queued[gid]}" if app.queued[gid] else "Waiting in the queue", None, "queued")
+            for gid in waiting
+        ]
+        keys = {(gid, mod_name or kind) for gid, _doing, mod_name, kind in rows}
+        if keys != self._task_keys:
+            QTimer.singleShot(0, self.refresh_space)  # an install or a removal moved the free space
+        new_games = {gid for gid, _what in keys - self._task_keys}
+        started = bool(keys - self._task_keys)
+        self._task_keys = keys
+        self._draw_tasks(rows)
         page = self.win.stack.currentWidget()
         if isinstance(page, GamePage):
             page.update_transfer()
@@ -3438,26 +3493,13 @@ class LibraryPage(Page):
         self._refresh_rings()
 
     def _refresh_rings(self) -> None:
-        """Mark the covers of the games with a task going on (an install or download, mods, saves moving) so they carry
-        the turning ring, and keep it turning only while there is one."""
-        busy = False
+        """Mark the covers of the games with a task going on (an install or download, mods, saves moving): they are dimmed
+        and show how far it is (see CoverDelegate). Nothing turns: an animation redraws the grid every frame."""
         for item in {id(i): i for i in self.items.values()}.values():
             group = self.win.app.group_of.get(item.data(Qt.UserRole))
             on = group is not None and any(m["id"] in self._busy_gids for m in group.members)
             if bool(item.data(ROLE_BUSY)) != on:
                 item.setData(ROLE_BUSY, on)
-            busy |= on
-        if busy and self._spin.state() != QAbstractAnimation.Running:
-            self._spin.start()
-        elif not busy and self._spin.state() == QAbstractAnimation.Running:
-            self._spin.stop()
-
-    def _turn_rings(self, angle: float) -> None:
-        delegate = self.grid.itemDelegate()
-        delegate.angle = angle
-        for item in {id(i): i for i in self.items.values()}.values():
-            if item.data(ROLE_BUSY):
-                self.grid.update(self.grid.indexFromItem(item))
 
     def populate(self, needle: str) -> None:
         current = self.grid.currentItem().data(Qt.UserRole) if self.grid.currentItem() else None
@@ -3601,7 +3643,7 @@ class MainWindow(QMainWindow):
         b.user.connect(self.set_user)
         b.activity.connect(self.library.update_active)
         b.finished.connect(lambda *_: self.refresh_items())
-        b.progress.connect(lambda gid, *_: self.library.update_label(gid))
+        b.progress.connect(lambda gid, *_: self.library.queue_label(gid))
         b.pad.connect(self.on_pad_event)
         b.pad_connected.connect(self.set_pad)
         b.update_checked.connect(self.on_update_checked)
@@ -3811,7 +3853,7 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001 - no session, or the server cannot say: look at the archive
                 session = {}
             # A session that is running, or finished, already settled how this game is installed.
-            live = session.get("state") in ("detecting", "installing", "streaming", "done")
+            live = session.get("state") in ("detecting", "queued", "installing", "streaming", "done")
             name = None if live else client.portable_archive(game["id"], installer)
             self.app.bridge.call.emit(lambda: self._extraction_answer(name, proceed))
 

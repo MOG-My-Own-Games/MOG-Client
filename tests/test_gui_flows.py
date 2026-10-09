@@ -1841,11 +1841,7 @@ def test_starting_an_install_and_a_mod_remembers_them_and_ending_forgets_them(wi
     win.app.bridge.activity.connect(lambda: listed.append(sorted(win.app.installs)))
     win.app.start_install(game)
     assert listed and listed[0] == [5]  # the task list hears of it at once, not with the first progress
-    for _ in range(100):
-        if 5 not in win.app.installs:
-            break
-        pump(qapp)
-        time.sleep(0.02)
+    assert _until(qapp, lambda: 5 not in win.app.installs, seconds=15)  # it runs in a thread: give a slow machine time
 
     assert ran == [[5]]  # remembered while it ran
     assert activity.load()["installs"] == []  # and forgotten once it ended
@@ -2215,28 +2211,140 @@ def test_a_task_started_on_another_page_pulses_the_cover_when_the_library_comes_
     assert _until(qapp, lambda: win.library._card_pulses == {})
 
 
-def test_a_cover_with_a_task_carries_a_turning_ring_for_as_long_as_it_runs(win, qapp, tmp_path, monkeypatch):
-    from PySide6.QtCore import QAbstractAnimation
-
+def test_a_cover_with_a_task_is_dimmed_with_a_pie_for_as_long_as_it_runs_and_nothing_turns(win, qapp, tmp_path, monkeypatch):
     from mog_client.gui.saves_ui import RestoreJob
 
     _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
     library = win.library
     item = library.items[1]
-    assert not item.data(gui.ROLE_BUSY) and library._spin.state() != QAbstractAnimation.Running
+    assert not item.data(gui.ROLE_BUSY)
 
     win.saves.restoring[1] = RestoreJob(percent=10)  # a download of saves
     win.refresh_tasks()
-    assert item.data(gui.ROLE_BUSY) is True and library._spin.state() == QAbstractAnimation.Running
-    before = library.grid.itemDelegate().angle
-    assert _until(qapp, lambda: library.grid.itemDelegate().angle != before)  # it turns
+    assert item.data(gui.ROLE_BUSY) is True
+    assert not hasattr(library, "_spin") and not hasattr(library.grid.itemDelegate(), "angle")  # no animation is kept going
 
     del win.saves.restoring[1]
     win.refresh_tasks()
-    assert not item.data(gui.ROLE_BUSY) and library._spin.state() != QAbstractAnimation.Running
+    assert not item.data(gui.ROLE_BUSY)
 
 
-def test_an_install_download_and_a_populate_keep_the_ring_on_the_cover(win, qapp, tmp_path, monkeypatch):
+def test_a_download_reports_at_most_a_few_times_a_second_not_once_per_chunk(win, qapp, monkeypatch):
+    """Every chunk of every file reports: thousands a second, each redrawing the library, froze the window."""
+    from mog_client import manager
+
+    seen = []
+    win.app.bridge.progress.connect(lambda gid, written, total, label: seen.append((written, total)))
+
+    def downloading(client, game, settings, stop, log, on_session, report, *rest):
+        total = 10 * 1024**3
+        for chunk in range(1, 4001):  # four thousand chunks in no time
+            report(chunk * total // 4000, total)
+        raise RuntimeError("stop here")  # the end of what is under test
+
+    monkeypatch.setattr(manager, "run_install", downloading)
+    game = {"id": 5, "name": "Eta", "library_id": None, "igdb_id": None}
+    win.app.set_games([game])
+    win.app.start_install(game)
+    for _ in range(100):
+        if 5 not in win.app.installs:
+            break
+        pump(qapp)
+        time.sleep(0.02)
+    pump(qapp)
+
+    assert 1 <= len(seen) <= 5, len(seen)  # the first, then at most one more per quarter second
+    assert seen[-1][0] == seen[-1][1]  # and the last, which is the full size, always gets through
+    assert win.app.progress.get(5) is None  # the install ended (the stop above), its progress is dropped
+
+
+def test_the_library_redraws_a_downloads_game_once_for_many_reports(win, qapp, tmp_path, monkeypatch):
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    library = win.library
+    drawn = []
+    real = library._update_label
+    monkeypatch.setattr(library, "_update_label", lambda gid, lib: drawn.append(gid) or real(gid, lib))
+    win.app.installs[1] = threading.Event()
+    win.refresh_tasks()
+
+    for step in range(1, 801):
+        win.app.progress[1] = (step * 10, 8000, "Downloading")
+        win.app.bridge.progress.emit(1, step * 10, 8000, "Downloading")
+    assert _until(qapp, lambda: drawn and library._labels_due == set())
+
+    assert len(drawn) <= 2, len(drawn)  # not eight hundred
+    assert library.items[1].data(gui.ROLE_PROGRESS) == 1000  # and it shows where the download had got to
+
+
+def test_the_sidebars_task_list_is_not_rebuilt_while_the_same_tasks_run(win, qapp, tmp_path, monkeypatch):
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    library = win.library
+    win.app.installs[1] = threading.Event()
+    win.app.progress[1] = (100, 1000, "")
+    library.update_active()
+    first = library.installs.item(0)
+    assert first.text().endswith("Installing... 10%")
+
+    cleared = []
+    real_clear = library.installs.clear
+    monkeypatch.setattr(library.installs, "clear", lambda: cleared.append(1) or real_clear())
+    for written in (200, 300, 400):
+        win.app.progress[1] = (written, 1000, "")
+        library.update_active()
+    assert library.installs.item(0) is first and first.text().endswith("Installing... 40%") and cleared == []  # words only
+
+    library.update_active()
+    assert cleared == []  # nothing changed: nothing is touched
+
+    win.app.installs.pop(1)
+    library.update_active()
+    assert cleared == [1] and library.installs.count() == 0  # a task that ended does rebuild it
+
+
+def test_installs_the_server_holds_in_its_queue_are_listed_below_everything_running_in_the_order_they_start(
+    win, qapp, tmp_path, monkeypatch
+):
+    games = [{"id": n, "name": f"Game {n}", "library_id": None, "igdb_id": None} for n in (1, 2, 3, 4, 5)]
+    win.app.set_games(games)
+    monkeypatch.setattr(win.app, "fetch_icon", lambda game: None)
+    for gid in (1, 2, 3, 4, 5):
+        win.app.installs[gid] = threading.Event()
+    win.app.queued.update({2: 2, 4: 1})  # the server says: game 4 is next, then game 2
+    win.saves.uploading.add(5)  # something else is going on too
+
+    win.library.update_active()
+    names = [win.library.installs.item(i).text().split("\n")[0] for i in range(win.library.installs.count())]
+    states = [win.library.installs.item(i).text().split("\n")[1] for i in range(win.library.installs.count())]
+
+    assert names == ["Game 1", "Game 3", "Game 5", "Game 4", "Game 2"]  # running first, then the queue
+    assert states[-2:] == ["Waiting in the queue, number 1", "Waiting in the queue, number 2"]
+    assert states[0].startswith("Installing")
+
+    win.app.queued.pop(4)  # its turn has come: it moves up among the running ones
+    win.library.update_active()
+    names = [win.library.installs.item(i).text().split("\n")[0] for i in range(win.library.installs.count())]
+    assert names == ["Game 1", "Game 3", "Game 4", "Game 5", "Game 2"]
+
+
+def test_the_pie_on_a_cover_fills_with_the_installs_progress(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QImage, QPainter
+
+    def drawn(percent):
+        image = QImage(200, 270, QImage.Format_ARGB32)
+        image.fill(0xFF808080)
+        painter = QPainter(image)
+        gui.paint_pie(painter, QRect(0, 0, 200, 270), "download", percent)
+        painter.end()
+        return image
+
+    # Filled clockwise from the top: at 25% only the top right is lit, at 75% the bottom left is too
+    quarter, three_quarters = drawn(25), drawn(75)
+    assert quarter.pixelColor(125, 110) == three_quarters.pixelColor(125, 110)  # lit in both
+    assert quarter.pixelColor(75, 160) != three_quarters.pixelColor(75, 160)  # not yet at 25%
+
+
+def test_an_install_download_and_a_populate_keep_the_pie_on_the_cover(win, qapp, tmp_path, monkeypatch):
     _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
     library = win.library
     win.app.installs[1] = threading.Event()  # an install is running

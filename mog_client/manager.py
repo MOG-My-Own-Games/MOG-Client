@@ -55,6 +55,7 @@ def _update(rec: InstalledGame, **changes) -> None:
 
 
 ARCHIVE_SOURCE_KINDS = ("disc image", "archive")
+QUEUE_RETRY_SECONDS = 15.0  # how often a start an older server refused (its places all taken) is asked again
 
 
 def is_loose(files: list[dict]) -> bool:
@@ -111,15 +112,28 @@ def run_install(
     session_id = existing.get("id") if existing and existing.get("state") == "done" else None
     if session_id is None:
         archive = installer is not None and installer.get("kind") in ARCHIVE_SOURCE_KINDS
-        session = client.start_session(
-            gid,
-            None if archive or installer is None else installer["path"],
-            None,
-            None,
-            source_path=installer["path"] if archive else None,
-            extract_only=True if rec.extract_only else extract_only,  # None leaves it to the server
-        )
+        while True:
+            try:
+                session = client.start_session(
+                    gid,
+                    None if archive or installer is None else installer["path"],
+                    None,
+                    None,
+                    source_path=installer["path"] if archive else None,
+                    extract_only=True if rec.extract_only else extract_only,  # None leaves it to the server
+                )
+                break
+            except RuntimeError as e:
+                # An older server refuses a start while its places are taken, where a newer one queues it: wait and ask again.
+                if "429" not in str(e) and "Too many concurrent installs" not in str(e):
+                    raise
+                on_session({"state": "queued"})
+                log("the server is running as many installs as it can: waiting for a place")
+                if stop.wait(QUEUE_RETRY_SECONDS):
+                    return rec  # cancelled while waiting: not a failure
         session_id = session.get("id")
+        if session.get("state") == "queued":
+            on_session(session)  # the window shows it waiting at once, not at the first poll
         if session.get("state") == "awaiting_installer":
             raise RuntimeError(f"{NEEDS_PICK}, open {client.c.base}{session.get('vnc_url') or ''}")
     _update(rec, session_id=session_id)
