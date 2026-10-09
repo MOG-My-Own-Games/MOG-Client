@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QTabBar, QTabWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QTabBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 ACCENT_STOPS = ((0.0, "#9e3bf7"), (1.0, "#2859f9"))
 ACCENT_HOVER_STOPS = ((0.0, "#aa53f8"), (1.0, "#426dfa"))
@@ -228,13 +240,78 @@ class FocusTabBar(QTabBar):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
             painter.setPen(QPen(QColor("white"), 2))
-            painter.drawRoundedRect(QRectF(self.tabRect(self.currentIndex())).adjusted(1, 1, -1, -1), 8, 8)
+            painter.drawRoundedRect(QRectF(self.tabRect(self.currentIndex())).adjusted(1, 1, -1, 12), 10, 10)  # its bottom corners are cut off: the tab stands on the line
 
 
-class FocusTabs(QTabWidget):
+class AccentLine(QWidget):
+    """A strip in the accent gradient."""
+
+    def __init__(self, thickness: int) -> None:
+        super().__init__()
+        self.setFixedHeight(thickness)
+
+    def paintEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), accent_gradient(0, 0, self.width(), self.height()))
+
+
+class FocusTabs(QWidget):
+    """Tabs standing on a line in the accent gradient. The bar, the line and the pages are three rows of one layout, so
+    the line is always right under the tabs and above the page (and its scrollbar), whatever the style: a QTabWidget
+    draws its own line where its style thinks the bar ends, which on some screens is above the tabs or over the page."""
+
+    LINE = 3  # px
+    GAP = 6  # between the line and the page, so a scrollbar never touches it
+    currentChanged = Signal(int)
+
     def __init__(self) -> None:
         super().__init__()
-        self.setTabBar(FocusTabBar())
+        self._bar = FocusTabBar()
+        self._bar.setDrawBase(False)
+        self._bar.setExpanding(False)
+        self.line = AccentLine(self.LINE)
+        self.pages = QStackedWidget()
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(self._bar)
+        top.addStretch(1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addLayout(top)
+        lay.addWidget(self.line)
+        lay.addSpacing(self.GAP)
+        lay.addWidget(self.pages, 1)
+        self._bar.currentChanged.connect(self._on_bar)
+
+    def _on_bar(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.currentChanged.emit(index)
+
+    def tabBar(self) -> QTabBar:  # noqa: N802 - the QTabWidget's name, which the callers use
+        return self._bar
+
+    def addTab(self, page: QWidget, text: str) -> int:  # noqa: N802
+        self.pages.addWidget(page)
+        return self._bar.addTab(text)
+
+    def count(self) -> int:
+        return self._bar.count()
+
+    def tabText(self, index: int) -> str:  # noqa: N802
+        return self._bar.tabText(index)
+
+    def currentIndex(self) -> int:  # noqa: N802
+        return self._bar.currentIndex()
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802
+        self._bar.setCurrentIndex(index)
+
+    def currentWidget(self) -> QWidget | None:  # noqa: N802
+        return self.pages.currentWidget()
+
+    def setCurrentWidget(self, page: QWidget) -> None:  # noqa: N802
+        self._bar.setCurrentIndex(self.pages.indexOf(page))
 
 
 class BadgeButton(QPushButton):
