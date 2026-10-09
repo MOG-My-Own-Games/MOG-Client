@@ -163,17 +163,24 @@ def backup(
 ) -> BackupResult:
     """Upload this game's saves if they changed. `since_ns` is when the session began, when known.
     With `upload=False` nothing is sent or remembered: "changed" says only that something differs here."""
+    began = time.monotonic()
+    name = ctx.rec.name
+    if upload:
+        logstore.info(f"Saves of {name}: backup started ({trigger})")
     if upload and not force and _restore_still_pending(ctx):
         _record_check(ctx.rec.game_id, "restore-pending", trigger)
+        logstore.info(f"Saves of {name}: not backed up, saves from another machine are waiting to be put in")
         return BackupResult("restore-pending")
     try:
         result = _backup(ctx, trigger, since_ns, force, upload)
-    except Exception:
+    except Exception as e:
         if upload:
+            logstore.warning(f"Saves of {name}: backup failed after {time.monotonic() - began:.1f}s: {e}")
             _record_check(ctx.rec.game_id, "failed", trigger)
             _send_log(ctx)
         raise
     if upload:
+        logstore.info(f"Saves of {name}: {result.status} ({time.monotonic() - began:.1f}s)")
         _record_check(ctx.rec.game_id, result.status, trigger)
         if result.status not in QUIET_STATUSES:
             _send_log(ctx)
@@ -209,7 +216,13 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
         return _backup_native(ctx, state, trigger, since_ns, force, upload)
     found = find_prefix(ctx, state)
     drive_c = _drive_c(found)
+    scan_began = time.monotonic()
     candidates = _candidates(ctx, drive_c)
+    if upload:
+        logstore.info(
+            f"Saves of {ctx.rec.name}: {len(candidates)} candidate files in {time.monotonic() - scan_began:.1f}s"
+            f" (prefix: {found.prefix if found else 'none'})"
+        )
     if found is None and not candidates:
         return BackupResult("needs-prefix")
 
@@ -306,6 +319,7 @@ def _send(
         count = build_archive(((k, by_key[k]) for k in sorted(result.tracked) if k in by_key), outgoing)
         if not count:
             return BackupResult("nothing")
+        logstore.info(f"Saves of {rec.name}: uploading {count} files ({outgoing.stat().st_size} bytes)")
         uploaded = ctx.client.upload_save(rec.game_id, ctx.device.device_id, outgoing, trigger)
     finally:
         outgoing.unlink(missing_ok=True)

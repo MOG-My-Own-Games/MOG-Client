@@ -10,9 +10,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import played
+from mog_client import logstore, played
 from mog_client.api import MogClient
-from mog_client.config import InstalledGame, Settings, load_library
+from mog_client.config import InstalledGame, Settings, data_dir, load_library
 from mog_client.gui.saves_ui import when
 from mog_client.launcher import detect_launcher, effective_launcher
 from mog_client.saves import devices, sync, watcher
@@ -147,7 +147,8 @@ def await_game_end(
         return None
     on_prefix = None if rec.native else runtime_prefix_recorder(ctx)
     restore_when_made(ctx, log, stop)
-    if not wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native, **timing):
+    log(f"watching {rec.name} until it ends")
+    if not wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native, log=log, **timing):
         return None
     return ctx
 
@@ -298,14 +299,16 @@ def with_window(rec: InstalledGame, wanted: bool, work: Callable, describe_resul
     return work(NoWindow())
 
 
-def confirm_ended(rec: InstalledGame, set_visible: Callable[[bool], None], linger: float = LINGER) -> None:
+def confirm_ended(
+    rec: InstalledGame, set_visible: Callable[[bool], None], linger: float = LINGER, log: Log | None = None
+) -> None:
     """The game's processes are gone: wait out the gaps a launcher leaves between handing over to the game
     and its helpers. If it comes back, the window is hidden until it really ends."""
     deadline = time.monotonic() + linger
     while time.monotonic() < deadline:
         if watcher.running_pids(Path(rec.install_dir), exclude=(os.getpid(),), native=rec.native):
             set_visible(False)
-            wait_for_game(Path(rec.install_dir), native=rec.native, linger=linger, poll=END_POLL)
+            wait_for_game(Path(rec.install_dir), native=rec.native, linger=linger, poll=END_POLL, log=log)
             set_visible(True)
             return
         time.sleep(END_POLL / 2)
@@ -313,11 +316,15 @@ def confirm_ended(rec: InstalledGame, set_visible: Callable[[bool], None], linge
 
 def run_command(action: str, game_id: int, settings: Settings, client: MogClient, window: bool = False) -> int:
     """`--save-pre`, `--save-watch` and `--save-sync` from the command line. A watch shows the window
-    when the setting is on, a sync only when asked for with `window`."""
+    when the setting is on, a sync only when asked for with `window`. What happens is written to the client's log file
+    (the shortcut that starts these sends their output nowhere)."""
+    logstore.write_to_file(data_dir() / "logs" / "client.log")
     rec = load_library().get(game_id)
     if rec is None or rec.state != "installed":
         print(f"game {game_id} is not installed")
         return 1
+    say = lambda text: logstore.info(f"[save-{action} {game_id}] {text}")  # noqa: E731
+    say("started")
     try:
         if action == "pre":
             client.c.timeout = PRE_TIMEOUT
@@ -326,17 +333,21 @@ def run_command(action: str, game_id: int, settings: Settings, client: MogClient
         elif action == "watch":
             since_ns = time.time_ns()
             # The window opens as soon as the game's processes are gone, and the wait for stragglers happens behind it.
-            if (ctx := await_game_end(rec, settings, client, linger=0.0, poll=END_POLL)) is not None:
+            if (ctx := await_game_end(rec, settings, client, log=say, linger=0.0, poll=END_POLL)) is not None:
 
                 def backup(set_visible: Callable[[bool], None]) -> sync.BackupResult:
-                    confirm_ended(rec, set_visible)
+                    confirm_ended(rec, set_visible, log=say)
                     return sync.backup(ctx, sync.QUIT, since_ns=since_ns)
 
                 result = with_window(rec, window or settings.sync_window, backup)
                 print(f"save sync: {result.status}")
+            else:
+                say("nothing to back up (saves not synced for this game, or the game never started)")
         else:
             return report_sync(with_window(rec, window, lambda _set_visible: sync_now(rec, settings, client)))
     except RuntimeError as e:
+        say(f"failed: {e}")
         print(f"save sync: {e}")
         return 1
+    say("finished")
     return 0

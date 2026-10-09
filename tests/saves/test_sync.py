@@ -271,7 +271,7 @@ def test_a_prefix_seen_while_the_game_runs_never_replaces_the_one_the_game_has(w
     world.rec.prefix = str(pfx)
     save_state(7, SaveState(prefix=str(pfx), prefix_source="game-folder", tracked={"k": FileInfo(1, 2, "h")}))
     monkeypatch.setattr(runner.devices, "known_device", lambda: world.ctx.device)
-    monkeypatch.setattr(runner, "wait_for_game", lambda install, on_prefix, stop, native: on_prefix(Path("/home/x/Jazz")) or True)
+    monkeypatch.setattr(runner, "wait_for_game", lambda install, on_prefix, stop, native, log: on_prefix(Path("/home/x/Jazz")) or True)
     monkeypatch.setattr(sync, "backup", lambda ctx, trigger, since_ns=None, force=False: sync.BackupResult("unchanged"))
 
     runner.watch_session(world.rec, world.ctx.settings, world.server, since_ns=0, log=lambda m: None)

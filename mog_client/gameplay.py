@@ -21,6 +21,7 @@ def watch(
     stopped: Callable[[], bool],
     on_prefix: Callable[[Path], None] | None = None,
     native: bool = False,
+    log: Callable[[str], None] | None = None,
     **timing,
 ) -> bool:
     """Block until the game has run and ended; False when it never started (the launcher failed, or
@@ -39,6 +40,7 @@ def watch(
         on_prefix=on_prefix,
         abort_before_start=lambda: stopped() or launcher_failed(),
         native=native,
+        log=log,
         **timing,
     )
 
