@@ -149,3 +149,37 @@ def test_waiting_for_a_native_game_sees_it_start_and_end(tmp_path):
     )
 
     assert done is True and clock[0] >= 8
+
+
+def test_the_wait_says_what_it_sees(tmp_path):
+    clock = Clock()
+    clock.script[2] = lambda: _proc(tmp_path, 100, "umu-run Z:\\home\\x\\mog-installed\\Some Game\\game.exe")
+    clock.script[20] = lambda: _gone(tmp_path, 100)
+    said = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=100, linger=6, poll=2, sleep=clock.sleep, clock=clock.time, log=said.append
+    )
+
+    assert "game.exe" in said[0] and said[0].startswith("game seen")
+    assert said[1:] == ["game processes are gone", said[-1]] and said[-1].startswith("game ended")
+
+
+def test_a_game_that_keeps_running_is_said_to_be_every_few_minutes(tmp_path):
+    clock = Clock()
+    clock.script[2] = lambda: _proc(tmp_path, 100, "umu-run Z:\\home\\x\\mog-installed\\Some Game\\game.exe")
+    clock.script[700] = lambda: _gone(tmp_path, 100)
+    said = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=100, linger=6, poll=2, sleep=clock.sleep, clock=clock.time, log=said.append
+    )
+
+    assert sum(line.startswith("game still running") for line in said) == 2
+
+
+def test_giving_up_is_said_with_the_reason(tmp_path):
+    clock = Clock()
+    said = []
+    watcher.wait_for_game(INSTALL, proc_root=tmp_path, appear_timeout=30, poll=5, sleep=clock.sleep, clock=clock.time, log=said.append)
+    assert said and "giving up" in said[-1] and "timeout" in said[-1]

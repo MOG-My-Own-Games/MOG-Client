@@ -18,6 +18,7 @@ PROC = Path("/proc")
 APPEAR_TIMEOUT = 180.0  # a first start may create the prefix and download a runtime
 LINGER = 6.0  # a launcher hands over to the game, and a game to its helpers, with gaps
 POLL = 2.0
+STILL_RUNNING_EVERY = 300.0  # how often a game that keeps running is said to be (and by which processes)
 
 
 def _read(path: Path) -> str:
@@ -58,6 +59,12 @@ def running_pids(
     return found
 
 
+def describe_pids(pids: list[int], proc_root: Path = PROC, limit: int = 3) -> str:
+    """The processes that count as the game, for a log line: pid and the start of the command line."""
+    shown = [f"{pid} {_read(proc_root / str(pid) / 'cmdline').strip()[:120]!r}" for pid in pids[:limit]]
+    return ", ".join(shown) + (f" and {len(pids) - limit} more" if len(pids) > limit else "")
+
+
 def prefix_from_environ(pid: int, proc_root: Path = PROC) -> Path | None:
     """The Wine prefix a process was started with: WINEPREFIX, or Proton's compatdata folder."""
     env = {}
@@ -89,8 +96,12 @@ def wait_for_game(
     stop: Callable[[], bool] = lambda: False,
     abort_before_start: Callable[[], bool] = lambda: False,
     native: bool = False,
+    log: Callable[[str], None] | None = None,
 ) -> bool:
     """Block until the game has started and then ended. Returns False when it never started.
+
+    `log` is told what is seen: the processes that make the game, when they are gone, why the wait gave up and,
+    every few minutes, that the game is still there (a process that never ends keeps everything after it waiting).
 
     `on_prefix` is called once with the prefix found in the game's environment, while it runs.
     `abort_before_start` ends the wait early while no game process has appeared (a launcher that
@@ -100,10 +111,20 @@ def wait_for_game(
     started = False
     gone_since: float | None = None
     reported = False
+    said = log or (lambda _text: None)
+    last_said = waited_from
     while not stop():
         pids = running_pids(install_dir, proc_root, me, native)
         now = clock()
         if pids:
+            if not started:
+                said(f"game seen after {now - waited_from:.0f}s: {describe_pids(pids, proc_root)}")
+                last_said = now
+            elif gone_since is not None:
+                said(f"game processes are back: {describe_pids(pids, proc_root)}")
+            elif now - last_said >= STILL_RUNNING_EVERY:
+                said(f"game still running, {len(pids)} process(es): {describe_pids(pids, proc_root)}")
+                last_said = now
             started, gone_since = True, None
             if on_prefix and not reported:
                 for pid in pids:
@@ -112,10 +133,15 @@ def wait_for_game(
                         reported = True
                         break
         elif started:
-            gone_since = now if gone_since is None else gone_since
+            if gone_since is None:
+                said("game processes are gone")
+                gone_since = now
             if now - gone_since >= linger:
+                said(f"game ended, {now - waited_from:.0f}s after the watch began")
                 return True
         elif now - waited_from >= appear_timeout or abort_before_start():
+            said(f"no game process in {now - waited_from:.0f}s ({'launcher failed' if now - waited_from < appear_timeout else 'timeout'}): giving up")
             return False
         sleep(poll)
+    said("watch stopped" + (" while the game was running" if started else " before the game showed up"))
     return started
