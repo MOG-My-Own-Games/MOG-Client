@@ -123,6 +123,7 @@ from mog_client.gui.widgets import (
     ROLE_ON,
     BadgeButton,
     CoverLabel,
+    ElidedLabel,
     FocusTabs,
     OptionDelegate,
     ParagraphLabel,
@@ -2139,7 +2140,25 @@ class SearchBox(QLineEdit):
 
 
 class EdgeList(QListWidget):
-    """A list that hands focus on past its first and last row, so a pad can walk through a stack of lists."""
+    """A list that hands focus on past its first and last row, so a pad can walk through a stack of lists. It is as tall as
+    its rows (`set_natural_height`) when the window has the room, and gives height back (scrolling) when it has not, so a
+    short window is not held tall by the sidebar."""
+
+    MIN_HEIGHT = 64
+    _natural = 0
+
+    def set_natural_height(self, height: int) -> None:
+        self._natural = height
+        self.setMaximumHeight(height)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's name
+        size = super().sizeHint()
+        return QSize(size.width(), self._natural) if self._natural else size
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        size = super().minimumSizeHint()
+        return QSize(size.width(), min(self._natural, self.MIN_HEIGHT)) if self._natural else size
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Down and self.currentRow() >= self.count() - 1:
@@ -3205,7 +3224,7 @@ class LibraryPage(Page):
         self.libs.setCurrentRow(row)
         self.libs.blockSignals(False)
         # As tall as its rows (up to a limit), so "Sort by" sits right under it and the space left is at the bottom.
-        self.libs.setFixedHeight(min(260, self.libs.sizeHintForRow(0) * self.libs.count() + 12))
+        self.libs.set_natural_height(min(260, self.libs.sizeHintForRow(0) * self.libs.count() + 12))
 
     def set_libraries(self, libraries: list[dict]) -> None:
         self.libraries = libraries
@@ -3240,7 +3259,7 @@ class LibraryPage(Page):
             self.sorts.addItem(item)
         self.sorts.setCurrentRow(min(row, self.sorts.count() - 1))
         self.sorts.blockSignals(False)
-        self.sorts.setFixedHeight(self.sorts.sizeHintForRow(0) * self.sorts.count() + 12)
+        self.sorts.set_natural_height(self.sorts.sizeHintForRow(0) * self.sorts.count() + 12)
 
     def _sort_chosen(self, item: QListWidgetItem) -> None:
         kind, key = item.data(Qt.UserRole)
@@ -3464,7 +3483,7 @@ class LibraryPage(Page):
         if not rows and self.installs_box.isAncestorOf(QApplication.focusWidget()):
             self.libs.setFocus()  # the list the focus was in is about to go
         height = self.installs.sizeHintForRow(0) if rows else 0
-        self.installs.setFixedHeight(min(300, height * len(rows) + 12))  # as tall as its rows, up to a limit
+        self.installs.set_natural_height(min(300, height * len(rows) + 12))  # as tall as its rows, up to a limit
         self.installs_box.setVisible(bool(rows))
 
     def update_active(self) -> None:
@@ -3586,7 +3605,7 @@ class MainWindow(QMainWindow):
         self.resize(1320, 800)
         self.back_btn = QPushButton("< Back")
         self.back_btn.clicked.connect(self.back)
-        self.title = QLabel()
+        self.title = ElidedLabel()
         self.title.setStyleSheet("font-size: 24px; font-weight: bold;")
         self.logo = QLabel()
         self.logo.setPixmap(asset_pixmap("title.png", 44))

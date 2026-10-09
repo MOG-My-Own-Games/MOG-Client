@@ -11,7 +11,7 @@ pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
-from PySide6.QtGui import QKeyEvent  # noqa: E402
+from PySide6.QtGui import QKeyEvent, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
@@ -1535,6 +1535,114 @@ def test_the_loading_picture_shrinks_with_the_room_it_has(qapp):
     pump(qapp)
     assert panel.picture.pixmap().width() < big and panel.picture.pixmap().width() <= 300
     assert panel.minimumSizeHint().width() < 400
+
+
+def _rich_game(win, monkeypatch):
+    """A game with everything a page can show: a long name and description, metadata, screenshots, HowLongToBeat times."""
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "fetch_images", lambda urls, gid: None)
+    game = {
+        "id": 41,
+        "name": "Final Fantasy Tactics: The Ivalice Chronicles",
+        "library_id": None,
+        "igdb_id": 5,
+        "summary": "A long description of the game. " * 30,
+        "igdb_metadata": {
+            "first_release_date": 1700000000,
+            "genres": [{"name": "Strategy"}, {"name": "RPG"}, {"name": "Turn-based"}],
+            "screenshots": [{"url": f"//images/{n}.jpg"} for n in range(4)],
+        },
+        "hltb_metadata": {"main_story": 100000, "main_plus_extra": 150000, "completionist": 200000},
+    }
+    win.app.set_games([game])
+    win.covers[41] = QPixmap(200, 270)
+    return game
+
+
+def _settle(win, qapp, width, height):
+    for _ in range(3):  # a smaller page lets the window go smaller still: the first resize is held at the old minimum
+        win.resize(width, height)
+        pump(qapp)
+        pump(qapp)
+
+
+def test_the_window_goes_down_to_800x600_on_a_game_page_keeping_the_cover_the_bar_and_the_buttons(win, qapp, monkeypatch):
+    """Caught on a Steam Deck in desktop mode: the page would not get smaller than about 820x730 and its buttons fell below
+    the screen. A small window drops the description, the screenshots and the HowLongToBeat table and shrinks the cover."""
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    win.resize(1280, 800)
+    pump(qapp)
+    page = win.current_page()
+    assert page.summary.isVisible() and page.shots.isVisible() is bool(page.shot_urls) and page.hltb_box.isVisible()  # all of it, at 1280x800
+
+    _settle(win, qapp, 800, 600)
+
+    assert (win.width(), win.height()) == (800, 600) and win.minimumSizeHint().width() <= 800 and win.minimumSizeHint().height() <= 600
+    assert not page.summary.isVisible() and not page.shots.isVisible()  # sacrificed
+    buttons = [page.buttons.itemAt(i).widget() for i in range(page.buttons.count()) if page.buttons.itemAt(i).widget()]
+    assert buttons and all(b.mapTo(win, b.rect().bottomLeft()).y() <= win.height() for b in buttons)  # none cut off below
+    assert page.bar.isVisible() and page.status.isVisible() and page.cover.isVisible()
+
+
+def test_a_smaller_window_still_shrinks_the_cover_and_drops_the_how_long_to_beat_table_when_narrow(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    win.resize(1280, 800)
+    pump(qapp)
+    page = win.current_page()
+    assert page.cover.height() == gui.COVER_SIZE.height()
+
+    _settle(win, qapp, 800, 520)
+    medium = page.cover.height()
+    assert page.hltb_box.isVisible() and medium < gui.COVER_SIZE.height()  # a shorter window, a smaller cover
+
+    _settle(win, qapp, 10, 10)  # as small as it will go
+    assert page.cover.height() < medium and page.cover.width() == round(page.cover.height() * 200 / 270)  # same proportions
+    assert not page.hltb_box.isVisible()  # no room beside the header for it
+    assert win.width() <= 800 and win.height() <= 600  # and that smallest is under 800x600
+    buttons = [page.buttons.itemAt(i).widget() for i in range(page.buttons.count()) if page.buttons.itemAt(i).widget()]
+    assert all(b.mapTo(win, b.rect().bottomLeft()).y() <= win.height() for b in buttons)
+
+
+def test_what_was_dropped_comes_back_when_the_window_is_large_again(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    win.resize(1280, 800)
+    pump(qapp)
+    page = win.current_page()
+    _settle(win, qapp, 800, 600)
+    assert not page.summary.isVisible()
+
+    _settle(win, qapp, 1280, 800)
+
+    assert page.summary.isVisible() and page.hltb_box.isVisible() and page.cover.height() == gui.COVER_SIZE.height()
+
+
+def test_a_long_title_is_cut_short_instead_of_holding_the_window_wide(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    _settle(win, qapp, 800, 600)
+    assert win.title.text() == "Final Fantasy Tactics: The Ivalice Chronicles"  # the title is kept whole
+    assert win.title.width() < win.title.fontMetrics().horizontalAdvance(win.title.text())  # and drawn cut short here
+    assert "..." in QLabel.text(win.title) or "\u2026" in QLabel.text(win.title)
+
+
+def test_every_page_fits_in_800x600(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    win.show_game(41)
+    _settle(win, qapp, 10, 10)
+    game_min = win.minimumSizeHint()
+    win.back()
+    pump(qapp)
+    win.open_settings()
+    _settle(win, qapp, 10, 10)
+    settings_min = win.minimumSizeHint()
+    for name, size in (("game", game_min), ("settings", settings_min), ("library", win.library.minimumSizeHint())):
+        assert size.width() <= 800 and size.height() <= 600, (name, size)
 
 
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):

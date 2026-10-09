@@ -357,6 +357,37 @@ class BadgeButton(QPushButton):
         painter.drawText(dot, Qt.AlignCenter, "99+" if self._count > 99 else str(self._count))
 
 
+class ElidedLabel(QLabel):
+    """A label that gives up width instead of holding the window wide: a long name is cut short with "..."."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__()
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)  # its width is its text's, and it may give it up
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt's name
+        self._full = text
+        self._elide()
+        self.updateGeometry()
+
+    def text(self) -> str:
+        return self._full
+
+    def _elide(self) -> None:
+        super().setText(self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(self.width(), 1)))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        self._elide()
+
+
 class CoverLabel(QLabel):
     """A game's cover that takes the height it is given, down to `min_height`, its width following at the cover's own
     proportions: a short window gets a smaller cover, not a window that refuses to get any shorter."""
