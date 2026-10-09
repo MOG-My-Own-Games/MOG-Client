@@ -122,6 +122,7 @@ from mog_client.gui.widgets import (
     ROLE_KIND,
     ROLE_ON,
     BadgeButton,
+    CoverLabel,
     FocusTabs,
     OptionDelegate,
     ParagraphLabel,
@@ -174,6 +175,7 @@ TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
 CARD_PULSE_MS, CARD_RING, PAGE_RING = 900, 8, 22  # a task starting: the ring around the game's cover, how long it lasts and how far it spreads
+ROOM_SLACK = 24  # px above what the full game page needs before it starts dropping parts (see GamePage._fit_to_room)
 SPIN_MS = 1100  # one turn of the wedge on the cover and of the ring on Play
 REPORT_EVERY = 0.25  # seconds between the progress reports of a download that reach the window
 LABELS_EVERY_MS = 250  # the library redraws what a download changed this often, however many reports came
@@ -2225,9 +2227,11 @@ class GamePage(Page):
         super().__init__()
         self.win, self.app, self.game = win, win.app, game
         self.title = game["name"]
-        self.cover = QLabel()
-        self.cover.setFixedSize(COVER_SIZE)
-        self.cover.setAlignment(Qt.AlignCenter)
+        self.cover = CoverLabel(COVER_SIZE)
+        self.has_hltb = False
+        self._built = False  # the page is complete (see _fit_to_room)
+        self._full_min = QSize(0, 0)  # what the page needs with everything showing, as last seen
+        self._short = self._narrow = False  # whether the description and screenshots, or the HowLongToBeat table, are dropped
         self._set_cover(win.covers.get(game["id"]))
         info_col = QVBoxLayout()
         self.version_label = QLabel()
@@ -2261,12 +2265,13 @@ class GamePage(Page):
         self.sync_key = form.labelForField(self.sync_label)
         info_col.addLayout(form)
         text = game.get("summary") or (game.get("igdb_metadata") or {}).get("summary") or ""
-        summary = ParagraphLabel(text, min_lines=3)
-        summary.setObjectName("summary")
+        self.summary = ParagraphLabel(text, min_lines=3)
+        self.summary.setObjectName("summary")
         info_col.addSpacing(12)
-        info_col.addWidget(summary)
+        info_col.addWidget(self.summary)
         info_col.addStretch()
         head = QHBoxLayout()
+        self.head = head
         head.setContentsMargins(14, 14, 14, 14)
         head.setSpacing(24)
         head.addWidget(self.cover)
@@ -2316,6 +2321,29 @@ class GamePage(Page):
         self.app.load_mods(game["id"])
         self._show_play_rows()
         self.rebuild()
+        self._built = True
+        self._fit_to_room()
+
+    def resizeEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().resizeEvent(e)
+        self._fit_to_room()
+
+    def _fit_to_room(self) -> None:
+        """A small window keeps the cover (smaller), the status, the bar and the buttons, and drops the description, the
+        screenshots and the HowLongToBeat table, which a larger one shows again. Each goes when the page has less room than it
+        needs with everything showing (plus a little, so the choice is made above what the full page can shrink to and the two
+        layouts never fight over a size)."""
+        if not self._built:
+            return
+        if not (self._short or self._narrow):
+            self._full_min = self.minimumSizeHint()  # everything shows: this is what it takes
+        short = self.height() < self._full_min.height() + ROOM_SLACK
+        narrow = self.width() < self._full_min.width() + ROOM_SLACK
+        self._short, self._narrow = short, narrow
+        self.shots.setVisible(bool(self.shot_urls) and not short)
+        self.summary.setVisible(not short)
+        self.hltb_box.setVisible(self.has_hltb and not narrow)
+        self.head.setContentsMargins(*((8, 8, 8, 8) if short else (14, 14, 14, 14)))
 
     def _show_hltb(self) -> None:
         """The HowLongToBeat times as a small table at the right of the header; no table when there are none."""
@@ -2323,7 +2351,8 @@ class GamePage(Page):
         while grid.count():
             grid.takeAt(0).widget().deleteLater()
         rows = hltb_lines(self.game)
-        self.hltb_box.setVisible(bool(rows))
+        self.has_hltb = bool(rows)
+        self._fit_to_room()
         if not rows:
             return
         title = QLabel("HOW LONG TO BEAT")

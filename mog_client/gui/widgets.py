@@ -357,6 +357,43 @@ class BadgeButton(QPushButton):
         painter.drawText(dot, Qt.AlignCenter, "99+" if self._count > 99 else str(self._count))
 
 
+class CoverLabel(QLabel):
+    """A game's cover that takes the height it is given, down to `min_height`, its width following at the cover's own
+    proportions: a short window gets a smaller cover, not a window that refuses to get any shorter."""
+
+    def __init__(self, full: QSize, min_height: int = 110) -> None:
+        super().__init__()
+        self._full, self._min_height = full, min_height
+        self.setMinimumHeight(min_height)
+        self.setMaximumHeight(full.height())
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.setFixedWidth(full.width())
+
+    def _width_for(self, height: int) -> int:
+        return min(self._full.width(), round(height * self._full.width() / self._full.height()))
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's name
+        return self._full
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._width_for(self._min_height), self._min_height)
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        width = self._width_for(self.height())
+        if width != self.width():
+            self.setFixedWidth(width)
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        pix = self.pixmap()
+        if pix is None or pix.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        shown = pix.size().scaled(self.size(), Qt.KeepAspectRatio)
+        painter.drawPixmap(QRect(0, 0, shown.width(), shown.height()), pix)
+
+
 class ParagraphLabel(QLabel):
     """A paragraph that fits the height the layout gives it: `max_lines` when there is room, down to `min_lines`
     when there is not, shortened with "..." as needed. A plain word-wrapped label in a nested layout reports its
