@@ -39,6 +39,24 @@ def drive_c_of(prefix: Path) -> Path | None:
     return None
 
 
+# What a finished prefix holds next to its drive_c (umu, Proton and Wine alike): the registry files, and the stamp
+# Wine writes when it has set the prefix up.
+MADE_MARKERS = ("system.reg", "user.reg", ".update-timestamp")
+
+
+def prefix_made(prefix: Path) -> bool:
+    """Whether a launcher has finished making the prefix: the markers are there and the profile folder exists. Not a size
+    test: a prefix is 100 MB to 900 MB depending on the runner, and it passes any size while it is still being copied."""
+    drive_c = drive_c_of(prefix)
+    if drive_c is None or not all((drive_c.parent / marker).is_file() for marker in MADE_MARKERS):
+        return False
+    users = drive_c / "users"
+    try:
+        return any(p.is_dir() and p.name != "Public" for p in users.iterdir())
+    except OSError:
+        return False
+
+
 def is_prefix(path: Path) -> bool:
     return path.is_dir() and drive_c_of(path) is not None
 

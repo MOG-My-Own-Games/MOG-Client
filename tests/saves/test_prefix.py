@@ -204,3 +204,33 @@ def test_a_native_game_has_no_prefix_to_look_for(tmp_path, no_launchers):
     game.executable = str(Path(game.install_dir) / "start.sh")
     (Path(game.install_dir) / "pfx").mkdir()  # a leftover
     assert resolve_prefix(game, "faugus") is None
+
+
+# --- a prefix the launcher has finished making ---
+
+
+def _made_prefix(tmp_path, nested=False):
+    root = tmp_path / "pfx"
+    base = root / "pfx" if nested else root
+    (base / "drive_c/users/steamuser").mkdir(parents=True)
+    (base / "drive_c/users/Public").mkdir()
+    for name in prefixes.MADE_MARKERS:
+        (base / name).write_text("x")
+    return root, base
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_prefix_is_made_when_its_markers_and_a_user_folder_are_there(tmp_path, nested):
+    root, _ = _made_prefix(tmp_path, nested)
+    assert prefixes.prefix_made(root)
+
+
+def test_a_prefix_missing_any_marker_or_a_user_is_not_made_yet(tmp_path):
+    for marker in prefixes.MADE_MARKERS:
+        root, base = _made_prefix(tmp_path / marker)
+        (base / marker).unlink()
+        assert not prefixes.prefix_made(root), marker
+    root, base = _made_prefix(tmp_path / "nobody")
+    (base / "drive_c/users/steamuser").rmdir()
+    assert not prefixes.prefix_made(root)  # only Public: Wine has not made the profile yet
+    assert not prefixes.prefix_made(tmp_path / "missing")
