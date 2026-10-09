@@ -356,7 +356,9 @@ class SaveSync:
             self.choose_prefix(rec, then=lambda: self.before_launch(rec, go), skip=go)
             return
         if not sync.prefix_ready(ctx, state):
-            go()  # the game makes its prefix on this start; the saves go in at the next one
+            # The game makes its prefix on this start; the saves go in at the next one.
+            self.win.notify(f"Saves for {rec.name} are waiting: close the game once it has started, then start it again")
+            go()
             return
 
         def run() -> None:
@@ -481,6 +483,15 @@ class SaveSync:
                 then()
         elif result.status == "incompatible":
             self.win.message(f"That save of {rec.name} is for the other version of the game (Windows or Linux)", "warning")
+        elif result.status == "needs-prefix" and sync.find_prefix(ctx, load_state(rec.game_id)) is not None:
+            # The game's own prefix, which it makes the first time it runs: nothing to ask, the saves wait for it.
+            self.win.message(
+                f"The saves of {rec.name} are kept for when the game has made its prefix. Start the game once, close it "
+                "and start it again: they are put in then.",
+                "info",
+            )
+            if then:
+                then()
         elif result.status == "needs-prefix":
             def apply() -> None:
                 def work() -> None:
@@ -488,7 +499,9 @@ class SaveSync:
                         self.gui(lambda: self._keep_notice(rec, done))
                         self.say(f"Saves of {rec.name} restored", "info")
                     else:
-                        self.say(f"Saves of {rec.name} are kept and go in once the game has made its prefix")
+                        self.say(
+                            f"Saves of {rec.name} are kept. Start the game once, close it and start it again: they are put in then"
+                        )
                     if then:
                         self.gui(then)
 

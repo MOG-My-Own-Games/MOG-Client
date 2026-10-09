@@ -253,6 +253,34 @@ def test_saves_waiting_for_a_prefix_ask_for_one_before_the_game_starts_then_appl
     assert (prefix / "pfx/drive_c/users/steamuser/Saved Games/s.sav").read_bytes() == b"theirs"
 
 
+def test_a_prefix_the_game_has_not_made_yet_is_not_asked_about_when_saves_are_restored(ui):
+    pfx_dir(ui.rec).mkdir(parents=True)  # MOG's own folder for it: there, and empty until the game first runs
+    ui.rec.prefix = str(pfx_dir(ui.rec))
+    version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    done = []
+
+    ui.ui._restore(ui.rec, ctx, version["id"], lambda: done.append(1))
+
+    assert ui.win.choices == [] and done == [1]  # the question about the prefix does not come
+    assert any("Start the game once, close it and start it again" in text for _, text in ui.win.messages)
+    assert load_state(7).pending_restore  # kept for when the prefix is there
+
+
+def test_starting_a_game_whose_prefix_is_not_made_yet_says_what_to_do_with_the_waiting_saves(ui):
+    pfx_dir(ui.rec).mkdir(parents=True)
+    ui.rec.prefix = str(pfx_dir(ui.rec))
+    version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    sync.restore(ctx, version["id"])
+    sync.decline(ctx, version["id"])
+    started = []
+
+    ui.ui.before_launch(ui.rec, lambda: started.append(1))
+
+    assert started == [1] and any("close the game once it has started, then start it again" in n for n in ui.win.notes)
+
+
 def test_not_now_still_starts_the_game(ui):
     version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"x"})
     ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
