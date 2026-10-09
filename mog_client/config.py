@@ -140,6 +140,9 @@ class InstalledGame:
     desktop_entry: str | None = None
     # {"shortcuts_path": str, "appid": int, "artwork": [str]} for each Steam entry created
     steam_entries: list[dict] = field(default_factory=list)
+    # The folder the game's own files are in when they were put in a folder of their own inside `install_dir` (they came
+    # without one); None when they are in `install_dir` itself.
+    files_dir: str | None = None
     # This game's launch engine; "auto" follows the launcher chosen in Settings.
     launcher: str = "auto"
     # None follows Settings.sync_saves; True or False overrides it for this game.

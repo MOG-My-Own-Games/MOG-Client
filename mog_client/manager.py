@@ -57,6 +57,26 @@ def _update(rec: InstalledGame, **changes) -> None:
 ARCHIVE_SOURCE_KINDS = ("disc image", "archive")
 
 
+def is_loose(files: list[dict]) -> bool:
+    """Whether an install's files are not all inside one folder of their own: some are at the top, or there are
+    several folders there."""
+    return any("/" not in e["path"] for e in files) or len({e["path"].split("/", 1)[0] for e in files}) > 1
+
+
+def tuck_into_folder(root: Path, files: list[dict], name: str) -> tuple[Path, list[dict]]:
+    """Move what an install put straight into `root` into a folder of its own, so the game's files do not sit among MOG's
+    (the prefix, the launch script, the entries). Returns that folder and the files with their paths from `root`."""
+    tops = {e["path"].split("/", 1)[0] for e in files}
+    folder = root / name
+    if name in tops:  # a game folder of that very name is among the files
+        folder = root / f"{name} (game)"
+    folder.mkdir(exist_ok=True)
+    for top in sorted(tops):
+        if (root / top).exists() or (root / top).is_symlink():
+            shutil.move(str(root / top), str(folder / top))
+    return folder, [{**e, "path": f"{folder.name}/{e['path']}"} for e in files]
+
+
 def run_install(
     client: MogClient,
     game: dict,
@@ -85,7 +105,7 @@ def run_install(
         game_id=gid, name=game["name"], install_dir=str((root or default_root(settings)) / safe_dirname(game["name"]))
     )
     _update(rec, state="installing", **({"extract_only": True} if extract_only else {}))
-    out_dir = Path(rec.install_dir)
+    out_dir = Path(rec.files_dir or rec.install_dir)
 
     existing = client.get_session(gid)
     session_id = existing.get("id") if existing and existing.get("state") == "done" else None
@@ -120,7 +140,7 @@ def run_install(
 
     watcher = threading.Thread(target=watch_server, daemon=True)
     watcher.start()
-    before = ledger.begin(gid, out_dir)  # what was there before this install, to tell it from what it adds
+    before = ledger.begin(gid, Path(rec.install_dir))  # what was there before this install, to tell it from what it adds
     # The download, not the server's installer, decides when we're finished.
     _, finished = download_all_files(
         client, gid, out_dir, stop, session_id, log=log, warn=log, on_bytes=on_bytes, server_done=server_done,
@@ -133,16 +153,15 @@ def run_install(
         if state == "failed":
             raise RuntimeError(f"install failed: {server_final.get('error')}")
         return rec  # paused or cancelled: not a failure, the buttons already say so
-    verify_and_repair(
-        client,
-        gid,
-        out_dir,
-        session_id=session_id,
-        log=log,
-        warn=log,
-        on_manifest=lambda files: save_install_manifest(gid, files),
-    )
-    ledger.finish(gid, out_dir, before)  # whatever the server's list missed, the folder itself shows
+    listed: list[dict] = []
+    verify_and_repair(client, gid, out_dir, session_id=session_id, log=log, warn=log, on_manifest=listed.extend)
+    if listed and rec.files_dir is None and rec.executable is None and is_loose(listed):
+        folder, listed = tuck_into_folder(out_dir, listed, safe_dirname(rec.name))
+        log(f"the game came without a folder of its own: its files are in {folder.name}/")
+        _update(rec, files_dir=str(folder))
+    if listed:
+        save_install_manifest(gid, listed)
+    ledger.finish(gid, Path(rec.install_dir), before)  # whatever the server's list missed, the folder itself shows
     _update(rec, state="awaiting_executable")
     return rec
 
