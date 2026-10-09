@@ -1503,6 +1503,40 @@ def test_back_still_goes_back_from_a_game_page_with_the_sidebar_open(win, qapp, 
     assert win.current_page() is win.library and win.library.sidebar.isVisibleTo(win.library)  # it left the page, not the sidebar
 
 
+def test_the_window_can_be_made_small_for_a_small_screen_on_every_page(win, qapp, monkeypatch):
+    """A Steam Deck in desktop mode has 1280x800 minus its panels: no page may ask for more than about 700x650."""
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    win.library.show_loading(True)  # the page with the big picture of Mog
+    pages = {"library while loading": lambda: None, "settings": win.open_settings, "game": lambda: win.show_game(41)}
+    for name, show in pages.items():
+        show()
+        win.resize(640, 600)
+        pump(qapp)
+        pump(qapp)
+        hint = win.minimumSizeHint()
+        assert hint.width() <= 700 and hint.height() <= 650, (name, hint)
+        assert win.width() <= 700 and win.height() <= 650, (name, win.size())
+        if name != "library while loading":
+            win.back()
+
+
+def test_the_loading_picture_shrinks_with_the_room_it_has(qapp):
+    from mog_client.gui.loading import LoadingPanel
+
+    panel = LoadingPanel()
+    panel.resize(900, 700)
+    panel.show()
+    pump(qapp)
+    big = panel.picture.pixmap().width()
+    panel.resize(300, 300)
+    pump(qapp)
+    assert panel.picture.pixmap().width() < big and panel.picture.pixmap().width() <= 300
+    assert panel.minimumSizeHint().width() < 400
+
+
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):
     win.user_btn.setVisible(False)
     win.on_pad(gamepad.MENU)
