@@ -67,6 +67,7 @@ def enabled(rec: InstalledGame, settings: Settings) -> bool:
 @dataclass
 class BackupResult:
     # "uploaded" | "unchanged" | "nothing" | "needs-prefix" | "needs-confirmation" | "duplicate"
+    # | "restore-pending" (saves from another machine wait for the prefix: nothing was sent over them)
     # | "needs-folder" (a native game, asked for by hand, with no folder known)
     status: str
     version: dict | None = None
@@ -153,8 +154,8 @@ def add_folder(game_id: int, path: Path) -> str | None:
     return key
 
 
-# Outcomes with nothing to explain: the saves did not change, so the log is not sent.
-QUIET_STATUSES = ("unchanged", "nothing", "duplicate")
+# Outcomes with nothing to explain: the saves did not change (or were held back), so the log is not sent.
+QUIET_STATUSES = ("unchanged", "nothing", "duplicate", "restore-pending")
 
 
 def backup(
@@ -162,6 +163,9 @@ def backup(
 ) -> BackupResult:
     """Upload this game's saves if they changed. `since_ns` is when the session began, when known.
     With `upload=False` nothing is sent or remembered: "changed" says only that something differs here."""
+    if upload and not force and _restore_still_pending(ctx):
+        _record_check(ctx.rec.game_id, "restore-pending", trigger)
+        return BackupResult("restore-pending")
     try:
         result = _backup(ctx, trigger, since_ns, force, upload)
     except Exception:
@@ -174,6 +178,19 @@ def backup(
         if result.status not in QUIET_STATUSES:
             _send_log(ctx)
     return result
+
+
+def _restore_still_pending(ctx: Context) -> bool:
+    """Saves from another machine are waiting for the prefix. What this machine has now (a game's first run writes some) must
+    not go up as the newest version over them: they are put in first when the prefix is there, and when they cannot be
+    (something of the game's is in the way, or no prefix yet) nothing is sent."""
+    state = load_state(ctx.rec.game_id)
+    if not state.pending_restore or not Path(state.pending_restore).is_file():
+        return False
+    if prefix_ready(ctx, state):
+        apply_pending(ctx, only_if_free=True)
+        state = load_state(ctx.rec.game_id)
+    return bool(state.pending_restore)
 
 
 def _send_log(ctx: Context) -> None:
@@ -459,10 +476,11 @@ def _tell_restored(ctx: Context, archive: Path, files: int) -> bool:
 def apply_pending(ctx: Context, only_if_free: bool = False) -> RestoreResult | None:
     """Finish a restore that was waiting for the prefix, if it is known now. With `only_if_free`
     nothing is written when any of its files already exists (the game has made its own since)."""
-    state = load_state(ctx.rec.game_id)
-    if not state.pending_restore or not Path(state.pending_restore).is_file():
-        return None
-    result = _apply(ctx, state, Path(state.pending_restore), None, only_if_free)
+    with _restore_lock(ctx.rec.game_id):  # the game start and the game end can both come to it
+        state = load_state(ctx.rec.game_id)
+        if not state.pending_restore or not Path(state.pending_restore).is_file():
+            return None
+        result = _apply(ctx, state, Path(state.pending_restore), None, only_if_free)
     return result if result.status == "restored" else None
 
 

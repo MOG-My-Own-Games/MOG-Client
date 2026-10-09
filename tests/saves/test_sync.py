@@ -410,3 +410,55 @@ def test_the_log_goes_along_when_a_backup_fails(world, monkeypatch):
     with pytest.raises(RuntimeError):
         sync.backup(world.ctx, sync.QUIT)
     assert len(calls) == 1
+
+
+# --- saves from another machine waiting for the prefix are never buried by this machine's first backup ---
+
+
+def _waiting(world):
+    """The game's own pfx folder is its prefix, not made yet, and the other machine's saves wait for it."""
+    from mog_client.launcher import pfx_dir
+
+    world.rec.prefix = str(pfx_dir(world.rec))
+    pfx_dir(world.rec).mkdir()
+    version = world.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
+    assert sync.restore(world.ctx, version["id"]).status == "needs-prefix"
+    return pfx_dir(world.rec)
+
+
+def test_a_backup_sends_nothing_while_saves_from_another_machine_wait_for_the_prefix(world):
+    _waiting(world)
+
+    result = sync.backup(world.ctx, sync.QUIT)
+
+    assert result.status == "restore-pending" and world.server.uploads == []
+    assert load_state(7).pending_restore  # still there, for the next start
+    assert load_state(7).last_check_status == "restore-pending"
+
+
+def test_once_the_prefix_is_made_the_waiting_saves_go_in_before_the_backup_looks(world):
+    pfx = _waiting(world)
+    (pfx / "drive_c/users/steamuser").mkdir(parents=True)
+
+    result = sync.backup(world.ctx, sync.QUIT)
+
+    assert (pfx / "drive_c/users/steamuser/Saved Games/s.sav").read_bytes() == b"theirs"
+    assert load_state(7).pending_restore is None
+    assert result.status in ("unchanged", "uploaded", "duplicate", "nothing")  # an ordinary backup, of what is there now
+
+
+def test_a_file_of_the_games_own_in_the_way_keeps_the_restore_waiting_and_the_upload_held_back(world):
+    pfx = _waiting(world)
+    mine = pfx / "drive_c/users/steamuser/Saved Games/s.sav"
+    mine.parent.mkdir(parents=True)
+    mine.write_bytes(b"fresh")
+
+    result = sync.backup(world.ctx, sync.QUIT)
+
+    assert result.status == "restore-pending" and mine.read_bytes() == b"fresh" and world.server.uploads == []
+
+
+def test_a_manual_backup_is_the_users_own_choice_and_is_not_held_back(world):
+    _waiting(world)
+    result = sync.backup(world.ctx, sync.MANUAL, force=True)
+    assert result.status != "restore-pending"
