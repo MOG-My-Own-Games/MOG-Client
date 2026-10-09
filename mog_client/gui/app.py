@@ -168,6 +168,8 @@ def steam_outcome(rec: InstalledGame, done: str) -> tuple[str, str]:
 
 
 COVER_SIZE = QSize(200, 270)
+CELL_SIZE = QSize(COVER_SIZE.width() + 40, COVER_SIZE.height() + 80)  # a game's cell in the grid, at scale 1
+MIN_GRID_SCALE, MAX_GRID_SCALE = 0.6, 1.25
 TAB_TOP_GAP = 22  # between the tab bar and what is in the tab
 OPTIONS_BUTTON_WIDTH = 440
 SIDEBAR_WIDTH = 280
@@ -2812,14 +2814,28 @@ def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
     painter.drawPath(glyph)
 
 
+def grid_scale(room: int) -> float:
+    """How much to scale the games' cells so a whole number of columns fills `room` pixels: the nearest number of
+    columns, so the scale stays close to 1 (at most about 15% either way) and nothing is left over on the right."""
+    if room <= 0:
+        return 1.0
+    columns = max(1, int(room / CELL_SIZE.width() + 0.5))
+    return max(MIN_GRID_SCALE, min(MAX_GRID_SCALE, (room // columns) / CELL_SIZE.width()))
+
+
 class CoverDelegate(QStyledItemDelegate):
     """Cover art with an install progress bar along its bottom edge, then the title. A game with a task going on has a
-    ring turning round its cover (`angle` is where its head is, moved by the library page)."""
+    ring turning round its cover (`angle` is where its head is, moved by the library page). `scale` sizes the cell and
+    the cover to fit the columns (see grid_scale); the title stays the same size."""
 
     angle = 0.0
+    scale = 1.0
+
+    def cell_size(self) -> QSize:
+        return QSize(round(CELL_SIZE.width() * self.scale), round(COVER_SIZE.height() * self.scale) + 80)
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(COVER_SIZE.width() + 40, COVER_SIZE.height() + 80)
+        return self.cell_size()
 
     def paint(self, painter: QPainter, option, index) -> None:
         painter.save()
@@ -2829,11 +2845,15 @@ class CoverDelegate(QStyledItemDelegate):
             painter.setPen(QColor("#4c8dff"))
             painter.setBrush(QColor("#1e2733"))
             painter.drawRoundedRect(cell, 10, 10)
-        cover = QRect(cell.left() + (cell.width() - COVER_SIZE.width()) // 2, cell.top() + 8, COVER_SIZE.width(), COVER_SIZE.height())
+        width, height = round(COVER_SIZE.width() * self.scale), round(COVER_SIZE.height() * self.scale)
+        cover = QRect(cell.left() + (cell.width() - width) // 2, cell.top() + 8, width, height)
         painter.fillRect(cover, QColor("#1e232b"))
         pix = index.data(ROLE_COVER)
         if pix:
-            painter.drawPixmap(cover.left() + (cover.width() - pix.width()) // 2, cover.top() + (cover.height() - pix.height()) // 2, pix)
+            shown = QRect(0, 0, round(pix.width() * self.scale), round(pix.height() * self.scale))
+            shown.moveCenter(cover.center())
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawPixmap(shown, pix)
         progress = index.data(ROLE_PROGRESS)
         if progress is not None:
             bar = QRect(cover.left(), cover.bottom() - 9, cover.width(), 10)
@@ -3053,7 +3073,9 @@ class LibraryPage(Page):
         self.grid.setResizeMode(QListView.Adjust)
         self.grid.setMovement(QListView.Static)
         self.grid.setItemDelegate(CoverDelegate(self.grid))
-        self.grid.setGridSize(QSize(COVER_SIZE.width() + 40, COVER_SIZE.height() + 80))
+        self.grid.setGridSize(CELL_SIZE)
+        self._fit_due = False
+        self.grid.installEventFilter(self)  # its width changes with the window and the sidebar: see fit_grid
         self.grid.itemActivated.connect(win.open_game)
         self.items: dict[int, QListWidgetItem] = {}
         self.library_filter: int | None = None
@@ -3079,6 +3101,8 @@ class LibraryPage(Page):
         box.addWidget(self.installs)
         self.sorts = EdgeList()
         self.sorts.setItemDelegate(OptionDelegate(self.sorts))
+        for side_list in (self.libs, self.sorts):  # the sidebar has a width of its own: a list never scrolls sideways
+            side_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.sorts.itemActivated.connect(self._sort_chosen)
         self.sorts.itemClicked.connect(self._sort_chosen)
         side = QVBoxLayout(self.sidebar)
@@ -3205,12 +3229,37 @@ class LibraryPage(Page):
 
     def show_loading(self, loading: bool) -> None:
         self.shelf.setCurrentWidget(self.loading if loading else self.grid)
+        self.schedule_fit()
         if not loading and self.isVisible():
             self.grid.setFocus()
+
+    def fit_grid(self) -> None:
+        """Size the cells so whole columns fill the grid, whether the sidebar is out or not."""
+        self._fit_due = False
+        grid = self.grid
+        room = grid.width() - 2 * grid.frameWidth() - grid.verticalScrollBar().sizeHint().width()  # the bar's room is kept
+        delegate = grid.itemDelegate()
+        scale = grid_scale(room)
+        if abs(scale - delegate.scale) < 0.004:
+            return
+        delegate.scale = scale
+        grid.setGridSize(delegate.cell_size())
+        grid.doItemsLayout()
+
+    def schedule_fit(self) -> None:
+        """Fit the grid once the layout has settled, however many resizes it took to get there."""
+        if not self._fit_due:
+            self._fit_due = True
+            QTimer.singleShot(0, self.fit_grid)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self.schedule_fit()
 
     def toggle_sidebar(self) -> None:
         shown = not self.sidebar.isVisible()
         self.sidebar.setVisible(shown)
+        self.schedule_fit()
         settings = self.win.app.settings
         settings.show_sidebar = shown
         save_settings(settings)
@@ -3286,6 +3335,7 @@ class LibraryPage(Page):
 
     def showEvent(self, e) -> None:
         super().showEvent(e)
+        self.schedule_fit()
         self.refresh_space()
         self.space_timer.start(30_000)
         if self._cards_due:

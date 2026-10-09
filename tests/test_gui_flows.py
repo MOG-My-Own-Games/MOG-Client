@@ -1416,6 +1416,49 @@ def test_the_saves_of_other_machines_are_offered_after_an_install_but_not_when_o
     assert (asked == [41]) is offered
 
 
+@pytest.mark.parametrize("room", [480, 700, 946, 1232, 1598, 1872])
+def test_the_grid_scale_leaves_no_column_unfilled_and_stays_close_to_normal(room):
+    scale = gui.grid_scale(room)
+    cell = int(gui.CELL_SIZE.width() * scale)
+    columns = room // cell
+    assert columns >= 1 and room - columns * cell <= 8  # a few pixels of rounding at most
+    assert 0.85 <= scale <= 1.25
+    assert gui.grid_scale(0) == 1.0 and gui.grid_scale(100) == gui.MIN_GRID_SCALE
+
+
+def test_the_covers_are_resized_so_whole_columns_fill_the_grid_with_the_sidebar_out_or_in(win, qapp):
+    games = [{"id": n, "name": f"Game {n}", "library_id": None, "igdb_id": None} for n in range(1, 13)]
+    win.set_games(games)
+    win.library.show_loading(False)
+    win.resize(1280, 800)
+    win.library.fit_grid()
+    for shown in (True, False, True):
+        if win.library.sidebar.isVisible() != shown:
+            win.library.toggle_sidebar()
+        pump(qapp)
+        pump(qapp)
+        grid, delegate = win.library.grid, win.library.grid.itemDelegate()
+        room = grid.width() - 2 * grid.frameWidth() - grid.verticalScrollBar().sizeHint().width()
+        cell = delegate.cell_size().width()
+        assert room // cell == max(1, round(room / gui.CELL_SIZE.width())) and room - (room // cell) * cell <= 8
+        assert grid.gridSize() == delegate.cell_size()
+
+
+def test_the_sidebar_lists_never_scroll_sideways_and_their_rows_are_as_wide_as_what_is_shown(win, qapp):
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    pump(qapp)
+    for side_list in (win.library.libs, win.library.sorts):
+        assert side_list.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff and not side_list.horizontalScrollBar().isVisible()
+
+    option = QStyleOptionViewItem()
+    option.widget = win.library.sorts
+    option.rect.setWidth(win.library.sorts.viewport().width() + 40)  # a rect wider than the list shows
+    hint = win.library.sorts.itemDelegate().sizeHint(option, win.library.sorts.model().index(0, 0))
+    assert hint.width() == win.library.sorts.viewport().width()
+
+
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):
     win.user_btn.setVisible(False)
     win.on_pad(gamepad.MENU)

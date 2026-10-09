@@ -109,7 +109,11 @@ class OptionDelegate(QStyledItemDelegate):
     ROW_H, MARK_W, MARK_H, PAD = 38, 34, 18, 12
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(option.rect.width(), self.ROW_H)
+        # As wide as the list shows, not as the rect it was first laid out in: a row wider than the list makes it scroll
+        # sideways and cuts the right end of the selected frame.
+        list_widget = option.widget
+        width = list_widget.viewport().width() if list_widget is not None else option.rect.width()
+        return QSize(width, self.ROW_H)
 
     def paint(self, painter: QPainter, option, index) -> None:
         painter.save()
