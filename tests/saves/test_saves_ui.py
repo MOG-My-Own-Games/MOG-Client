@@ -72,7 +72,7 @@ class FakeWin:
         self.messages.append((level, text))
         self.notes.append(text)
 
-    def choose(self, title, text, options, on_choose, skip=None):
+    def choose(self, title, text, options, on_choose, skip=None, confirm=False):
         self.choices.append((title, options, on_choose))
         self.skips.append(skip)
 

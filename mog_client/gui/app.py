@@ -688,6 +688,19 @@ class ActivateOnEnter(QObject):
         return False
 
 
+class InputWatcher(QObject):
+    """Tells which kind of device was used last: a key pressed on a keyboard (not one the pad posts) says "keys"."""
+
+    def __init__(self, on_use, parent: QObject) -> None:
+        super().__init__(parent)
+        self.on_use = on_use
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
+        if event.type() == QEvent.KeyPress and event.spontaneous():
+            self.on_use("keys")
+        return False
+
+
 class Page(QWidget):
     """One screen of the single window. `title` shows in the header."""
 
@@ -1031,7 +1044,6 @@ class OptionsPage(Page):
                 engine = f"{launcher_label(rec.launcher)} (this game)" if rec.launcher != "auto" else "default"
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
-            add("Regenerate shortcuts", lambda: page.regenerate(rec))
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
             on = sync_enabled(rec, win.app.settings)
             add(f"Save sync: {'on' if on else 'off'} (this game)", lambda: page.toggle_save_sync(rec))
@@ -1062,23 +1074,27 @@ class OptionsPage(Page):
 
 class ChoicePage(Page):
     """A list to pick one answer from, then OK (or Enter on an entry). `skip` adds a red button that
-    answers None; Esc or Back leaves without answering."""
+    answers None; Esc or Back leaves without answering. With `confirm`, picking an entry only selects it (Enter or A
+    moves on to the next control) and OK is what answers; with a `skip` button the page needs no Close of its own."""
 
     modal = True
 
-    def __init__(self, win: "MainWindow", title: str, text: str, options: list, on_choose, skip: str | None = None):
+    def __init__(
+        self, win: "MainWindow", title: str, text: str, options: list, on_choose, skip: str | None = None, confirm: bool = False
+    ):
         super().__init__()
         self.title, self.win, self.on_choose = title, win, on_choose
+        self.show_close = skip is None
         note = QLabel(text)
         note.setWordWrap(True)
-        self.list = QListWidget()
+        self.list = EdgeList()
         for label, value in options:
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, value)
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(self.choose)
+        self.list.itemActivated.connect(self.focusNextChild if confirm else self.choose)
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
@@ -1120,7 +1136,7 @@ class ChecklistPage(Page):
         self.title, self.win, self.on_done = title, win, on_done
         note = QLabel(text)
         note.setWordWrap(True)
-        self.list = QListWidget()
+        self.list = EdgeList()
         for label, value, *ticked in items:  # an entry may say it starts ticked
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, value)
@@ -1165,7 +1181,7 @@ class SteamAccountsPage(Page):
         self.win, self.on_done = win, on_done
         note = QLabel("Do you want to add MOG and its installed games to Steam?")
         note.setWordWrap(True)
-        self.list = QListWidget()
+        self.list = EdgeList()
         for user in users:
             item = QListWidgetItem(f"{selfsteam.label(user, users)} ({user.name})")
             item.setData(Qt.UserRole, user.name)
@@ -1972,20 +1988,21 @@ class ExecutablePage(Page):
     """The "awaiting executable info" step: pick what to run, then create the entries."""
 
     modal = True
+    show_close = False  # Later is the way out
 
     def __init__(self, win: "MainWindow", rec: InstalledGame, on_done):
         super().__init__()
         self.title = f"Choose the executable for {rec.name}"
         self.win, self.on_done = win, on_done
         self.root = Path(rec.install_dir)
-        self.list = QListWidget()
+        self.list = EdgeList()
         for exe in list_executables(self.root):
             item = QListWidgetItem(f"{exe.relative_to(self.root)}   ({fmt_bytes(exe.stat().st_size)})")
             item.setData(Qt.UserRole, str(exe))
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(lambda _: self.accept())
+        self.list.itemActivated.connect(lambda _: self.focusNextChild())  # picking is not confirming
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._browse)
         self.desktop = Toggle("Create a desktop entry")
@@ -2605,25 +2622,6 @@ class GamePage(Page):
 
     def show_options(self, rec: InstalledGame | None) -> None:
         self.win.push(OptionsPage(self.win, self, rec))
-
-    def regenerate(self, rec: InstalledGame) -> None:
-        def go() -> None:
-            def work():
-                try:
-                    manager.regenerate_entries(rec, self.game, self.app.settings.launcher, self.app.client())
-                except RuntimeError as e:
-                    self.app.bridge.error.emit(str(e))
-                    return
-                self.app.bridge.message.emit(*steam_outcome(rec, f"Shortcuts of {rec.name} rebuilt"))
-                self.app.bridge.finished.emit(rec.game_id, "")
-
-            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
-
-        self.win.ask(
-            "Rebuild this game's launch script, desktop entry and Steam shortcut from its current settings? "
-            "The Steam shortcut is edited in place, so it keeps its artwork and play time.",
-            go,
-        )
 
     def toggle_save_sync(self, rec: InstalledGame) -> None:
         now = sync_enabled(rec, self.app.settings)
@@ -3501,6 +3499,8 @@ class MainWindow(QMainWindow):
         self.legend.setAlignment(Qt.AlignCenter)
         self.legend.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # never makes the window wider
         self.pad_family: str | None = None
+        self.input_mode = "pad"  # which guide to show while a controller is connected: it follows the last device used
+        QApplication.instance().installEventFilter(InputWatcher(self.set_input_mode, self))
         self._pending_link: str | None = None  # a mog:// link that arrived before the games were loaded
         self._link_refreshed_for: str | None = None  # the link the games were reloaded for, once
         central = QWidget()
@@ -3669,8 +3669,10 @@ class MainWindow(QMainWindow):
     def hide_busy(self) -> None:
         self.busy.end()
 
-    def choose(self, title: str, text: str, options: list, on_choose, skip: str | None = None) -> None:
-        self.push(ChoicePage(self, title, text, options, on_choose, skip))
+    def choose(
+        self, title: str, text: str, options: list, on_choose, skip: str | None = None, confirm: bool = False
+    ) -> None:
+        self.push(ChoicePage(self, title, text, options, on_choose, skip, confirm))
 
     def checklist(self, title: str, text: str, items: list, on_done) -> None:
         self.push(ChecklistPage(self, title, text, items, on_done))
@@ -3838,12 +3840,23 @@ class MainWindow(QMainWindow):
         self.pad_family = family if connected else None
         self.refresh_legend()
 
+    def set_input_mode(self, mode: str) -> None:
+        """The last thing pressed was a controller button ("pad") or a keyboard key ("keys"): the guide follows."""
+        if mode != self.input_mode:
+            self.input_mode = mode
+            self.refresh_legend()
+
+    def legend_family(self) -> str | None:
+        """The controller's family while one is connected and was the last thing used, None for the keyboard's guide."""
+        return self.pad_family if self.input_mode == "pad" else None
+
     def refresh_legend(self) -> None:
-        """The controller's guide while one is connected, the keyboard's otherwise."""
+        """The controller's guide while one is connected and in use, the keyboard's otherwise."""
         context = self.legend_context()
-        height, entries = legend.fit(context, self.pad_family, legend.icon_height_for(self.height()), int(self.width() * 0.96))
+        family = self.legend_family()
+        height, entries = legend.fit(context, family, legend.icon_height_for(self.height()), int(self.width() * 0.96))
         self.legend.setStyleSheet(f"color: #9aa3b0; font-size: {legend.font_px_for(height)}px;")
-        self.legend.setText(legend.render(context, self.pad_family, height, entries))
+        self.legend.setText(legend.render(context, family, height, entries))
         self.legend.setVisible(True)
 
     def legend_context(self) -> str:
@@ -3882,6 +3895,7 @@ class MainWindow(QMainWindow):
         from reacting, and from making sounds, to someone playing."""
         if QApplication.activeWindow() is None:
             return
+        self.set_input_mode("pad")
         self.on_pad(name)
 
     def on_pad(self, name: str) -> None:

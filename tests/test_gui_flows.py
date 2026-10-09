@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from mog_client import config, installdirs, launcher, logstore  # noqa: E402
@@ -1266,6 +1267,103 @@ def test_start_and_ctrl_comma_open_the_user_menu_on_its_first_row_and_the_guide_
     entry = next(e for e in legend.LEGENDS[legend.LIBRARY] if e.label == "Menu")
     assert entry.pad == ("start",) and entry.keys == ("ctrl", "comma")
     assert not any(e.label == "Settings" for e in legend.LEGENDS[legend.LIBRARY])
+
+
+def test_the_guide_follows_the_last_device_used_while_a_controller_is_connected(win, qapp, monkeypatch):
+    monkeypatch.setattr(QApplication, "activeWindow", staticmethod(lambda: win))
+    win.set_pad(True, "xbox")
+    assert "/pad/xbox/" in win.legend.text() and win.input_mode == "pad"  # a connected pad is the default
+
+    QTest.keyClick(win.library.grid, Qt.Key_Down)  # a key from the keyboard: Qt marks it spontaneous
+    assert win.input_mode == "keys" and "/pad/" not in win.legend.text() and "/keys/" in win.legend.text()
+
+    win.on_pad_event(gamepad.DOWN)
+    assert win.input_mode == "pad" and "/pad/xbox/" in win.legend.text()
+
+    win.set_pad(False, "")
+    assert "/keys/" in win.legend.text()  # no pad: always the keyboard's
+
+
+def test_a_key_the_pad_posts_does_not_switch_the_guide_to_the_keyboard(win, qapp):
+    win.set_pad(True, "xbox")
+    win.on_pad(gamepad.DOWN)
+    pump(qapp)
+    assert win.input_mode == "pad"
+
+
+def _walk_with_the_pad(win, qapp, steps=14):
+    """Press Down on the pad until the focus has been everywhere it goes; the widgets it stopped on, in order."""
+    seen = []
+    for _ in range(steps):
+        win.on_pad(gamepad.DOWN)
+        pump(qapp)
+        focus = QApplication.focusWidget()
+        if focus not in seen:
+            seen.append(focus)
+    return seen
+
+
+def test_the_pad_walks_from_the_executables_to_the_options_and_the_buttons_and_picking_does_not_confirm(win, qapp, tmp_path):
+    from mog_client.gui.widgets import Toggle
+
+    (tmp_path / "game.exe").write_bytes(b"x")
+    (tmp_path / "other.exe").write_bytes(b"x")
+    answers = []
+    page = gui.ExecutablePage(win, config.InstalledGame(9, "G", str(tmp_path)), lambda *a: answers.append(a))
+    win.push(page)
+    win.activateWindow()
+    pump(qapp)
+    assert not win.modal.close_button.isVisibleTo(win)  # Later is the way out
+
+    page.list.setFocus()
+    win.on_pad(gamepad.ACCEPT)  # A on a row picks it...
+    pump(qapp)
+    assert answers == [] and QApplication.focusWidget() is not page.list  # ...and does not confirm: the focus moves on
+
+    page.list.setFocus()
+    seen = _walk_with_the_pad(win, qapp)
+    assert any(isinstance(w, Toggle) for w in seen)
+    assert {w.text() for w in seen if isinstance(w, QPushButton)} >= {"Browse...", "Later", "Use this executable"}
+
+    ok = next(w for w in seen if isinstance(w, QPushButton) and w.text() == "Use this executable")
+    ok.setFocus()
+    win.on_pad(gamepad.ACCEPT)
+    pump(qapp)
+    assert len(answers) == 1 and answers[0][0].endswith(".exe")
+
+
+def test_picking_a_save_from_another_machine_waits_for_ok_and_the_dialog_has_no_close_button(win, qapp):
+    chosen = []
+    win.choose(
+        "Saves from another machine",
+        "Put one on this machine now?",
+        [("Restore one", 1), ("Restore two", 2)],
+        chosen.append,
+        skip="Skip",
+        confirm=True,
+    )
+    win.activateWindow()
+    pump(qapp)
+    page = win.current_page()
+    assert not win.modal.close_button.isVisibleTo(win)
+
+    page.list.setCurrentRow(1)
+    page.list.setFocus()
+    win.on_pad(gamepad.ACCEPT)
+    pump(qapp)
+    assert chosen == [] and win.current_page() is page  # still open, with the second row picked
+
+    seen = _walk_with_the_pad(win, qapp, steps=6)
+    ok = next(w for w in seen if isinstance(w, QPushButton) and w.text() == "OK")
+    ok.click()
+    pump(qapp)
+    assert chosen == [2]
+
+
+def test_a_picker_without_skip_keeps_its_close_button(win, qapp):
+    win.choose("Restore which save?", "x", [("one", 1)], lambda v: None, confirm=True)
+    pump(qapp)
+    assert win.modal.close_button.isVisibleTo(win)
 
 
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):

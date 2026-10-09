@@ -535,6 +535,7 @@ class SaveSync:
             f"Put a saved version of {rec.name} back on this machine. What it replaces is copied to a backup first.",
             [(version_label(v, d), v["id"]) for v, d in rows],
             lambda version_id: self._restore(rec, ctx, version_id),
+            confirm=True,
         )
 
     def offer_after_install(self, rec: InstalledGame) -> None:
@@ -560,6 +561,7 @@ class SaveSync:
             options,
             lambda version_id: self._restore(rec, ctx, version_id) if version_id is not SKIP else None,
             skip="Skip",
+            confirm=True,
         )
 
     # --- uninstalling, and looking over every game at startup ---
