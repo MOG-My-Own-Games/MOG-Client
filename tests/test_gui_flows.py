@@ -1366,6 +1366,56 @@ def test_a_picker_without_skip_keeps_its_close_button(win, qapp):
     assert win.modal.close_button.isVisibleTo(win)
 
 
+def test_the_update_question_starts_on_yes_and_no_is_red_while_other_questions_start_on_no(win, qapp):
+    from types import SimpleNamespace
+
+    win.on_update_checked(SimpleNamespace(version="9.9"), "", False)
+    win.activateWindow()
+    pump(qapp)
+    page = win.current_page()
+    assert isinstance(page, gui.ConfirmPage) and "9.9" in page.text_label.text()
+    page.focus_default()
+    assert QApplication.focusWidget() is page.yes and page.yes.isDefault()
+    assert page.no.property("danger") is True and not page.yes.property("danger")
+    win.back()
+
+    win.ask("Delete it?", lambda: None, danger=True)
+    pump(qapp)
+    other = win.current_page()
+    other.focus_default()
+    assert QApplication.focusWidget() is other.no and not other.no.property("danger") and other.yes.property("danger") is True
+
+
+@pytest.mark.parametrize(("state", "offered"), [("awaiting_executable", True), ("installed", False)])
+def test_the_saves_of_other_machines_are_offered_after_an_install_but_not_when_only_the_shortcuts_change(
+    win, qapp, monkeypatch, tmp_path, state, offered
+):
+    from mog_client import manager
+
+    folder = tmp_path / "Eta"
+    folder.mkdir()
+    (folder / "game.exe").write_bytes(b"x")
+    page, game = _game_page_with_mods(win, qapp, monkeypatch, [])
+    rec = config.InstalledGame(41, "Eta", str(folder), state=state, executable=str(folder / "game.exe"))
+    monkeypatch.setattr(manager, "finish_setup", lambda *a, **k: None)
+    monkeypatch.setattr(win.app, "client", lambda: None)
+    monkeypatch.setattr(win.app.settings, "steam_decided", True)  # no Steam question over the page
+    asked = []
+    monkeypatch.setattr(win.saves, "offer_after_install", lambda r: asked.append(r.game_id))
+
+    page.choose_executable(rec)
+    pump(qapp)
+    win.current_page().accept()
+    for _ in range(40):  # the work runs in the background
+        pump(qapp)
+        if asked or not offered:
+            break
+        time.sleep(0.05)
+    pump(qapp)
+
+    assert (asked == [41]) is offered
+
+
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):
     win.user_btn.setVisible(False)
     win.on_pad(gamepad.MENU)

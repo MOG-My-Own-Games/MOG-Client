@@ -733,19 +733,25 @@ def _row(*widgets, stretch_first: bool = True) -> QHBoxLayout:
 
 
 class ConfirmPage(Page):
-    """Inline yes/no question; "No" holds the initial focus so a stray A press is safe."""
+    """Inline yes/no question; "No" holds the initial focus so a stray A press is safe, unless `yes_default` (a question
+    whose usual answer is yes, like an update) puts it on "Yes" and paints "No" red."""
 
     modal = True
     compact = True
     show_close = False  # No is the way out
 
-    def __init__(self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False):
+    def __init__(
+        self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False, yes_default: bool = False
+    ):
         super().__init__()
         self.title = title
+        self.yes_default = yes_default
         self.text_label = QLabel(text)
         self.text_label.setWordWrap(True)
         self.no, self.yes = QPushButton("No"), QPushButton("Yes")
         self.yes.setProperty("danger", danger)
+        self.no.setProperty("danger", yes_default)
+        self.yes.setDefault(yes_default)
         self.no.clicked.connect(win.back)
         self.yes.clicked.connect(lambda: (win.back(), on_yes()))
         lay = QVBoxLayout(self)
@@ -755,7 +761,7 @@ class ConfirmPage(Page):
         lay.addStretch()
 
     def focus_default(self) -> None:
-        self.no.setFocus()
+        (self.yes if self.yes_default else self.no).setFocus()
 
 
 class UpdatePage(Page):
@@ -2674,8 +2680,12 @@ class GamePage(Page):
         self.win.push(LauncherPage(self.win, rec, done))
 
     def choose_executable(self, rec: InstalledGame) -> None:
+        """The executable and shortcuts of a game. Straight after an install the saves other machines left are offered
+        next; from a game's Options, where it is only the shortcuts being changed, they are not."""
+
         def done(exe: str, steam_users: list[Path], desktop: bool) -> None:
             logstore.info(f"{rec.name}: updating entries and fetching artwork...")
+            just_installed = rec.state != "installed"
 
             def work():
                 manager.finish_setup(
@@ -2684,7 +2694,8 @@ class GamePage(Page):
                 if rec.steam_pending:
                     self.app.bridge.message.emit(*steam_outcome(rec, f"{rec.name} is ready"))
                 self.app.bridge.finished.emit(rec.game_id, "")
-                self.app.bridge.call.emit(lambda: self.win.saves.offer_after_install(rec))
+                if just_installed:
+                    self.app.bridge.call.emit(lambda: self.win.saves.offer_after_install(rec))
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.finished.emit(rec.game_id, m))
 
@@ -3680,12 +3691,12 @@ class MainWindow(QMainWindow):
     def browse_folder(self, start: Path, on_pick) -> None:
         self.push(BrowsePage(self, start, on_pick, folders=True))
 
-    def ask(self, text: str, on_yes, on_no=None, danger: bool = False) -> None:
+    def ask(self, text: str, on_yes, on_no=None, danger: bool = False, yes_default: bool = False) -> None:
         def no():
             if on_no:
                 on_no()
 
-        page = ConfirmPage(self, text, on_yes, danger=danger)
+        page = ConfirmPage(self, text, on_yes, danger=danger, yes_default=yes_default)
         page.no.clicked.connect(no)
         self.push(page)
 
@@ -3813,6 +3824,7 @@ class MainWindow(QMainWindow):
         self.ask(
             f"MOG {info.version} is available (you have {__version__}). Update now? The app restarts when done.",
             lambda: self.push(UpdatePage(self, info)),
+            yes_default=True,
         )
 
     def _shortcut_menu(self) -> None:
