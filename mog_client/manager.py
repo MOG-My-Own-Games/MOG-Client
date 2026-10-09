@@ -21,6 +21,8 @@ from mog_client.launcher import (
     pfx_dir,
     remove_entry_files,
     shortcut_lnk_path,
+    steam_import_path,
+    write_desktop_file,
     write_directory_file,
     write_launch_script,
 )
@@ -200,28 +202,57 @@ def _sync_steam_entries(
     """Bring the game's Steam shortcuts in line, one in each account wanted: (entries to keep, whether one changed,
     whether it has to be looked at again).
 
-    The file is written at once, with Steam open or not (Steam shows it after a restart). Steam is said to write
-    its own copy when it quits, which would undo a change made while it ran, so `pending` asks for the next start
-    with Steam closed to check the entries are still there."""
+    With Steam running, the account signed in to it gets its shortcut through Steam itself (as SteamOS's "Add to
+    Steam" does), which shows at once and which Steam keeps. The others are written to their file, which Steam is
+    said to undo when it quits, so `pending` asks for the next start with Steam closed to check them."""
+    running = steam.steam_running()
+    active = steam.active_account() if running else None
     wanted_files = {str(steam.shortcuts_path(d)): d for d in steam_users}
     start_dir, options = str(Path(rec.executable).parent), shlex.join(command[1:])
     kept: list[dict] = []
-    changed = False
+    changed = wrote_file = False
     for entry in rec.steam_entries:
         if entry["shortcuts_path"] not in wanted_files:
-            steam.remove_shortcut(entry)  # the user no longer wants it there
+            steam.remove_shortcut(entry)  # the user no longer wanted it there
             continue
         outcome = steam.update_shortcut(entry, command[0], start_dir, options, name=rec.name, artwork=art)
         if outcome is None:  # deleted from Steam by hand: put it back
             continue
         kept.append(entry)
         changed |= outcome
+        wrote_file |= bool(outcome)
     have = {e["shortcuts_path"] for e in kept}
     for path, user_dir in wanted_files.items():
-        if path not in have:
-            kept.append(steam.add_shortcut(user_dir, rec.name, command[0], start_dir, options, artwork=art))
-            changed = True
-    return kept, changed, changed and steam.steam_running()
+        if path in have:
+            continue
+        entry = _add_through_steam(rec, user_dir, command, art) if running and user_dir.name == active else None
+        if entry is None:
+            entry = steam.add_shortcut(user_dir, rec.name, command[0], start_dir, options, artwork=art)
+            wrote_file = True
+        kept.append(entry)
+        changed = True
+    return kept, changed, wrote_file and running
+
+
+def _add_through_steam(rec: InstalledGame, user_dir: Path, command: list[str], art: dict) -> dict | None:
+    """Have the running Steam add the game for its signed-in account, then give the entry its artwork. None when Steam
+    did not take it (it is then written to the file instead)."""
+    desktop = steam_import_path(rec)
+    try:
+        write_desktop_file(desktop, rec, command)
+    except OSError as e:
+        logstore.warning(f"Could not write {desktop} for Steam: {e}")
+        return None
+    if not steam.add_through_steam(desktop):
+        logstore.warning(f"Steam did not take {rec.name} through its add-a-game request: writing its shortcuts file instead")
+        return None
+    entry = steam.wait_for_shortcut(user_dir, rec.name)
+    if entry is None:
+        logstore.warning(f"{rec.name} did not show in Steam's shortcuts: writing its shortcuts file instead")
+        return None
+    entry["artwork"] = steam.write_artwork(user_dir, entry["appid"], art)
+    logstore.info(f"{rec.name} was added to Steam ({user_dir.name}) through Steam itself")
+    return entry
 
 
 def regenerate_entries(

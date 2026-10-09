@@ -439,6 +439,12 @@ def desktop_file_path(game: InstalledGame) -> Path:
     return _in_game_folder(game, f"{entry_stem(game)}.desktop")
 
 
+def steam_import_path(game: InstalledGame) -> Path:
+    """The `.desktop` file Steam is asked to import the game from (see steam.add_through_steam); a file of its own, so
+    it is there whether or not the user wanted a desktop entry."""
+    return _in_game_folder(game, ".mog-steam.desktop")
+
+
 def shortcut_lnk_path(game: InstalledGame) -> Path:
     return _in_game_folder(game, f"{entry_stem(game)}.lnk")
 
@@ -546,6 +552,24 @@ def desktop_entries_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "applications"
 
 
+def write_desktop_file(path: Path, game: InstalledGame, command: list[str], icon: Path | None = None) -> None:
+    """A `.desktop` file that starts the game with `command`."""
+    icon = icon or (icon_path(game) if icon_path(game).is_file() else None)
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={game.name.replace(chr(10), ' ')}",
+        f"Exec={desktop_exec(command)}",
+        f"Path={Path(game.executable).parent}",
+        "Categories=Game;",
+        "Terminal=false",
+    ]
+    if icon:
+        lines.append(f"Icon={icon}")
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o755)
+
+
 def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preference: str = "auto") -> str | None:
     """The game's entry point next to its files: a `.desktop` that starts the game through its launch
     script (not through MOG), with a symlink to it in the applications menu; on Windows a `.lnk`
@@ -555,22 +579,8 @@ def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preferen
             shortcut_lnk_path(game), write_launch_cmd(game), str(Path(game.executable).parent), icon=game.executable
         )
         return str(shortcut_lnk_path(game))
-    name = game.name.replace("\n", " ")
-    icon = icon or (icon_path(game) if icon_path(game).is_file() else None)
-    lines = [
-        "[Desktop Entry]",
-        "Type=Application",
-        f"Name={name}",
-        f"Exec={desktop_exec(entry_command(game, preference))}",
-        f"Path={Path(game.executable).parent}",
-        "Categories=Game;",
-        "Terminal=false",
-    ]
-    if icon:
-        lines.append(f"Icon={icon}")
     desktop = desktop_file_path(game)
-    desktop.write_text("\n".join(lines) + "\n")
-    desktop.chmod(0o755)
+    write_desktop_file(desktop, game, entry_command(game, preference), icon)
     menu = menu_entry_path(game)
     menu.parent.mkdir(parents=True, exist_ok=True)
     if menu.is_symlink() or menu.exists():
@@ -628,6 +638,7 @@ def remove_entry_files(game: InstalledGame) -> None:
         launch_script_path(game),
         launch_cmd_path(game),
         desktop_file_path(game),
+        steam_import_path(game),
         shortcut_lnk_path(game),
         directory_file_path(game),
         menu_entry_path(game),
