@@ -62,6 +62,7 @@ _CHECK_RESULT = {
     "needs-prefix": "needs the prefix to be set",
     "needs-confirmation": "needs the save folders to be confirmed",
     "needs-folder": "needs the folder it saves in",
+    "restore-pending": "saves from another machine are waiting, nothing was sent over them",
     "failed": "failed, the server could not be reached",
 }
 _CHECK_TRIGGER = {"quit": "after the game closed", "launch": "at start", "manual": "by hand", "sync": "at start", "uninstall": "on uninstall"}
@@ -208,6 +209,12 @@ class SaveSync:
                 self.win.message(f"Where does {rec.name} keep its saves? Open its Options > Where is the prefix", "warning")
             else:
                 self.choose_prefix(rec, retry)
+        elif status == "restore-pending":
+            text = (
+                f"Saves from another machine are waiting for {rec.name}, so nothing was backed up: that would replace them. "
+                "Start the game once and close it, or pick them in Options > Restore a saved version."
+            )
+            self.win.notify(text) if quiet else self.win.message(text, "warning")
         elif status == "needs-confirmation":
             if quiet:
                 self.win.message(f"Confirm which folders are {rec.name}'s saves: Options > Back up saves now", "warning")
@@ -356,8 +363,8 @@ class SaveSync:
             self.choose_prefix(rec, then=lambda: self.before_launch(rec, go), skip=go)
             return
         if not sync.prefix_ready(ctx, state):
-            # The game makes its prefix on this start; the saves go in at the next one.
-            self.win.notify(f"Saves for {rec.name} are waiting: close the game once it has started, then start it again")
+            # The game makes its prefix on this start, and the saves are put in as soon as it has (see runner.restore_when_made).
+            self.win.notify(f"The saves for {rec.name} are put in while the game starts")
             go()
             return
 
@@ -486,8 +493,8 @@ class SaveSync:
         elif result.status == "needs-prefix" and sync.find_prefix(ctx, load_state(rec.game_id)) is not None:
             # The game's own prefix, which it makes the first time it runs: nothing to ask, the saves wait for it.
             self.win.message(
-                f"The saves of {rec.name} are kept for when the game has made its prefix. Start the game once, close it "
-                "and start it again: they are put in then.",
+                f"The saves of {rec.name} are kept and put in while the game starts for the first time. If you do not see "
+                "them in the game, close it and start it again.",
                 "info",
             )
             if then:
@@ -500,7 +507,7 @@ class SaveSync:
                         self.say(f"Saves of {rec.name} restored", "info")
                     else:
                         self.say(
-                            f"Saves of {rec.name} are kept. Start the game once, close it and start it again: they are put in then"
+                            f"Saves of {rec.name} are kept and put in while the game starts for the first time"
                         )
                     if then:
                         self.gui(then)

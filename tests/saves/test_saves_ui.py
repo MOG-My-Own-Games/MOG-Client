@@ -263,7 +263,7 @@ def test_a_prefix_the_game_has_not_made_yet_is_not_asked_about_when_saves_are_re
     ui.ui._restore(ui.rec, ctx, version["id"], lambda: done.append(1))
 
     assert ui.win.choices == [] and done == [1]  # the question about the prefix does not come
-    assert any("Start the game once, close it and start it again" in text for _, text in ui.win.messages)
+    assert any("put in while the game starts for the first time" in text for _, text in ui.win.messages)
     assert load_state(7).pending_restore  # kept for when the prefix is there
 
 
@@ -278,7 +278,7 @@ def test_starting_a_game_whose_prefix_is_not_made_yet_says_what_to_do_with_the_w
 
     ui.ui.before_launch(ui.rec, lambda: started.append(1))
 
-    assert started == [1] and any("close the game once it has started, then start it again" in n for n in ui.win.notes)
+    assert started == [1] and any("are put in while the game starts" in n for n in ui.win.notes)
 
 
 def test_not_now_still_starts_the_game(ui):
