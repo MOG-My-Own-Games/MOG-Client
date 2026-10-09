@@ -7,9 +7,11 @@ route the same messages to its own widgets.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -225,6 +227,15 @@ def sha1_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+@dataclass
+class RepairResult:
+    checked: int = 0  # files compared with the server's copy
+    repaired: int = 0
+    failed: list[str] = field(default_factory=list)  # paths that are still wrong
+    listed: bool = True  # False: the server's list of files could not be had, nothing was checked
+    stopped: bool = False
+
+
 def verify_and_repair(
     client: MogClient,
     game_id: int,
@@ -233,37 +244,64 @@ def verify_and_repair(
     log: Callable[[str], None] = log,
     warn: Callable[[str], None] = warn,
     on_manifest: Callable[[list[dict]], None] | None = None,
-) -> None:
+    fetch_missing: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
+    stop: threading.Event | None = None,
+) -> RepairResult:
     """Verify every downloaded file's sha1 against the server's own finished,
-    hash-verified manifest and re-fetch whatever doesn't match. `on_manifest` gets that
-    manifest's files ({path, size_bytes, sha1}) once it is known."""
+    hash-verified manifest and re-fetch whatever doesn't match (and, with `fetch_missing`, whatever is not there).
+    `on_manifest` gets that manifest's files ({path, size_bytes, sha1}) once it is known; `on_progress` gets
+    (files looked at, files in all)."""
+    result = RepairResult()
     try:
         manifest = client.list_files(game_id, session_id=session_id)
     except RuntimeError as e:
         warn(f"couldn't verify downloaded files: {e}")
-        return
+        result.listed = False
+        return result
 
     files = manifest.get("files", [])
     if on_manifest:
         on_manifest(files)
     log(f"verifying {len(files)} file(s) against the server's hashes...")
-    mismatches = 0
-    for entry in files:
+    for index, entry in enumerate(files):
+        if stop is not None and stop.is_set():
+            result.stopped = True
+            break
+        if on_progress:
+            on_progress(index, len(files))
         path = entry["path"]
         local_path = out_dir / path
         if not local_path.is_file():
+            if not fetch_missing:
+                continue
+            warn(f"  {path}: missing - downloading")
+        elif sha1_of(local_path) == entry["sha1"]:
+            result.checked += 1
+            continue
+        else:
+            warn(f"  {path}: hash mismatch - re-downloading")
+        result.checked += 1
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            part = local_path.with_name(local_path.name + ".mog-part")
+            part.write_bytes(client.download_file(game_id, path, session_id=session_id))
+            os.replace(part, local_path)
+        except (RuntimeError, OSError) as e:
+            warn(f"  {path}: repair failed: {e}")
+            result.failed.append(path)
             continue
         if sha1_of(local_path) == entry["sha1"]:
-            continue
-        mismatches += 1
-        warn(f"  {path}: hash mismatch - re-downloading")
-        try:
-            local_path.write_bytes(client.download_file(game_id, path, session_id=session_id))
-            log(f"  {path}: repaired" if sha1_of(local_path) == entry["sha1"] else f"  {path}: still mismatched after re-download")
-        except RuntimeError as e:
-            warn(f"  {path}: repair failed: {e}")
-    if mismatches == 0:
+            result.repaired += 1
+            log(f"  {path}: repaired")
+        else:
+            result.failed.append(path)
+            log(f"  {path}: still mismatched after re-download")
+    if on_progress and not result.stopped:
+        on_progress(len(files), len(files))
+    if not result.repaired and not result.failed and not result.stopped:
         log("all files verified OK")
+    return result
 
 
 def poll_session(

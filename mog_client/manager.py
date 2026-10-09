@@ -29,7 +29,7 @@ from mog_client.launcher import (
 from mog_client.saves import installed as ledger
 from mog_client.saves.state import forget_game, save_install_manifest
 from mog_client.scrape import fetch_artwork
-from mog_client.transfer import download_all_files, poll_session, verify_and_repair
+from mog_client.transfer import RepairResult, download_all_files, poll_session, verify_and_repair
 
 # What run_install's error starts with when the server cannot choose an installer: the window tells it apart from a
 # failure and offers the list of installers instead of sending the person to the server.
@@ -427,6 +427,27 @@ def _rmtree(path: str) -> bool:
     elif target.exists():
         shutil.rmtree(path, onerror=make_writable)
     return not target.exists() and not target.is_symlink()
+
+
+def repair(
+    rec: InstalledGame,
+    client,
+    stop: threading.Event,
+    log: Callable[[str], None],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> RepairResult:
+    """Compare every file the server installed with its own hash and fetch again what is wrong or missing. Needs the
+    server to still hold the install (its cache); raises RuntimeError when it does not."""
+    session = client.get_session(rec.game_id)
+    if not session or session.get("state") != "done":
+        raise RuntimeError("the server no longer holds this install, so there is nothing to check the files against")
+    result = verify_and_repair(
+        client, rec.game_id, Path(rec.files_dir or rec.install_dir), session_id=session.get("id"), log=log, warn=log,
+        fetch_missing=True, on_progress=on_progress, stop=stop,
+    )
+    if not result.listed:
+        raise RuntimeError("the server could not list the files of this install")
+    return result
 
 
 def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:

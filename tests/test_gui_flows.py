@@ -2780,3 +2780,18 @@ def test_a_games_added_notice_has_the_library_looked_at_at_once(win, qapp, monke
 
     win.on_notifications({"notifications": [note(3, "games_added"), note(2, "save_synced"), note(1, "save_synced")], "unread": 3})
     assert looked == [1]
+
+
+def test_the_options_of_an_installed_game_offer_a_repair_and_the_sidebar_shows_it_running(win, qapp, tmp_path):
+    from types import SimpleNamespace
+
+    from mog_client.config import InstalledGame
+
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), state="installed", executable=str(tmp_path / "g.exe"))
+    page = gui.OptionsPage(win, SimpleNamespace(delete_server_cache=lambda: None), rec)
+    assert "Repair: check the installed files" in [b.text() for b in page.findChildren(QPushButton)]
+
+    win.app.games[4] = {"id": 4, "name": "G"}
+    win.library.repairs[4] = 42
+    win.library.update_active()
+    assert (4, "repair") in win.library._task_keys and win.library.installs.count() == 1

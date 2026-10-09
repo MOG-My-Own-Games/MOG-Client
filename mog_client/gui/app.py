@@ -1071,6 +1071,7 @@ class OptionsPage(Page):
                 add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
+            add("Repair: check the installed files", lambda: page.repair(rec))
             on = sync_enabled(rec, win.app.settings)
             add(f"Save sync: {'on' if on else 'off'} (this game)", lambda: page.toggle_save_sync(rec))
             if on:
@@ -2712,6 +2713,53 @@ class GamePage(Page):
 
         self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not refresh: {m}"))
 
+    def repair(self, rec: InstalledGame) -> None:
+        """Check every file the server installed against its hash, as a task in the sidebar, and fetch again the ones that
+        differ or are missing."""
+        gid = rec.game_id
+        library = self.win.library
+        if gid in library.repairs:
+            self.win.message(f"The files of {rec.name} are already being checked", "info")
+            return
+
+        def listed(percent: int | None) -> None:
+            if percent is None:
+                library.repairs.pop(gid, None)
+            else:
+                library.repairs[gid] = percent
+            self.win.refresh_tasks()
+
+        def go() -> None:
+            last = [-1]
+
+            def progress(done: int, total: int) -> None:
+                percent = done * 100 // total if total else 100
+                if percent != last[0]:  # one update per percent, not per file
+                    last[0] = percent
+                    self.app.bridge.call.emit(lambda: listed(percent))
+
+            def work() -> None:
+                self.app.bridge.call.emit(lambda: listed(0))
+                try:
+                    result = manager.repair(rec, self.app.client(), threading.Event(), logstore.info, progress)
+                finally:
+                    self.app.bridge.call.emit(lambda: listed(None))
+                if result.failed:
+                    text = f"{len(result.failed)} file(s) of {rec.name} could not be repaired, see the Logs tab"
+                    self.app.bridge.message.emit("error", text)
+                elif result.repaired:
+                    self.app.bridge.message.emit("info", f"{rec.name}: {result.repaired} file(s) repaired")
+                else:
+                    self.app.bridge.message.emit("info", f"All {result.checked} files of {rec.name} are as the server has them")
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not check the files: {m}"))
+
+        self.win.ask(
+            f"Check every file of {rec.name} against the server's copy? Files that differ or are missing are downloaded again "
+            "(a file you changed yourself is replaced). The install cache must still be on the server.",
+            go,
+        )
+
     def delete_server_cache(self) -> None:
         gid = self.game["id"]
 
@@ -3183,6 +3231,7 @@ class LibraryPage(Page):
         self.space_timer.timeout.connect(self.refresh_space)
         self._ranks: dict[int, tuple[bool, bool]] = {}
         self.syncing: set[int] = set()  # games whose saves are being backed up after they closed
+        self.repairs: dict[int, int] = {}  # games whose files are being checked against the server's, with how far (percent)
         self._task_keys: set = set()  # the tasks listed the last time, to notice a new one
         self._card_pulses: dict[int, QVariantAnimation] = {}
         self._cards_due: set[int] = set()  # the games whose task started while this page was not in front
@@ -3494,6 +3543,11 @@ class LibraryPage(Page):
         rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None, "install") for gid in running]
         rows += [
             (gid, "Syncing saves...", None, "sync") for gid in sorted(self.syncing) if gid in app.games and gid not in installing
+        ]
+        rows += [
+            (gid, f"Checking files... {pct}%", None, "repair")
+            for gid, pct in sorted(self.repairs.items())
+            if gid in app.games and gid not in installing
         ]
         rows += [
             (gid, "Backing up saves...", None, "backup")
@@ -4291,7 +4345,9 @@ class MainWindow(QMainWindow):
             recorder = runner.runtime_prefix_recorder(ctx) if ctx and not rec.native else None
             if ctx:
                 runner.restore_when_made(ctx, lambda text: self.app.bridge.message.emit("info", text), stop.is_set)
-            started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, **timing)
+            say = lambda text: logstore.info(f"{rec.name}: {text}")  # noqa: E731
+            say("started, watching it until it ends")
+            started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, log=say, **timing)
             if started and ctx:
                 self.app.bridge.call.emit(lambda: self._sync_started(rec))
             result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None
