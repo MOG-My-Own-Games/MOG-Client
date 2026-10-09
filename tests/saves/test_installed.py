@@ -136,6 +136,9 @@ class Server:
     def get_session(self, gid):
         return {"id": 5, "state": "done"}
 
+    def list_files(self, gid, session_id=None):
+        return {"files": [{"path": "a", "size_bytes": 1}]}
+
 
 def run(tmp_path, monkeypatch, writes, complete=True, listing=True):
     """One call of manager.run_install with the downloading stood in for: `writes` are what it puts in the folder."""

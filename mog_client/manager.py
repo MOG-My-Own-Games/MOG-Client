@@ -58,6 +58,16 @@ ARCHIVE_SOURCE_KINDS = ("disc image", "archive")
 QUEUE_RETRY_SECONDS = 15.0  # how often a start an older server refused (its places all taken) is asked again
 
 
+def holds_nothing(client, game_id: int, session_id: int) -> bool:
+    """Whether a finished session's file list has no file with content in it (an installer that stopped at its first
+    file leaves an empty one). A list that cannot be read is given the benefit of the doubt."""
+    try:
+        files = client.list_files(game_id, session_id=session_id).get("files", [])
+    except RuntimeError:
+        return False
+    return all(not e.get("size_bytes") for e in files)
+
+
 def is_loose(files: list[dict]) -> bool:
     """Whether an install's files are not all inside one folder of their own: some are at the top, or there are
     several folders there."""
@@ -110,6 +120,9 @@ def run_install(
 
     existing = client.get_session(gid)
     session_id = existing.get("id") if existing and existing.get("state") == "done" else None
+    if session_id is not None and holds_nothing(client, gid, session_id):
+        log("the server's finished install has no file with content in it: running it again")
+        session_id = None
     if session_id is None:
         archive = installer is not None and installer.get("kind") in ARCHIVE_SOURCE_KINDS
         while True:

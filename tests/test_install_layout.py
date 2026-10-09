@@ -70,6 +70,9 @@ def install(tmp_path, monkeypatch):
             def get_session(self, gid):
                 return {"id": 9, "state": "done"}
 
+            def list_files(self, gid, session_id=None):
+                return {"files": [{"path": "a", "size_bytes": 1}]}
+
         settings = Settings(install_dirs=[str(tmp_path / "games")])
         if prior:
             config.save_library({5: prior})

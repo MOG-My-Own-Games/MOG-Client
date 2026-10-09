@@ -208,3 +208,26 @@ def test_a_queued_session_is_one_the_client_keeps_waiting_for():
     from mog_client.api import ACTIVE_STATES
 
     assert "queued" in ACTIVE_STATES
+
+
+def test_a_finished_session_with_only_empty_files_is_not_reused(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    started = []
+
+    class Server:
+        c = SimpleNamespace(base="http://s")
+
+        def get_session(self, gid):
+            return {"id": 13, "state": "done"}
+
+        def list_files(self, gid, session_id=None):
+            return {"files": [{"path": "setup.exe", "size_bytes": 0}]}
+
+        def start_session(self, gid, installer_path, proton, ttl, **kw):
+            started.append(gid)
+            raise RuntimeError("stop here")  # what follows is the download, not under test
+
+    settings = Settings(install_dirs=[str(tmp_path / "games")])
+    with pytest.raises(RuntimeError, match="stop here"):
+        manager.run_install(Server(), {"id": 98, "name": "Pragmata"}, settings, SimpleNamespace(is_set=lambda: False), lambda m: None, lambda s: None, lambda a, b: None)
+    assert started == [98]
