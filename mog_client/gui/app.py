@@ -2989,6 +2989,11 @@ class LibraryPage(Page):
         side.addWidget(self._heading("Sort by"))
         side.addWidget(self.sorts)
         side.addStretch(1)
+        self.space = QLabel()
+        self.space.setStyleSheet("color: #9aa3b0; font-size: 14px; padding: 8px 4px;")
+        side.addWidget(self.space)
+        self.space_timer = QTimer(self)
+        self.space_timer.timeout.connect(self.refresh_space)
         self._ranks: dict[int, tuple[bool, bool]] = {}
         self.syncing: set[int] = set()  # games whose saves are being backed up after they closed
         self._task_keys: set = set()  # the tasks listed the last time, to notice a new one
@@ -3175,12 +3180,22 @@ class LibraryPage(Page):
                 QTimer.singleShot(0, lambda: self.populate(self.win.search.text().lower()))
         self.update_active()
 
+    def refresh_space(self) -> None:
+        free = installdirs.total_free(self.win.app.settings.install_roots)
+        self.space.setText(f"{fmt_bytes(free)} free")
+
     def showEvent(self, e) -> None:
         super().showEvent(e)
+        self.refresh_space()
+        self.space_timer.start(30_000)
         if self._cards_due:
             due, self._cards_due = self._cards_due, set()
             for gid in due & {gid for gid, _what in self._task_keys}:  # only what is still going on
                 QTimer.singleShot(0, lambda gid=gid: self.pulse_card(gid))
+
+    def hideEvent(self, e) -> None:
+        super().hideEvent(e)
+        self.space_timer.stop()
 
     def pulse_card(self, gid: int) -> None:
         """The ring around a game's cover in the grid, so a task that has just started for it is seen there too."""
@@ -3230,6 +3245,8 @@ class LibraryPage(Page):
             if gid in app.games
         ]
         keys = {(gid, mod_name or kind) for gid, _doing, mod_name, kind in rows}
+        if keys != self._task_keys:
+            QTimer.singleShot(0, self.refresh_space)  # an install or a removal moved the free space
         new_games = {gid for gid, _what in keys - self._task_keys}
         started = bool(keys - self._task_keys)
         self._task_keys = keys

@@ -101,3 +101,10 @@ def test_the_single_folder_of_older_versions_becomes_the_list(tmp_path, monkeypa
     assert settings.install_dirs == ["/media/games"]
     config.save_settings(settings)
     assert "games_dir" not in (tmp_path / "config.json").read_text()
+
+
+def test_total_free_sums_connected_folders_once_per_disk():
+    usable, free_of = fake({"/a": 10 * GB, "/b": 10 * GB, "/c": 5 * GB})
+    disks = {"/a": 1, "/b": 1, "/c": 2, "/d": 3}
+    total = installdirs.total_free([Path(r) for r in ("/a", "/b", "/c", "/d")], usable, free_of, lambda root: disks[str(root)])
+    assert total == 15 * GB  # /b shares /a's disk, /d is not connected

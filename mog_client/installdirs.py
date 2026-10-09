@@ -32,6 +32,35 @@ def free_bytes(root: Path) -> int:
     return shutil.disk_usage(probe).free
 
 
+def total_free(
+    roots: list[Path],
+    usable: Callable[[Path], bool] | None = None,
+    free_of: Callable[[Path], int] | None = None,
+    disk_of: Callable[[Path], object] | None = None,
+) -> int:
+    """Free bytes over the connected folders. Folders on the same disk count once."""
+    usable, free_of, disk_of = usable or reachable, free_of or free_bytes, disk_of or _disk
+    seen, total = set(), 0
+    for root in roots:
+        if not usable(root):
+            continue
+        try:
+            disk, free = disk_of(root), free_of(root)
+        except OSError:
+            continue
+        if disk not in seen:
+            seen.add(disk)
+            total += free
+    return total
+
+
+def _disk(root: Path) -> int:
+    probe = root
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return probe.stat().st_dev
+
+
 @dataclass
 class Slot:
     path: Path
