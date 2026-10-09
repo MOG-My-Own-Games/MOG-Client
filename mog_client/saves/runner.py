@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +16,7 @@ from mog_client.config import InstalledGame, Settings, load_library
 from mog_client.gui.saves_ui import when
 from mog_client.launcher import detect_launcher, effective_launcher
 from mog_client.saves import devices, sync, watcher
+from mog_client.saves import prefix as prefixes
 from mog_client.saves.devices import HostnameTaken
 from mog_client.saves.state import load_state
 from mog_client.saves.watcher import LINGER, wait_for_game
@@ -47,6 +49,78 @@ def make_context(
     return sync.Context(rec, settings, client, device, engine)
 
 
+PREFIX_TIMEOUT = 180.0  # a first start may download a runtime before it makes the prefix
+PREFIX_QUIET = 3.0  # how long the profile folder must stay as it is before the prefix is taken as done
+PREFIX_POLL = 1.0
+
+
+def _profile_signature(prefix: Path) -> tuple[int, int]:
+    """How many entries are in the prefix's users folder and when the newest changed: it stops moving once the launcher is done."""
+    drive_c = prefixes.drive_c_of(prefix)
+    count, newest = 0, 0
+    if drive_c is None:
+        return count, newest
+    for here, dirs, files in os.walk(drive_c / "users"):
+        for name in (*dirs, *files):
+            count += 1
+            try:
+                newest = max(newest, os.lstat(os.path.join(here, name)).st_mtime_ns)
+            except OSError:
+                continue
+    return count, newest
+
+
+def wait_until_made(
+    prefix: Path,
+    stop: Callable[[], bool] = lambda: False,
+    timeout: float = PREFIX_TIMEOUT,
+    quiet: float = PREFIX_QUIET,
+    poll: float = PREFIX_POLL,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Block until a launcher has made the prefix (see prefix_made) and its profile folder has stayed as it is for `quiet`
+    seconds: Proton copies a ready-made prefix first and then updates it. False on timeout or when `stop` says so."""
+    started = clock()
+    seen: tuple[int, int] | None = None
+    steady_since = started
+    while not stop() and clock() - started < timeout:
+        if prefixes.prefix_made(prefix):
+            signature = _profile_signature(prefix)
+            if signature != seen:
+                seen, steady_since = signature, clock()
+            elif clock() - steady_since >= quiet:
+                return True
+        else:
+            seen = None
+        sleep(poll)
+    return False
+
+
+def restore_when_made(
+    ctx: sync.Context, say: Callable[[str], None], stop: Callable[[], bool] = lambda: False, **timing
+) -> threading.Thread | None:
+    """With saves from another machine waiting for the prefix, put them in as soon as the game's launcher has made it, so
+    the game finds them on this first run. Nothing is overwritten (a file of the game's own in the way leaves them waiting
+    for the question at the next start). Returns the thread, or None when nothing waits."""
+    if ctx.rec.native or not load_state(ctx.rec.game_id).pending_restore:
+        return None
+
+    def work() -> None:
+        found = sync.find_prefix(ctx, load_state(ctx.rec.game_id))
+        if found is None or not wait_until_made(found.prefix, stop, **timing):
+            return
+        if sync.apply_pending(ctx, only_if_free=True):
+            say(
+                f"The saves of {ctx.rec.name} were put in while the game was starting. If you do not see them in the "
+                "game, close it and start it again."
+            )
+
+    thread = threading.Thread(target=work, daemon=True, name="restore-when-made")
+    thread.start()
+    return thread
+
+
 def runtime_prefix_recorder(ctx: sync.Context) -> Callable[[Path], None]:
     """What to do with the prefix seen in a running game's environment: keep it, but only when
     nothing else names one (it would otherwise replace the right one and drop what is tracked)."""
@@ -72,6 +146,7 @@ def await_game_end(
     if ctx is None:
         return None
     on_prefix = None if rec.native else runtime_prefix_recorder(ctx)
+    restore_when_made(ctx, log, stop)
     if not wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native, **timing):
         return None
     return ctx
