@@ -3260,6 +3260,7 @@ class LibraryPage(Page):
         shown = not self.sidebar.isVisible()
         self.sidebar.setVisible(shown)
         self.schedule_fit()
+        self.win.refresh_legend()
         settings = self.win.app.settings
         settings.show_sidebar = shown
         save_settings(settings)
@@ -3689,7 +3690,10 @@ class MainWindow(QMainWindow):
         if self.overlay.showing or self.playing.showing or self.busy.showing:
             return
         if e.key() == Qt.Key_Escape:
-            self.back()
+            if self.current_page() is self.library and self.library.sidebar.isVisibleTo(self.library):
+                self.library.toggle_sidebar()  # Back (B, Esc) closes the sidebar before it would leave the library
+            else:
+                self.back()
         else:
             super().keyPressEvent(e)
 
@@ -3935,7 +3939,9 @@ class MainWindow(QMainWindow):
             return legend.INBOX
         if isinstance(page, SettingsPage):
             return legend.LOGS if page.tabs.currentWidget() is page.logview else legend.SETTINGS
-        return legend.LIBRARY if page is self.library else legend.PAGE
+        if page is self.library:
+            return legend.LIBRARY if self.library.sidebar.isVisibleTo(self.library) else legend.LIBRARY_ALONE
+        return legend.PAGE
 
     def open_keyboard(self, target: QWidget) -> None:
         if not isinstance(self.current_page(), KeyboardPage):
@@ -4193,6 +4199,8 @@ class MainWindow(QMainWindow):
             if sync_enabled(rec, self.app.settings):
                 ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)
             recorder = runner.runtime_prefix_recorder(ctx) if ctx and not rec.native else None
+            if ctx:
+                runner.restore_when_made(ctx, lambda text: self.app.bridge.message.emit("info", text), stop.is_set)
             started = gameplay.watch(Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, **timing)
             if started and ctx:
                 self.app.bridge.call.emit(lambda: self._sync_started(rec))

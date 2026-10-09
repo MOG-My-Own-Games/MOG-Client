@@ -17,10 +17,10 @@ COMFORT = 28  # icons are shrunk to this before entries are dropped, and below i
 MIN_FIT = 20  # the smallest they are made, to keep the guide on one line
 GAP = "&nbsp;&nbsp;&nbsp;&nbsp;"
 
-LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY = (
-    "library", "page", "settings", "logs", "inbox", "typing", "message", "playing", "busy"
+LIBRARY, LIBRARY_ALONE, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY = (
+    "library", "library-alone", "page", "settings", "logs", "inbox", "typing", "message", "playing", "busy"
 )  # fmt: skip
-CONTEXTS = (LIBRARY, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY)
+CONTEXTS = (LIBRARY, LIBRARY_ALONE, PAGE, SETTINGS, LOGS, INBOX, TYPING, MESSAGE, PLAYING, BUSY)
 
 G = gamepad  # glyph names
 STICK_R = G.STICK_R
@@ -43,10 +43,10 @@ QUIT = Entry("Quit", (G.START, G.SELECT), ("ctrl", "q"), pad_chord=True)
 TABS = Entry("Tabs", (G.TRIGGER_L_GLYPH, G.TRIGGER_R_GLYPH), ("ctrl", "page_up", "page_down"))
 
 LEGENDS: dict[str, tuple[Entry, ...]] = {
-    LIBRARY: (
+    LIBRARY: (  # with the sidebar open: Back closes it
         MOVE,
         SELECT,
-        BACK,
+        Entry("Close sidebar", (G.EAST,), ("escape",), optional=True),
         Entry("Switch focus", (G.SHOULDER_L, G.SHOULDER_R), ("tab",), optional=True),
         Entry("Refresh", (G.WEST,), ("f5",), optional=True),
         Entry("Search", (G.NORTH,), ("ctrl", "f")),
@@ -80,6 +80,10 @@ LEGENDS: dict[str, tuple[Entry, ...]] = {
     PLAYING: (Entry("Stop", (G.SOUTH,), ("enter",)),),
     BUSY: (Entry("Cancel", (G.SOUTH,), ("enter",)),),
 }
+
+
+# The library with the sidebar closed: the same, with nothing for Back to close.
+LEGENDS[LIBRARY_ALONE] = tuple(e for e in LEGENDS[LIBRARY] if e.label != "Close sidebar")
 
 
 def pad_icon_path(family: str, glyph: str) -> Path:

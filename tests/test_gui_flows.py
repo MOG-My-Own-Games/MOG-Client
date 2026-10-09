@@ -1459,6 +1459,50 @@ def test_the_sidebar_lists_never_scroll_sideways_and_their_rows_are_as_wide_as_w
     assert hint.width() == win.library.sorts.viewport().width()
 
 
+def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_alone(win, qapp, monkeypatch):
+    from mog_client.gui import legend
+
+    monkeypatch.setattr(QApplication, "activeWindow", staticmethod(lambda: win))
+    win.activateWindow()
+    library = win.library
+    if not library.sidebar.isVisibleTo(library):
+        library.toggle_sidebar()
+    win.refresh_legend()
+    assert win.legend_context() == legend.LIBRARY
+    library.libs.setFocus()
+
+    win.on_pad(gamepad.BACK)  # B
+    pump(qapp)
+    assert not library.sidebar.isVisibleTo(library) and win.current_page() is library
+    assert win.legend_context() == legend.LIBRARY_ALONE
+    assert load_settings().show_sidebar is False  # the same choice as the sidebar's own button, kept
+
+    win.on_pad(gamepad.BACK)  # nothing more to close
+    pump(qapp)
+    assert win.current_page() is library and not library.sidebar.isVisibleTo(library)
+
+    library.toggle_sidebar()
+    QTest.keyClick(library.grid, Qt.Key_Escape)  # Esc is the same key
+    pump(qapp)
+    assert not library.sidebar.isVisibleTo(library)
+
+
+def test_back_still_goes_back_from_a_game_page_with_the_sidebar_open(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "igdb_id": None}])
+    win.activateWindow()
+    win.show_game(41)
+    pump(qapp)
+    assert win.current_page() is not win.library
+
+    win.on_pad(gamepad.BACK)
+    pump(qapp)
+
+    assert win.current_page() is win.library and win.library.sidebar.isVisibleTo(win.library)  # it left the page, not the sidebar
+
+
 def test_without_a_signed_in_user_start_still_reaches_settings(win, qapp):
     win.user_btn.setVisible(False)
     win.on_pad(gamepad.MENU)
