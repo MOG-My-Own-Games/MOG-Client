@@ -33,10 +33,14 @@ def _read_json(path: Path, default):
 def _write_json(path: Path, data, private: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    if private:
-        tmp.chmod(0o600)
-    tmp.replace(path)
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        if private:
+            tmp.chmod(0o600)
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)  # a half-written copy would only take the room the disk has left
+        raise
 
 
 def default_install_root() -> Path:
@@ -57,10 +61,16 @@ class Settings:
     check_updates: bool = True
     # The library page's left-hand sidebar (toggled with L2).
     show_sidebar: bool = True
+    # Sidebar sections the user folded ("installs", "libraries", "sorts").
+    collapsed_sections: list[str] = field(default_factory=list)
     # How the library is ordered (see ordering.py): last played first, installed first, then this order.
     sort_last_played: bool = False
     sort_installed_first: bool = True
     sort_order: str = "newest"
+    # Games the server holds an install cache for first (after the installed ones), and the two filters.
+    sort_cached_first: bool = False
+    filter_saves: bool = False
+    filter_mods: bool = False
     # The launchers found on this machine, in order of preference, and the MOG version that looked.
     launchers: list[str] = field(default_factory=list)
     launchers_scanned_for: str = ""
@@ -138,6 +148,10 @@ class InstalledGame:
     executable: str | None = None
     prefix: str | None = None
     desktop_entry: str | None = None
+    # The server's folder name for the game when this record was made: what tells it is still the same game.
+    server_name: str | None = None
+    # The copy of the entry on the user's desktop folder, when asked for.
+    desktop_shortcut: str | None = None
     # {"shortcuts_path": str, "appid": int, "artwork": [str]} for each Steam entry created
     steam_entries: list[dict] = field(default_factory=list)
     # The folder the game's own files are in when they were put in a folder of their own inside `install_dir` (they came

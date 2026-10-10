@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import shlex
 import shutil
 import sys
@@ -15,6 +16,7 @@ from mog_client.config import InstalledGame, Settings, load_library, load_settin
 from mog_client.installdirs import default_root, present, prune_empty
 from mog_client.launcher import (
     create_desktop_entry,
+    create_desktop_shortcut,
     desktop_file_path,
     entry_command,
     icon_path,
@@ -36,6 +38,14 @@ from mog_client.transfer import RepairResult, download_all_files, poll_session, 
 NEEDS_PICK = "needs a manual installer pick"
 
 Log = Callable[[str], None]
+
+
+def describe_error(error: BaseException) -> str:
+    """What to tell the person about a failure; a full disk gets words of its own, since everything after it fails too."""
+    if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+        where = f" ({error.filename})" if error.filename else ""
+        return f"The disk is full{where}. Free some space and resume the install."
+    return str(error)
 
 
 def make_client(s: Settings) -> MogClient:
@@ -113,7 +123,8 @@ def run_install(
     gid = game["id"]
     lib = load_library()
     rec = lib.get(gid) or InstalledGame(
-        game_id=gid, name=game["name"], install_dir=str((root or default_root(settings)) / safe_dirname(game["name"]))
+        game_id=gid, name=game["name"], install_dir=str((root or default_root(settings)) / safe_dirname(game["name"])),
+        server_name=game.get("fs_name"),
     )
     _update(rec, state="installing", **({"extract_only": True} if extract_only else {}))
     out_dir = Path(rec.files_dir or rec.install_dir)
@@ -201,6 +212,7 @@ def finish_setup(
     desktop: bool = True,
     launcher: str = "auto",
     client: MogClient | None = None,
+    on_desktop: bool = False,
 ) -> bool:
     """Record the chosen executable and bring the game's entries in line with it. The entries run
     the game through its launch script on their own; MOG is not involved when they start.
@@ -219,13 +231,23 @@ def finish_setup(
         icon_path(rec).write_bytes(picture)
     write_directory_file(rec)
 
+    icon = icon_path(rec) if icon_path(rec).exists() else None
     desktop_path = None
     if desktop:
-        desktop_path = create_desktop_entry(rec, icon_path(rec) if icon_path(rec).exists() else None, launcher)
-    else:
-        for stale in (rec.desktop_entry, desktop_file_path(rec), shortcut_lnk_path(rec)):
+        desktop_path = create_desktop_entry(rec, icon, launcher)
+    elif on_desktop and sys.platform != "win32":  # the desktop's copy is made from the entry file, with no menu link
+        write_desktop_file(desktop_file_path(rec), rec, command, icon)
+    elif on_desktop:
+        create_desktop_entry(rec, icon, launcher)
+    if not desktop:  # the menu link goes; the entry file next to the games stays while the desktop's copy needs it
+        unwanted = [rec.desktop_entry] if on_desktop else [rec.desktop_entry, desktop_file_path(rec), shortcut_lnk_path(rec)]
+        for stale in unwanted:
             if stale:
                 Path(stale).unlink(missing_ok=True)
+
+    shortcut = create_desktop_shortcut(rec) if on_desktop else None
+    if shortcut is None and rec.desktop_shortcut:
+        Path(rec.desktop_shortcut).unlink(missing_ok=True)
 
     kept, steam_changed, pending = _sync_steam_entries(rec, steam_users, command, art)
     prefix = None if sys.platform == "win32" or rec.native else str(pfx_dir(rec))  # a native game has no prefix
@@ -235,6 +257,7 @@ def finish_setup(
         prefix=prefix,
         state="installed",
         desktop_entry=desktop_path,
+        desktop_shortcut=shortcut,
         steam_entries=kept,
         steam_users=[str(d) for d in steam_users],
         steam_pending=pending,
@@ -311,7 +334,8 @@ def regenerate_entries(
     if not steam_users:  # an entry made before the accounts were recorded
         steam_users = [Path(e["shortcuts_path"]).parent.parent for e in rec.steam_entries]
     return finish_setup(
-        rec, game_meta, rec.executable, steam_users, desktop=bool(rec.desktop_entry), launcher=preference, client=client
+        rec, game_meta, rec.executable, steam_users, desktop=bool(rec.desktop_entry), launcher=preference, client=client,
+        on_desktop=bool(rec.desktop_shortcut),
     )
 
 
@@ -338,6 +362,8 @@ def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> b
     if rec.desktop_entry:
         icon = Path(rec.install_dir) / ".mog-icon"
         create_desktop_entry(rec, icon if icon.exists() else None, preference)
+        if rec.desktop_shortcut:
+            create_desktop_shortcut(rec)
     steam_changed = False
     for entry in rec.steam_entries:
         steam_changed |= bool(
@@ -411,6 +437,7 @@ def remove_entries(rec: InstalledGame) -> None:
     for entry in rec.steam_entries:
         steam.remove_shortcut(entry)
     rec.desktop_entry = None
+    rec.desktop_shortcut = None
     rec.steam_entries = []
 
 

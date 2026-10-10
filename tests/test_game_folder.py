@@ -352,3 +352,28 @@ def test_the_add_request_is_the_one_steamos_makes_and_only_when_steam_can_be_ask
 
     monkeypatch.setattr(steam, "steam_command", lambda: None)
     assert steam.add_through_steam(Path("/x.desktop")) is False
+
+
+def test_a_shortcut_on_the_desktop_is_a_copy_of_the_entry_and_goes_with_the_game(home, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home.tmp / "cfg"))
+    (home.tmp / "cfg").mkdir()
+    (home.tmp / "cfg" / "user-dirs.dirs").write_text(f'XDG_DESKTOP_DIR="{home.tmp}/Escritorio"\n')
+    stem = "Jazz Jackrabbit 2_ The Secret Files"
+
+    manager.finish_setup(home.rec, {"id": 138}, str(home.exe), [], True, "auto", None, on_desktop=True)
+
+    shortcut = home.tmp / "Escritorio" / f"{stem}.desktop"
+    assert shortcut.is_file() and os.access(shortcut, os.X_OK)
+    assert shortcut.read_text() == (home.folder / f"{stem}.desktop").read_text()
+    assert load_library()[138].desktop_shortcut == str(shortcut) or home.rec.desktop_shortcut == str(shortcut)
+    assert (home.tmp / "xdg/applications/mog-138.desktop").is_symlink()  # the menu got it too
+
+    manager.finish_setup(home.rec, {"id": 138}, str(home.exe), [], True, "auto", None, on_desktop=False)
+    assert not shortcut.exists() and home.rec.desktop_shortcut is None
+
+    manager.finish_setup(home.rec, {"id": 138}, str(home.exe), [], False, "auto", None, on_desktop=True)
+    assert shortcut.is_file() and not (home.tmp / "xdg/applications/mog-138.desktop").exists()  # desktop only
+
+    manager.remove_entries(home.rec)
+    launcher.remove_entry_files(home.rec)
+    assert not shortcut.exists()

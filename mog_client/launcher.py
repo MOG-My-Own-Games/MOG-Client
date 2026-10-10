@@ -552,6 +552,40 @@ def desktop_entries_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "applications"
 
 
+def desktop_folder() -> Path:
+    """The user's desktop folder: XDG's (`user-dirs.dirs`), else ~/Desktop."""
+    if sys.platform != "win32":
+        dirs = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "user-dirs.dirs"
+        try:
+            for line in dirs.read_text().splitlines():
+                if line.startswith("XDG_DESKTOP_DIR="):
+                    value = line.split("=", 1)[1].strip().strip('"').replace("$HOME", str(Path.home()))
+                    if value:
+                        return Path(value)
+        except OSError:
+            pass
+    return Path.home() / "Desktop"
+
+
+def desktop_shortcut_path(game: InstalledGame) -> Path:
+    suffix = ".lnk" if sys.platform == "win32" else ".desktop"
+    return desktop_folder() / f"{entry_stem(game)}{suffix}"
+
+
+def create_desktop_shortcut(game: InstalledGame) -> str:
+    """A copy of the game's entry (the one next to its files; make that first) on the desktop. A copy and not a
+    link: desktops only offer to launch a file that is really there, and some ask once to trust it."""
+    source = shortcut_lnk_path(game) if sys.platform == "win32" else desktop_file_path(game)
+    target = desktop_shortcut_path(game)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    if sys.platform != "win32":
+        target.chmod(0o755)
+        if gio := shutil.which("gio"):  # GNOME keeps launchers it was not told to trust from running
+            subprocess.run([gio, "set", str(target), "metadata::trusted", "true"], capture_output=True, check=False)
+    return str(target)
+
+
 def write_desktop_file(path: Path, game: InstalledGame, command: list[str], icon: Path | None = None) -> None:
     """A `.desktop` file that starts the game with `command`."""
     icon = icon or (icon_path(game) if icon_path(game).is_file() else None)
@@ -643,5 +677,6 @@ def remove_entry_files(game: InstalledGame) -> None:
         directory_file_path(game),
         menu_entry_path(game),
         *([Path(game.desktop_entry)] if game.desktop_entry else []),
+        *([Path(game.desktop_shortcut)] if game.desktop_shortcut else []),
     ):
         path.unlink(missing_ok=True)
