@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 
+from mog_client import logstore
 from mog_client.config import _read_json, _write_json, data_dir
 
 _lock = threading.Lock()
@@ -23,7 +24,12 @@ def load() -> dict:
 
 
 def _save(state: dict) -> None:
-    _write_json(_path(), state)
+    """Keeping this list is a convenience for the next start: a full disk or a locked file must never take down the
+    install or the download it describes."""
+    try:
+        _write_json(_path(), state)
+    except OSError as e:
+        logstore.warning(f"Could not keep the list of what is running: {e}")
 
 
 def add_install(game_id: int) -> None:
