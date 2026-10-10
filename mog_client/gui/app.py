@@ -2501,6 +2501,7 @@ class GamePage(Page):
         b.played.connect(self._on_played)
         b.header_art.connect(self._on_header_art)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.cover_for(gid)))
+        b.activity.connect(self._sync_buttons)  # an install that began or ended elsewhere
         self.app.fetch_images(self.shot_urls, game["id"])
         self.app.fetch_header_art(game)
         self._update_version_label()
@@ -2669,6 +2670,7 @@ class GamePage(Page):
     def _on_progress(self, gid: int, written: int, total: int, label: str) -> None:
         if gid != self.game["id"]:
             return
+        self._sync_buttons()
         if total:
             pct = max(0.0, min(1.0, written / total))
             self.bar.setRange(0, 1000)
@@ -2739,9 +2741,26 @@ class GamePage(Page):
         self.buttons.addStretch()
         self.update_transfer()
 
+    def _buttons_key(self) -> tuple:
+        """What the buttons depend on: when it changes, the ones shown are stale."""
+        gid = self.game["id"]
+        rec = load_library().get(gid)
+        app = self.app
+        return (gid in app.installs, gid in app.stopping, gid in app.vnc, app.jobs.get(gid), rec.state if rec else None)
+
+    def _sync_buttons(self) -> None:
+        """An install started, ended or changed from elsewhere (resumed at start, a link from the web, the sidebar):
+        the buttons of a page that was already built follow."""
+        if self._built and self._buttons_key() != self._shown_key:
+            had_focus = self.first is not None and self.first.hasFocus()
+            self.rebuild()
+            if had_focus and self.first:
+                self.first.setFocus()
+
     def _fill_buttons(self) -> None:
         gid = self.game["id"]
         rec = load_library().get(gid)
+        self._shown_key = self._buttons_key()
         self.first = None
         if job := self.app.jobs.get(gid):
             self.status.setText("Setting up..." if job == "setup" else "Uninstalling...")
