@@ -168,6 +168,7 @@ class SaveSync:
             "computer (or you reinstalled its system), so its saves stay together; otherwise it gets a name of its own.",
             options,
             chosen,
+            game=rec.game_id,
         )
 
     # --- backing up ---
@@ -258,6 +259,7 @@ class SaveSync:
             options,
             chosen,
             skip="Not now" if skip is not None else None,
+            game=rec.game_id,
         )
 
     def confirm_folders(
@@ -343,6 +345,7 @@ class SaveSync:
                     ("Ask me next time", "later"),
                 ],
                 lambda answer: self._newer_chosen(rec, ctx, version, answer, go),
+                game=rec.game_id,
             )
         elif pending:
             self._finish_pending(rec, ctx, go)
@@ -475,6 +478,7 @@ class SaveSync:
             f"The saves of {rec.name} are still downloading ({job.percent}%). Cancel that and play with the saves "
             "on this machine instead?",
             cancel_and_play,
+            game=rec.game_id,
         )
         return True
 
@@ -556,6 +560,7 @@ class SaveSync:
             [(version_label(v, d), v["id"]) for v, d in rows],
             lambda version_id: self._restore(rec, ctx, version_id),
             confirm=True,
+            game=rec.game_id,
         )
 
     def offer_after_install(self, rec: InstalledGame) -> None:
@@ -582,12 +587,14 @@ class SaveSync:
             lambda version_id: self._restore(rec, ctx, version_id) if version_id is not SKIP else None,
             skip="Skip",
             confirm=True,
+            game=rec.game_id,
         )
 
     # --- uninstalling, and looking over every game at startup ---
 
-    def final_backup(self, rec: InstalledGame, then: Callable[[], None]) -> None:
-        """Back the game's saves up one last time, then `then()`; if that cannot be done, ask first."""
+    def final_backup(self, rec: InstalledGame, then: Callable[[], None], on_abort: Callable[[], None] | None = None) -> None:
+        """Back the game's saves up one last time, then `then()`; if that cannot be done, ask first (`on_abort` runs
+        when the answer is not to go on)."""
         if not self.enabled(rec):
             then()
             return
@@ -597,6 +604,8 @@ class SaveSync:
                 f"The saves of {rec.name} could not be backed up ({reason or 'no reason given'}). Uninstall anyway?",
                 then,
                 danger=True,
+                game=rec.game_id,
+                on_cancel=on_abort,
             )
 
         def run(ctx: sync.Context) -> None:

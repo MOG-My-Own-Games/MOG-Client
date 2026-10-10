@@ -102,7 +102,8 @@ class ModalHost(QWidget):
         self.card.setGeometry(QRect((self.width() - width) // 2, (self.height() - height) // 2, width, height))
 
     def mousePressEvent(self, e: QMouseEvent) -> None:
-        if not self.card.geometry().contains(e.position().toPoint()):
+        outside = not self.card.geometry().contains(e.position().toPoint())
+        if outside and getattr(self.page, "backdrop_closes", True):  # a question is answered, not clicked away
             self.dismissed.emit()
         e.accept()
 
