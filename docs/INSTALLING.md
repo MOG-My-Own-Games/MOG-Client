@@ -39,6 +39,10 @@ game in folders, the client asks "Extract its contents and use them as they are?
   any install (then asks which file starts the game).
 - **No**: it still tries to install by running what is found inside.
 
+The installer picker ("Choose an installer") always has "Just copy: use the files as they are, run nothing" for each
+version, last in the list when an installer was found (first when none was), so a game that comes with an installer can
+still be taken as it is.
+
 A game already begun is not asked again and keeps its choice. `mog --game-id N --extract-only` does the same from the
 command line, and the web UI asks the same question from its Install tab.
 

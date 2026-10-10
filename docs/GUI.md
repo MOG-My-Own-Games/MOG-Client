@@ -7,6 +7,12 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 
 - The sidebar on the left holds the library filter and what is going on in the background; it stays put while the games
   scroll. L2 shows or hides it, B (Esc) closes it while it is open.
+- The sidebar's sections (active installs, libraries, sort and filter) fold with a click, Enter or A on their heading, and
+  stay folded between runs. Where the sidebar is too short for all of them the active installs keep their room first, then
+  the libraries, then the sort and filter list.
+- "Sort and filter" in the sidebar has switches (last played first, installed first, cached first: the games the server
+  holds a finished install of) and two filters (got saves, got mods: only the games that have them), then the order:
+  by release date, name, size, or when the server first saw the game (recently added, earliest added).
 - Games the server matched to the same title show as one entry ("N versions"). Installing one lists the installers of
   every version, each under its version's name, and you pick which to run.
 - A game with a task going on (an install, saves moving, a mod, a file check) has its cover dimmed with a pie that fills
@@ -15,6 +21,15 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - The sidebar lists each task as a row. Installs the server cannot start yet are listed last, as "Waiting in the queue,
   number N".
 - Installs and mod downloads that were running when the client closed start again at the next start.
+- A game waiting for its executable to be chosen has an orange corner with a gear (bottom right of its cover) and is listed
+  right after the installs under way, before the installed ones. Choosing the executable, like uninstalling, shows on
+  the game's main button ("Setting up...", "Uninstalling...") with the turning ring Play shows while saves are on the move.
+- The arrow on a cover points down while saves are downloaded and up while they are uploaded (the server is above).
+- Everything the window tells you in a message is also in the notifications (a message about a game shows its icon at the
+  left), and a message can carry an option (finishing
+  an install offers "Choose executable"). The mouse wheel moves the library a part of a row per notch.
+- While a game started from MOG starts, the "Playing" message says in a few words what it waits for: the prefix being made,
+  the game starting, then "Playing". Questions about one game show its icon (its cover when it has none) and its name.
 
 ## A game's page and its Options
 
@@ -42,6 +57,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 
 ## The game's entries and folder
 
+- Choosing the executable asks separately for an entry in the applications menu, a shortcut on the desktop (a copy of the
+  entry, in the desktop folder the system names) and Steam. Uninstalling removes all of them.
 - A game gets a desktop entry and a Steam shortcut with the artwork the server chose (cover, banner, hero, title logo
   and icon). Both are standalone: they run a small launch script (`<game name>.sh`) that execs the launcher, so they keep
   working without the client.
