@@ -3020,3 +3020,29 @@ def test_a_game_without_a_cover_gets_the_grey_controller_in_the_grid_and_on_its_
 
     win.set_cover(8, b"not an image")  # a blob that is not an image changes nothing
     assert win.library.items[8].data(gui.ROLE_COVER).size() == gui.COVER_SIZE
+
+
+def test_a_game_page_that_was_already_built_follows_an_install_that_starts_elsewhere(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    win.app.set_games([{"id": 92, "name": "Olden Era", "library_id": None}])
+    win.show_game(92)
+    pump(qapp)
+    page = win.current_page()
+    assert page.first.text() == "Install"
+
+    win.back()  # the page stays built, behind; the install is resumed at start, or comes from a link on the web
+    win.app.installs[92] = object()
+    win.app.bridge.activity.emit()
+    win.show_game(92)
+    pump(qapp)
+    assert win.current_page() is page and page.first.text() in ("Pause", "Pausing...")  # not the old Install button
+
+    win.app.installs.pop(92)
+    win.app.progress[92] = (10, 100, "Downloading")
+    win.app.installs[92] = object()
+    page._on_progress(92, 10, 100, "Downloading")  # progress that arrives for a page showing something else rebuilds it
+    win.app.installs.pop(92)
+    win.app.bridge.activity.emit()
+    pump(qapp)
+    assert page.first.text() == "Install"
