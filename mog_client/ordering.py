@@ -1,5 +1,5 @@
-"""The order of the library: a game being installed first, then (when on) the most recently played, then
-(when on) the installed ones, then the chosen order (stdlib only)."""
+"""The order of the library: a game being installed first, then one waiting for its executable to be chosen, then (when on) the most recently played, then
+(when on) the installed ones, then (when on) those the server has cached, then the chosen order (stdlib only)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ ORDERS = {
     "za": "Z to A",
     "largest": "Largest first",
     "smallest": "Smallest first",
+    "added": "Recently added",
+    "added_old": "Earliest added",
 }
 
 
@@ -53,6 +55,26 @@ def released(group: Group) -> float | None:
     return ((group.game.get("igdb_metadata") or {}).get("first_release_date")) or None
 
 
+def added(group: Group) -> float | None:
+    """When the server first saw the title (its earliest version)."""
+    times = [iso_to_epoch(m.get("created_at")) for m in group.members]
+    known = [t for t in times if t is not None]
+    return min(known, default=None)
+
+
+def cached(group: Group) -> bool:
+    """The server holds a finished install of a version of the title for this user."""
+    return any(m.get("installed") for m in group.members)
+
+
+def has_saves(group: Group) -> bool:
+    return any(m.get("last_played") for m in group.members)
+
+
+def has_mods(group: Group) -> bool:
+    return any(m.get("has_mods") for m in group.members)
+
+
 def size_of(group: Group) -> int | None:
     return group.game.get("size_bytes")
 
@@ -66,6 +88,8 @@ def sort_groups(
     played: Callable[[Group], float | None],
     last_played_first: bool,
     installed_first: bool,
+    cached_first: bool = False,
+    awaiting: Callable[[Group], bool] = lambda g: False,
 ) -> list[Group]:
     """Stable passes from the least to the most important rule, so each later rule only breaks the ties of the
     ones after it. A game without a release date or a size, or never played, goes after the rest."""
@@ -76,9 +100,15 @@ def sort_groups(
     if order in ("largest", "smallest"):
         sized = sorted((g for g in items if size_of(g) is not None), key=size_of, reverse=order == "largest")
         items = sized + [g for g in items if size_of(g) is None]
+    if order in ("added", "added_old"):
+        dated = sorted((g for g in items if added(g) is not None), key=added, reverse=order == "added")
+        items = dated + [g for g in items if added(g) is None]
+    if cached_first:
+        items.sort(key=lambda g: not cached(g))
     if installed_first:
         items.sort(key=lambda g: not installed(g))
     if last_played_first:
         items.sort(key=lambda g: -(played(g) or 0) if played(g) else float("inf"))
+    items.sort(key=lambda g: not awaiting(g))
     items.sort(key=lambda g: not installing(g))
     return items

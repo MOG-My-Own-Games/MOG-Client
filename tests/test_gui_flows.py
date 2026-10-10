@@ -1126,7 +1126,7 @@ def test_the_other_pages_do_not_show_the_user_button(win, qapp):
     assert not win.user_btn.isVisibleTo(win)
 
 
-def test_the_library_puts_installed_games_first_and_not_the_ones_only_waiting_for_an_executable(win, qapp, monkeypatch, tmp_path):
+def test_the_library_puts_games_waiting_for_an_executable_first_then_the_installed_ones(win, qapp, monkeypatch, tmp_path):
     games = [{"id": i, "name": name, "igdb_id": None} for i, name in ((1, "Alpha"), (2, "Bravo"), (3, "Charlie"), (4, "Delta"))]
     win.app.set_games(games)
     states = {2: "installed", 1: "awaiting_executable", 3: "installed"}
@@ -1134,13 +1134,15 @@ def test_the_library_puts_installed_games_first_and_not_the_ones_only_waiting_fo
     monkeypatch.setattr(gui, "load_library", lambda: recs)
     win.library.populate("")
     names = [win.library.grid.item(i).text().split("\n")[0] for i in range(win.library.grid.count())]
-    assert names == ["Bravo", "Charlie", "Alpha", "Delta"]  # Alpha is "Setup needed": no better than Delta
+    assert names == ["Alpha", "Bravo", "Charlie", "Delta"]  # Alpha is "Setup needed": it leads, marked by its own corner
+    assert win.library.items[1].data(gui.ROLE_SETUP) and not win.library.items[2].data(gui.ROLE_SETUP)
 
     recs[1] = config.InstalledGame(game_id=1, name="x", install_dir=str(tmp_path), state="installed")
     win.library.update_label(1)
     qapp.processEvents()
     names = [win.library.grid.item(i).text().split("\n")[0] for i in range(win.library.grid.count())]
-    assert names == ["Alpha", "Bravo", "Charlie", "Delta"]  # finishing the setup moves it into the installed ones
+    assert names == ["Alpha", "Bravo", "Charlie", "Delta"]  # finishing the setup makes it an installed one
+    assert not win.library.items[1].data(gui.ROLE_SETUP) and win.library.items[1].data(gui.ROLE_INSTALLED)
 
 
 def test_saves_syncing_after_a_game_closes_show_in_the_sidebar_like_an_install(win, qapp, tmp_path):
@@ -2004,9 +2006,12 @@ def test_a_long_description_does_not_squeeze_the_rows_of_the_game_page(win, qapp
         ]
     )
     win.show_game(61)
-    win.resize(1000, 450)
+    win.resize(1000, 700)
     pump(qapp)
     page = win.current_page()
+    chrome = win.height() - page.height()  # the header row and the guide around the page
+    win.resize(1000, page.minimumSizeHint().height() + chrome + 4)  # as short as the page can be before it must drop parts
+    pump(qapp)
     rows = [lbl for lbl in page.header.findChildren(QLabel) if lbl.objectName() in ("metaKey", "metaValue")]
     assert rows and all(lbl.height() >= lbl.minimumSizeHint().height() for lbl in rows)
     summary = page.findChild(gui.ParagraphLabel, "summary")
@@ -2042,10 +2047,10 @@ def test_a_folder_with_no_installer_offers_its_executables_and_just_extract(win,
 
     picker.on_installers(41, [EXE], "", True)
     rows = _rows(picker)
-    assert any("Just extract" in r for r in rows) and any("Metroid.exe" in r for r in rows)
+    assert any("Just copy" in r for r in rows) and any("Metroid.exe" in r for r in rows)
     assert not any("Let the server choose" in r for r in rows) and "probably the game itself" in picker.status.text()
 
-    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Just extract" in picker.list.item(i).text()))
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Just copy" in picker.list.item(i).text()))
     assert started == [(None, True)]
 
 
@@ -2059,10 +2064,22 @@ def test_an_executable_can_still_be_picked_from_that_folder(win, qapp, monkeypat
     assert started == [(EXE, False)]
 
 
-def test_just_extract_is_only_offered_when_the_server_found_no_installer(win, qapp, monkeypatch):
+def test_just_copy_is_always_on_offer_and_comes_first_only_when_there_is_no_installer(win, qapp, monkeypatch):
     _page, picker = _picker_for(win, qapp, monkeypatch)
-    picker.on_installers(41, [EXE], "", False)
-    assert not any("Just extract" in r for r in _rows(picker))
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
+    setup = {"path": "setup.exe", "file_size_bytes": 1000, "kind": "known installer", "category": "game"}
+    picker.on_installers(41, [setup], "", False)
+    rows = _rows(picker)
+    copy = next(i for i, r in enumerate(rows) if "Just copy" in r)
+    assert copy == len(rows) - 1 and copy > next(i for i, r in enumerate(rows) if "setup.exe" in r)  # last: an installer was found
+
+    picker.choose(picker.list.item(copy))
+    assert started == [(None, True)]
+
+    picker.on_installers(41, [EXE], "", True)
+    rows = _rows(picker)
+    assert "Just copy" in rows[1]  # right under the version's name
 
 
 def test_the_picker_learns_from_the_server_that_there_is_no_installer(win, qapp, monkeypatch):
@@ -2232,14 +2249,18 @@ def test_a_mod_being_fetched_cannot_be_deleted_and_its_button_cancels(win, qapp,
     assert page.download_button.text() == "Download" and page.delete_button.isEnabled()
 
 
-def test_sort_by_sits_right_under_the_libraries_not_at_the_bottom_of_the_sidebar(win, qapp):
+def test_sort_and_filter_sits_right_under_the_libraries_not_at_the_bottom_of_the_sidebar(win, qapp):
+    from PySide6.QtCore import QPoint
+
     win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
     pump(qapp)
-    libs, sorts = win.library.libs, win.library.sorts
-    assert libs.geometry().bottom() < sorts.geometry().top() < libs.geometry().bottom() + 80
-    assert sorts.geometry().bottom() < win.library.sidebar.height() - 20  # free space is left under it
-    heading = [lbl for lbl in win.library.sidebar.findChildren(QLabel) if lbl.text().lower() == "sort by"]
-    assert heading and heading[0].geometry().top() > libs.geometry().bottom()
+    sidebar, libs, sorts = win.library.sidebar, win.library.libs, win.library.sorts
+    libs_top, sorts_top = libs.mapTo(sidebar, QPoint(0, 0)).y(), sorts.mapTo(sidebar, QPoint(0, 0)).y()
+    libs_bottom, sorts_bottom = libs_top + libs.height(), sorts_top + sorts.height()
+    assert libs_bottom < sorts_top < libs_bottom + 80
+    assert sorts_bottom < sidebar.height() - 20  # free space is left under it
+    heading = win.library.sorts_section.heading
+    assert heading.text().lower().endswith("sort and filter") and heading.mapTo(sidebar, QPoint(0, 0)).y() > libs_bottom
 
 
 def test_a_restore_is_a_row_in_the_task_list_and_play_waits_for_it(win, qapp, tmp_path, monkeypatch):
@@ -2795,3 +2816,207 @@ def test_the_options_of_an_installed_game_offer_a_repair_and_the_sidebar_shows_i
     win.library.repairs[4] = 42
     win.library.update_active()
     assert (4, "repair") in win.library._task_keys and win.library.installs.count() == 1
+
+
+def test_a_notch_of_the_wheel_moves_the_library_less_than_a_row_so_no_cover_is_skipped(win, qapp):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    win.app.set_games([{"id": i, "name": f"G{i}", "igdb_id": None} for i in range(1, 80)])
+    win.library.populate("")
+    pump(qapp)
+    grid = win.library.grid
+    before = grid.verticalScrollBar().value()
+    notch = QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    qapp.sendEvent(grid.viewport(), notch)
+    qapp.processEvents()
+    moved = grid.verticalScrollBar().value() - before
+    assert 0 < moved < grid.gridSize().height() / 2
+
+
+def test_the_header_keeps_its_height_when_the_window_goes_to_a_game_and_back(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None}])
+    pump(qapp)
+    library_header = win.top_bar.height()
+    win.show_game(41)
+    pump(qapp)
+    assert win.top_bar.height() == library_header
+    win.back()
+    pump(qapp)
+    assert win.top_bar.height() == library_header and win.centralWidget().updatesEnabled()
+
+
+def test_every_message_is_also_a_notification_and_can_offer_an_action(win, qapp):
+    ran = []
+    win.message("Alpha finished installing", "info", 7, action=("Choose executable", lambda: ran.append("chosen")))
+    assert win.overlay.action_button.isVisible() and win.overlay.action_button.text() == "Choose executable"
+    assert win.overlay.focusWidget() is win.overlay.action_button  # Enter or A does the offered thing; B or Esc only closes
+    assert win.local_notifications[0]["title"] == "Alpha finished installing" and win.local_notifications[0]["game_id"] == 7
+    assert win.local_notifications[0]["kind"] == "client_info"
+
+    win.on_pad(gamepad.ACCEPT)
+    assert ran == ["chosen"] and not win.overlay.showing
+
+    win.message("Alpha finished installing", "info", 7)
+    assert len(win.local_notifications) == 1  # said again before it was read: listed once
+    win.overlay.dismiss()
+    win.message("Quiet one", "info", keep=False)
+    assert len(win.local_notifications) == 1 and not win.overlay.action_button.isVisible()
+    win.overlay.dismiss()
+
+
+def test_the_window_can_be_made_small_on_a_games_page_too(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Eta", "library_id": None, "summary": "x " * 400}])
+    win.show_game(41)
+    pump(qapp)
+    win.resize(420, 300)
+    pump(qapp)
+    assert win.width() <= 430 and win.height() <= 310
+
+
+def _installs_in_the_sidebar(win, qapp, count=3):
+    win.library.installs_box.setVisible(True)
+    for n in range(count):
+        win.library.installs.addItem(f"Game {n}\nDownloading")
+    win.library.installs.set_natural_height(300)
+    pump(qapp)
+
+
+def test_the_sidebar_sections_fold_and_remember_it(win, qapp):
+    library = win.library
+    assert library.libs.isVisibleTo(library) and library.sorts.isVisibleTo(library)
+
+    library.sorts_section.heading.click()
+    pump(qapp)
+    assert not library.sorts.isVisibleTo(library) and "sorts" in win.app.settings.collapsed_sections
+    assert load_settings().collapsed_sections == ["sorts"]  # kept for the next run
+    assert library.sorts_section.heading.text().startswith("▸")
+
+    library.sorts_section.heading.click()
+    pump(qapp)
+    assert library.sorts.isVisibleTo(library) and win.app.settings.collapsed_sections == []
+
+
+def test_a_short_sidebar_gives_its_room_to_the_active_installs_first_then_the_libraries_then_the_sorts(win, qapp):
+    win.library.set_libraries([{"id": n, "name": f"Library {n}"} for n in range(1, 9)])
+    _installs_in_the_sidebar(win, qapp)
+    win.resize(1100, 600)
+    pump(qapp)
+    heights = [win.library.installs.height(), win.library.libs.height(), win.library.sorts.height()]
+    assert heights[0] >= heights[1] >= heights[2] > 0, heights
+
+    win.library.libs_section.heading.click()  # folded: its room goes to the others
+    pump(qapp)
+    assert not win.library.libs.isVisibleTo(win.library)
+    assert win.library.sorts.height() >= heights[2]
+
+
+def test_a_message_about_a_game_shows_its_icon_at_the_left(win, qapp):
+    from PySide6.QtGui import QPixmap
+
+    art = QPixmap(64, 64)
+    art.fill()
+    win.icon_art[7] = art
+    win.message("Alpha finished installing", "info", 7)
+    assert win.overlay.icon.isVisibleTo(win.overlay) and win.overlay.icon.pixmap() is not None
+    win.overlay.dismiss()
+    win.message("Something else", "info", keep=False)
+    assert not win.overlay.icon.isVisibleTo(win.overlay)
+    win.overlay.dismiss()
+
+
+def test_a_click_outside_a_question_does_not_answer_it_but_no_and_back_do(win, qapp):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    asked = []
+    win.ask("Delete the game files of Alpha?", lambda: asked.append("yes"), danger=True)
+    pump(qapp)
+    page = win.current_page()
+    assert isinstance(page, gui.ConfirmPage) and win.modal.showing
+
+    QTest.mouseClick(win.modal, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))  # on the backdrop
+    pump(qapp)
+    assert win.current_page() is page and win.modal.showing and not asked  # still there, nothing done
+
+    page.no.click()
+    pump(qapp)
+    assert not win.modal.showing and not asked
+
+    win.ask("Again?", lambda: asked.append("yes"))
+    pump(qapp)
+    win.back()  # Esc and the pad's B
+    pump(qapp)
+    assert not win.modal.showing and not asked
+
+
+def _uninstall_asked(win, qapp, tmp_path, monkeypatch):
+    folder = tmp_path / "games" / "Alpha"
+    folder.mkdir(parents=True)
+    (folder / "pfx").mkdir()
+    _library_with(win, qapp, tmp_path, monkeypatch, folder)
+    library = config.load_library()
+    library[1].prefix = str(folder / "pfx")
+    config.save_library(library)
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    held = {}
+    monkeypatch.setattr(win.saves, "final_backup", lambda rec, then, on_abort=None: held.update(then=then, abort=on_abort))
+    win.show_game(1)
+    pump(qapp)
+    page = win.current_page()
+    page.uninstall(config.load_library()[1])
+    pump(qapp)
+    return page, held
+
+
+def test_the_main_button_says_uninstalling_from_the_first_yes_and_turns_back_when_it_is_called_off(win, qapp, tmp_path, monkeypatch):
+    page, held = _uninstall_asked(win, qapp, tmp_path, monkeypatch)
+    assert page.first.text() == "Play" and 1 not in win.app.jobs  # only asked so far
+
+    win.current_page().yes.click()  # the saves are being backed up now
+    pump(qapp)
+    assert win.app.jobs.get(1) == "uninstall"
+    button = page.play_ring.parentWidget()
+    assert button.text() == "Uninstalling..." and not button.isEnabled()
+    assert page.play_ring.spin.state() == gui.QAbstractAnimation.Running  # and it turns
+
+    held["abort"]()  # the backup could not be made and the answer was not to go on
+    pump(qapp)
+    assert 1 not in win.app.jobs and page.first.text() == "Play"
+
+
+def test_closing_the_question_about_the_prefix_without_an_answer_ends_the_uninstalling(win, qapp, tmp_path, monkeypatch):
+    page, held = _uninstall_asked(win, qapp, tmp_path, monkeypatch)
+    win.current_page().yes.click()
+    pump(qapp)
+    held["then"]()  # backup done: the prefix question comes next
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.ConfirmPage) and "Wine prefix" in win.current_page().text_label.text()
+    assert win.app.jobs.get(1) == "uninstall"
+
+    win.back()  # Esc: nothing is deleted, so nothing is "uninstalling"
+    pump(qapp)
+    assert 1 not in win.app.jobs and page.first.text() == "Play"
+
+
+def test_a_game_without_a_cover_gets_the_grey_controller_in_the_grid_and_on_its_page(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    win.app.set_games([{"id": 8, "name": "Bare", "library_id": None}])
+    win.library.populate("")
+    item = win.library.items[8]
+    placeholder = item.data(gui.ROLE_COVER)
+    assert placeholder is not None and not placeholder.isNull() and placeholder.size() == gui.COVER_SIZE
+    assert placeholder.toImage().pixelColor(100, 135) != placeholder.toImage().pixelColor(2, 2)  # a drawing, not a flat fill
+
+    win.show_game(8)
+    pump(qapp)
+    assert win.current_page().cover.pixmap() is not None and not win.current_page().cover.pixmap().isNull()
+
+    win.set_cover(8, b"not an image")  # a blob that is not an image changes nothing
+    assert win.library.items[8].data(gui.ROLE_COVER).size() == gui.COVER_SIZE

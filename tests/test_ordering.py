@@ -117,3 +117,47 @@ def test_a_game_was_last_played_where_the_newest_start_or_save_is():
 
     never = Group(members=[{"id": 8, "name": "N"}], versions=[{"id": 8, "name": "N"}])
     assert ordering.last_played_on(never, {}, "karasu") == (None, None)
+
+
+def extra(gid, name, **fields):
+    g = {"id": gid, "name": name, **fields}
+    return Group(members=[g], versions=[g])
+
+
+def test_recently_added_puts_the_newest_first_and_the_unknown_last():
+    groups = [
+        extra(1, "Old", created_at="2026-01-01T10:00:00Z"),
+        extra(2, "Unknown"),
+        extra(3, "New", created_at="2026-10-01T10:00:00Z"),
+    ]
+    assert order(groups, order="added") == ["New", "Old", "Unknown"]
+    assert order(groups, order="added_old") == ["Old", "New", "Unknown"]
+
+
+def test_cached_first_puts_the_games_the_server_holds_ahead_of_the_rest():
+    groups = [extra(1, "A"), extra(2, "B", installed=True), extra(3, "C")]
+    assert order(groups, cached_first=True) == ["B", "A", "C"]
+
+
+def test_installed_ones_stay_ahead_of_the_cached_ones():
+    groups = [extra(1, "A", installed=True), extra(2, "B"), extra(3, "C")]
+    assert order(groups, cached_first=True, installed_first=True, installed=lambda g: g.game["name"] == "C") == ["C", "A", "B"]
+
+
+def test_saves_and_mods_are_read_from_any_version_of_the_title():
+    one, two = {"id": 1, "name": "X", "last_played": "2026-10-01T10:00:00Z"}, {"id": 2, "name": "X", "has_mods": True}
+    group = Group(members=[one, two], versions=[one, two])
+    assert ordering.has_saves(group) and ordering.has_mods(group)
+    assert not ordering.has_saves(extra(3, "Y")) and not ordering.has_mods(extra(3, "Y"))
+
+
+def test_a_game_waiting_for_its_executable_comes_before_the_installed_and_the_played():
+    groups = [extra(1, "A"), extra(2, "B"), extra(3, "C")]
+    assert order(
+        groups,
+        installed_first=True,
+        installed=lambda g: g.game["name"] == "A",
+        awaiting=lambda g: g.game["name"] == "C",
+        last_played_first=True,
+        played=lambda g: 5 if g.game["name"] == "B" else None,
+    ) == ["C", "B", "A"]
