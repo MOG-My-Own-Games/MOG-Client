@@ -61,6 +61,8 @@ lives in the `gui` extra.
 
 ## Conventions
 
+- **README stays short and public.** It is an overview with links. Behaviour is documented by topic in `docs/GUI.md`, `docs/INSTALLING.md`, `docs/SAVES.md` and `docs/STEAM.md`, as headings and bullets, never as one long paragraph; update those when behaviour changes.
+
 - **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
 - **No status line.** What the user must see is `MainWindow.message(text, level)` (an overlay with OK, also logged); what is only worth keeping is `MainWindow.notify(text, level)` (the log only). Do not add messages to the page layouts. Errors and the result of something the user asked for are messages; ambient information ("N games", "Starting X...") is not. Worker threads use `Bridge.error`, `Bridge.message` or `Bridge.note`.
 - Steam rewrites `shortcuts.vdf` from memory when it quits, so a shortcut is never changed while it runs (`manager._sync_steam_entries` marks `steam_pending` and `settle_steam_shortcuts` finishes it at the next start); keys are matched without regard to case.
