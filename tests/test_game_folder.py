@@ -389,3 +389,13 @@ def test_the_launch_script_mog_wrote_is_not_offered_as_an_executable_to_choose(h
     assert script.is_file() and script.name not in offered
     assert "start.sh" in offered and "Jazz2.exe" in offered
     assert launcher.is_mog_script(script) and not launcher.is_mog_script(home.folder / "start.sh")
+
+
+def test_the_list_of_files_is_kept_from_the_install_folder_when_the_game_has_a_folder_of_its_own(home):
+    home.rec.files_dir = str(Path(home.rec.install_dir) / "Game Folder")
+    files = [{"path": "Data/map.dat", "size_bytes": 4, "sha1": "x"}, {"path": "Game.exe", "size_bytes": 1, "sha1": "y"}]
+
+    assert [e["path"] for e in manager.from_install_dir(home.rec, files)] == ["Game Folder/Data/map.dat", "Game Folder/Game.exe"]
+
+    home.rec.files_dir = None
+    assert manager.from_install_dir(home.rec, files) == files  # no folder of its own: the paths are already from the install folder

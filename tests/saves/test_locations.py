@@ -208,3 +208,40 @@ def test_the_prefix_and_the_files_mog_writes_are_not_the_games_files(tmp_path):
     manifest = {"data.pak": (7, hashlib.sha1(b"shipped").hexdigest())}
 
     assert keys(install_candidates(game, manifest)) == ["game/Saves/profile.sav", "game/tools/run.sh"]
+
+
+def _game_folder(tmp_path):
+    install = tmp_path / "Game"
+    folder = install / "Living With Sister"
+    (folder / "Data").mkdir(parents=True)
+    (folder / "Data" / "map.dat").write_bytes(b"data")
+    (folder / "Save").mkdir()
+    (folder / "Save" / "slot1.sav").write_bytes(b"mine")
+    return install, folder
+
+
+def _entry(path, content):
+    import hashlib
+
+    return (len(content), hashlib.sha1(content).hexdigest())
+
+
+def test_a_manifest_kept_with_paths_from_the_games_own_folder_still_tells_its_files_from_saves(tmp_path):
+    install, folder = _game_folder(tmp_path)
+    old_style = {"Data/map.dat": _entry("", b"data")}  # what an earlier client kept: no folder in the path
+    keys = [c.key for c in locations.install_candidates(install, old_style, files_dir=folder)]
+    assert keys == ["game/Living With Sister/Save/slot1.sav"]  # the game's data is not offered, the save is
+
+
+def test_without_knowing_the_games_folder_that_old_manifest_takes_everything_for_saves(tmp_path):
+    install, _folder = _game_folder(tmp_path)
+    old_style = {"Data/map.dat": _entry("", b"data")}
+    keys = sorted(c.key for c in locations.install_candidates(install, old_style))
+    assert "game/Living With Sister/Data/map.dat" in keys  # the bug a files_dir fixes
+
+
+def test_a_manifest_with_the_folder_in_its_paths_works_as_before(tmp_path):
+    install, folder = _game_folder(tmp_path)
+    right = {"Living With Sister/Data/map.dat": _entry("", b"data")}
+    keys = [c.key for c in locations.install_candidates(install, right, files_dir=folder)]
+    assert keys == ["game/Living With Sister/Save/slot1.sav"]

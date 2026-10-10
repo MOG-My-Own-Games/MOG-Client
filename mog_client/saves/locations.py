@@ -148,11 +148,23 @@ def _sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
-def install_candidates(install_dir: Path, manifest: dict[str, tuple[int, str]] | None) -> Iterator[Candidate]:
+def install_candidates(
+    install_dir: Path, manifest: dict[str, tuple[int, str]] | None, files_dir: Path | None = None
+) -> Iterator[Candidate]:
     """Files in the game's own folder that the installer did not put there. Without the install
-    manifest there is no telling the game's files from its saves, so nothing is offered."""
+    manifest there is no telling the game's files from its saves, so nothing is offered. `files_dir` is the game's own
+    folder inside `install_dir`: a manifest written from that folder (paths without it) is read as well, so a game whose
+    manifest was kept that way does not have every file of its own taken for a save."""
     if manifest is None or not real_dir(install_dir):
         return
+    inside = ""
+    if files_dir is not None:
+        try:
+            inside = files_dir.relative_to(install_dir).as_posix()
+        except ValueError:
+            inside = ""
+        if inside == ".":
+            inside = ""
     for candidate in walk(install_dir, GAME_KEY, skip_top_dirs=(PREFIX_DIR,)):
         rel = candidate.key[len(GAME_KEY) + 1 :]
         if rel.startswith(MOG_FILE_PREFIX) or rel in GENERATED_NAMES:
@@ -160,6 +172,8 @@ def install_candidates(install_dir: Path, manifest: dict[str, tuple[int, str]] |
         if "/" not in rel and rel.endswith(GENERATED_SUFFIXES):
             continue
         known = manifest.get(rel)
+        if known is None and inside and rel.startswith(inside + "/"):
+            known = manifest.get(rel[len(inside) + 1 :])
         if known is not None:
             try:
                 if candidate.path.stat().st_size == known[0] and _sha1(candidate.path) == known[1]:

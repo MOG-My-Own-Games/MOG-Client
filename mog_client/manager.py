@@ -84,6 +84,20 @@ def is_loose(files: list[dict]) -> bool:
     return any("/" not in e["path"] for e in files) or len({e["path"].split("/", 1)[0] for e in files}) > 1
 
 
+def from_install_dir(rec: InstalledGame, files: list[dict]) -> list[dict]:
+    """The server's list of files with their paths from the install folder, which is how the manifest and the save scan name
+    them. When the game's own folder sits inside it (`files_dir`), the list the server gives is from that folder."""
+    if not rec.files_dir:
+        return files
+    try:
+        prefix = Path(rec.files_dir).relative_to(rec.install_dir).as_posix()
+    except ValueError:
+        return files
+    if prefix in ("", "."):
+        return files
+    return [{**e, "path": f"{prefix}/{e['path']}"} for e in files]
+
+
 def tuck_into_folder(root: Path, files: list[dict], name: str) -> tuple[Path, list[dict]]:
     """Move what an install put straight into `root` into a folder of its own, so the game's files do not sit among MOG's
     (the prefix, the launch script, the entries). Returns that folder and the files with their paths from `root`."""
@@ -197,6 +211,8 @@ def run_install(
         folder, listed = tuck_into_folder(out_dir, listed, safe_dirname(rec.name))
         log(f"the game came without a folder of its own: its files are in {folder.name}/")
         _update(rec, files_dir=str(folder))
+    elif listed:
+        listed = from_install_dir(rec, listed)  # a game already in its own folder: the list is from that folder
     if listed:
         save_install_manifest(gid, listed)
     ledger.finish(gid, Path(rec.install_dir), before)  # whatever the server's list missed, the folder itself shows
@@ -471,6 +487,7 @@ def repair(
     result = verify_and_repair(
         client, rec.game_id, Path(rec.files_dir or rec.install_dir), session_id=session.get("id"), log=log, warn=log,
         fetch_missing=True, on_progress=on_progress, stop=stop,
+        on_manifest=lambda files: save_install_manifest(rec.game_id, from_install_dir(rec, files)),
     )
     if not result.listed:
         raise RuntimeError("the server could not list the files of this install")

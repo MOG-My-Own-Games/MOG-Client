@@ -114,11 +114,15 @@ def _drive_c(found: prefixes.Found | None) -> Path | None:
     return prefixes.drive_c_of(found.prefix) if found else None
 
 
+def _files_dir(rec: InstalledGame) -> Path | None:
+    return Path(rec.files_dir) if rec.files_dir else None
+
+
 def _candidates(ctx: Context, drive_c: Path | None) -> list[Candidate]:
     found: list[Candidate] = []
     if drive_c is not None:
         found += list(profile_candidates(drive_c))
-    found += list(install_candidates(Path(ctx.rec.install_dir), load_install_manifest(ctx.rec.game_id)))
+    found += list(install_candidates(Path(ctx.rec.install_dir), load_install_manifest(ctx.rec.game_id), _files_dir(ctx.rec)))
     return found
 
 
@@ -252,7 +256,7 @@ def _backup_native(
     known = _manifest_folders(ctx, state, upload)
     # What the manifest names counts as confirmed, along with what the user confirmed.
     confirmed = sorted({*(state.includes or []), *known})
-    candidates = list(install_candidates(install_dir, load_install_manifest(rec.game_id)))
+    candidates = list(install_candidates(install_dir, load_install_manifest(rec.game_id), _files_dir(rec)))
     candidates += list(native.included_files(confirmed, install_dir))
 
     def accept(key: str) -> bool:
@@ -289,6 +293,32 @@ def _manifest_folders(ctx: Context, state: SaveState, remember: bool) -> list[st
     return state.manifest_folders
 
 
+def too_large_message(name: str, size: int, tracked: dict, by_key: dict) -> str:
+    """Why an upload was refused for its size, and what is in it: the folders that weigh most, so a person (or a log)
+    sees at once when what is going up is not saves at all."""
+    weights: dict[str, int] = {}
+    for key in tracked:
+        path = by_key.get(key)
+        if path is None:
+            continue
+        try:
+            file_size = path.stat().st_size
+        except OSError:
+            continue
+        parts = key.split("/")
+        folder = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+        weights[folder] = weights.get(folder, 0) + file_size
+    biggest = sorted(weights.items(), key=lambda item: -item[1])[:4]
+    what = ", ".join(f"{folder} ({_mib(weight)})" for folder, weight in biggest)
+    text = f"The saves of {name} add up to {_mib(size)} ({len(tracked)} files), more than the server takes. Most of it: {what}."
+    logstore.warning(text)
+    return text + " That is probably not saves: check which folders are taken for them."
+
+
+def _mib(size: int) -> str:
+    return f"{size / 1024 / 1024:.0f} MiB"
+
+
 def _send(
     ctx: Context,
     state: SaveState,
@@ -320,7 +350,12 @@ def _send(
         if not count:
             return BackupResult("nothing")
         logstore.info(f"Saves of {rec.name}: uploading {count} files ({outgoing.stat().st_size} bytes)")
-        uploaded = ctx.client.upload_save(rec.game_id, ctx.device.device_id, outgoing, trigger)
+        try:
+            uploaded = ctx.client.upload_save(rec.game_id, ctx.device.device_id, outgoing, trigger)
+        except RuntimeError as e:
+            if "too large" in str(e).lower() or "413" in str(e):
+                raise RuntimeError(too_large_message(rec.name, outgoing.stat().st_size, result.tracked, by_key)) from e
+            raise
     finally:
         outgoing.unlink(missing_ok=True)
     version = uploaded["version"]
