@@ -72,14 +72,14 @@ class FakeWin:
         self.messages.append((level, text))
         self.notes.append(text)
 
-    def choose(self, title, text, options, on_choose, skip=None, confirm=False):
+    def choose(self, title, text, options, on_choose, skip=None, confirm=False, game=None):
         self.choices.append((title, options, on_choose))
         self.skips.append(skip)
 
     def checklist(self, title, text, items, on_done):
         self.checklists.append((title, items, on_done))
 
-    def ask(self, text, on_yes, on_no=None, danger=False):
+    def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None):
         self.asks.append((text, on_yes, on_no))
 
     def browse_folder(self, start, on_pick):
