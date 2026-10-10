@@ -33,6 +33,19 @@ _NOT_A_SCRIPT = re.compile(r"^(gog-system-report|postinst|preuninst|reuninst|yad
 _INSTALLER_DATA_DIRS = (".mojosetup",)
 
 
+MOG_SCRIPT_MARK = "Written by MOG"  # in the second line of the launch script MOG writes for a game (write_launch_script)
+
+
+def is_mog_script(path: Path) -> bool:
+    """Whether `path` is the launch script MOG made for the game: starting it as if it were the game starts it twice, the
+    script running itself again through the launcher."""
+    try:
+        with path.open("rb") as f:
+            return MOG_SCRIPT_MARK.encode() in f.read(400)
+    except OSError:
+        return False
+
+
 def _is_game_script(rel: Path) -> bool:
     return (
         rel.suffix.lower() == ".sh"
@@ -60,7 +73,7 @@ def list_executables(install_dir: Path) -> list[Path]:
             if path.suffix.lower() == ".exe":
                 if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
                     continue
-            elif sys.platform == "win32" or not _is_game_script(rel):
+            elif sys.platform == "win32" or not _is_game_script(rel) or is_mog_script(path):
                 continue
             found.append(path)
 
@@ -474,7 +487,7 @@ def write_launch_script(game: InstalledGame, preference: str = "auto") -> str:
     # this game syncs; the exec stays, so whatever started the script tracks the game.
     path.write_text(
         "#!/bin/sh\n"
-        f"# {game.name.replace(chr(10), ' ')}: started through {engine}. Written by MOG and rewritten\n"
+        f"# {game.name.replace(chr(10), ' ')}: started through {engine}. {MOG_SCRIPT_MARK} and rewritten\n"
         "# when the game's launcher is changed there; it does not need MOG to run.\n"
         f"cd {shlex.quote(str(Path(game.executable).parent))} || exit 1\n"
         'MOG=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/mog-client/client-path" 2>/dev/null)\n'

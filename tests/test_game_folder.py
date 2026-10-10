@@ -377,3 +377,15 @@ def test_a_shortcut_on_the_desktop_is_a_copy_of_the_entry_and_goes_with_the_game
     manager.remove_entries(home.rec)
     launcher.remove_entry_files(home.rec)
     assert not shortcut.exists()
+
+
+def test_the_launch_script_mog_wrote_is_not_offered_as_an_executable_to_choose(home):
+    finish(home)
+    script = launcher.launch_script_path(home.rec)
+    (home.folder / "start.sh").write_text("#!/bin/sh\nexec ./game\n")  # the game's own script is still one
+
+    offered = [p.name for p in launcher.list_executables(home.folder)]
+
+    assert script.is_file() and script.name not in offered
+    assert "start.sh" in offered and "Jazz2.exe" in offered
+    assert launcher.is_mog_script(script) and not launcher.is_mog_script(home.folder / "start.sh")
