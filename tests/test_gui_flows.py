@@ -1954,7 +1954,7 @@ def test_starting_an_install_and_a_mod_remembers_them_and_ending_forgets_them(wi
     assert _until(qapp, lambda: 5 not in win.app.installs, seconds=15)  # it runs in a thread: give a slow machine time
 
     assert ran == [[5]]  # remembered while it ran
-    assert activity.load()["installs"] == []  # and forgotten once it ended
+    assert _until(qapp, lambda: activity.load()["installs"] == [], seconds=15)  # and forgotten once it ended
 
 
 def test_howlongtobeat_times_are_a_table_beside_the_header_only_when_the_game_has_them(win, qapp, monkeypatch):
