@@ -29,6 +29,8 @@ def watch(
     wait is for it to really end, since a game closing is when it writes its saves. On Windows the
     process started is the game itself."""
     if sys.platform == "win32" and proc is not None:
+        if started := timing.get("on_started"):
+            started()
         proc.wait()
         return True
 

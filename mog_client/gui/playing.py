@@ -26,6 +26,9 @@ class PlayingOverlay(QWidget):
         self.heading.setObjectName("overlayTitle")
         self.name = QLabel()
         self.name.setWordWrap(True)
+        self.status = QLabel()  # what is going on right now, in a few words
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setProperty("danger", True)
         self.stop_button.setDefault(True)
@@ -39,6 +42,7 @@ class PlayingOverlay(QWidget):
         grid.addWidget(self.cover, 0, 0, 3, 1, Qt.AlignTop)
         grid.addWidget(self.heading, 0, 1, Qt.AlignBottom)
         grid.addWidget(self.name, 1, 1, Qt.AlignTop)
+        grid.addWidget(self.status, 2, 1, Qt.AlignTop)
         grid.addWidget(self.stop_button, 3, 0, 1, 2, Qt.AlignHCenter)
         grid.setRowStretch(2, 1)
         outer = QGridLayout(self)
@@ -51,8 +55,12 @@ class PlayingOverlay(QWidget):
     def showing(self) -> bool:
         return self.isVisible()
 
-    def show_game(self, name: str, cover: QPixmap | None) -> None:
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)
+
+    def show_game(self, name: str, cover: QPixmap | None, status: str = "") -> None:
         self.name.setText(name)
+        self.status.setText(status)
         self.cover.setPixmap(cover.scaledToHeight(COVER_HEIGHT, Qt.SmoothTransformation) if cover else QPixmap())
         self.cover.setVisible(cover is not None)
         self.stop_button.setText("Stop")

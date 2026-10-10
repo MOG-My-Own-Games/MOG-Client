@@ -97,8 +97,12 @@ def wait_for_game(
     abort_before_start: Callable[[], bool] = lambda: False,
     native: bool = False,
     log: Callable[[str], None] | None = None,
+    on_started: Callable[[], None] | None = None,
+    on_wait: Callable[[], None] | None = None,
 ) -> bool:
     """Block until the game has started and then ended. Returns False when it never started.
+
+    `on_started` is called once when the game's first process shows up; `on_wait` at every look until then.
 
     `log` is told what is seen: the processes that make the game, when they are gone, why the wait gave up and,
     every few minutes, that the game is still there (a process that never ends keeps everything after it waiting).
@@ -120,6 +124,8 @@ def wait_for_game(
             if not started:
                 said(f"game seen after {now - waited_from:.0f}s: {describe_pids(pids, proc_root)}")
                 last_said = now
+                if on_started:
+                    on_started()
             elif gone_since is not None:
                 said(f"game processes are back: {describe_pids(pids, proc_root)}")
             elif now - last_said >= STILL_RUNNING_EVERY:
@@ -142,6 +148,8 @@ def wait_for_game(
         elif now - waited_from >= appear_timeout or abort_before_start():
             said(f"no game process in {now - waited_from:.0f}s ({'launcher failed' if now - waited_from < appear_timeout else 'timeout'}): giving up")
             return False
+        elif on_wait:
+            on_wait()
         sleep(poll)
     said("watch stopped" + (" while the game was running" if started else " before the game showed up"))
     return started

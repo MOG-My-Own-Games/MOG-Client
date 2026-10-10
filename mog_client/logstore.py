@@ -92,13 +92,29 @@ def error(text: str) -> None:
     logger.error(text)
 
 
+def best_effort(what: str, fn, *args, **kwargs):
+    """Run something the client can do without (a file it keeps for itself). A full or unwritable disk is logged and
+    skipped, so it never keeps the client from starting: someone with a full disk needs it to remove games."""
+    try:
+        return fn(*args, **kwargs)
+    except OSError as e:
+        logger.warning(f"{what}: {e}")
+        return None
+
+
 def write_to_file(path: Path) -> None:
-    """Also keep the log in a file that stays small (one older copy is kept)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Also keep the log in a file that stays small (one older copy is kept). A disk that cannot take it leaves the
+    log in memory only."""
     for handler in logger.handlers:
         if isinstance(handler, logging.handlers.RotatingFileHandler):
             return
-    handler = logging.handlers.RotatingFileHandler(path, maxBytes=FILE_MAX_BYTES, backupCount=1, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(path, maxBytes=FILE_MAX_BYTES, backupCount=1, encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"The log is not kept in a file: {e}")
+        return
+    handler.handleError = lambda _record: None  # a write that fails later (disk full) must not spray the terminal
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
 

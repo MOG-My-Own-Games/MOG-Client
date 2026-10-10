@@ -183,3 +183,18 @@ def test_giving_up_is_said_with_the_reason(tmp_path):
     said = []
     watcher.wait_for_game(INSTALL, proc_root=tmp_path, appear_timeout=30, poll=5, sleep=clock.sleep, clock=clock.time, log=said.append)
     assert said and "giving up" in said[-1] and "timeout" in said[-1]
+
+
+def test_it_says_when_it_is_still_waiting_and_when_the_game_has_shown_up(tmp_path):
+    clock = Clock()
+    clock.script[10] = lambda: _proc(tmp_path, 100, WIN_CMD.replace("\0", " "))
+    clock.script[30] = lambda: _gone(tmp_path, 100)
+    events = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=100, linger=6, poll=2, sleep=clock.sleep, clock=clock.time,
+        on_wait=lambda: events.append("wait"), on_started=lambda: events.append("started"),
+    )  # fmt: skip
+
+    assert events.count("started") == 1 and events[-1] == "started"
+    assert events[0] == "wait" and set(events[:-1]) == {"wait"}
