@@ -153,3 +153,61 @@ def wait_for_game(
         sleep(poll)
     said("watch stopped" + (" while the game was running" if started else " before the game showed up"))
     return started
+
+
+def _environ(pid: int, proc_root: Path) -> dict[str, str]:
+    try:
+        raw = (proc_root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return {}
+    return dict(item.partition("=")[::2] for item in raw.decode(errors="replace").split("\0") if "=" in item)
+
+
+def tool_pids(tool: str, prefix: Path, proc_root: Path = PROC, exclude: tuple[int, ...] = ()) -> list[int]:
+    """Processes running a Wine program (winecfg, regedit) in `prefix`: its name is in the command line and the prefix is
+    in the environment, as WINEPREFIX or, for Proton, STEAM_COMPAT_DATA_PATH. A tool is not a .exe of the game's folder,
+    so `running_pids` does not see it."""
+    found = []
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.isdigit() or int(entry.name) in exclude:
+            continue
+        if tool not in _read(entry / "cmdline").casefold():
+            continue
+        env = _environ(int(entry.name), proc_root)
+        if prefix.as_posix() in (env.get("WINEPREFIX"), env.get("STEAM_COMPAT_DATA_PATH")):
+            found.append(int(entry.name))
+    return found
+
+
+def wait_for_tool(
+    tool: str,
+    prefix: Path,
+    proc_root: Path = PROC,
+    appear_timeout: float = APPEAR_TIMEOUT,
+    linger: float = 3.0,
+    poll: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    abort_before_start: Callable[[], bool] = lambda: False,
+) -> bool:
+    """Block until a Wine program has shown up in `prefix` and has ended. False when it never showed up (the launcher failed,
+    or it was over before the first look)."""
+    me = (os.getpid(),)
+    waited_from = clock()
+    started = False
+    gone_since: float | None = None
+    while True:
+        now = clock()
+        if tool_pids(tool, prefix, proc_root, me):
+            started, gone_since = True, None
+        elif started:
+            gone_since = now if gone_since is None else gone_since
+            if now - gone_since >= linger:
+                return True
+        elif now - waited_from >= appear_timeout or abort_before_start():
+            return False
+        sleep(poll)
