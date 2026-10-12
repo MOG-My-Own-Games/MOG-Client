@@ -106,13 +106,20 @@ class MenuView(QScrollArea):
         self.setWidget(body)
         self.rows: list[OptionRow] = []
 
-    def section(self, title: str) -> None:
+    def section(self, title: str) -> QLabel:
         label = QLabel(title.upper())
         label.setObjectName("menuSection")
         self.layout_.insertWidget(self.layout_.count() - 1, label)
+        return label
 
     def add(self, row: OptionRow) -> OptionRow:
         self.layout_.insertWidget(self.layout_.count() - 1, row)
         row.focused.connect(lambda r: self.ensureWidgetVisible(r, 0, 28))
         self.rows.append(row)
         return row
+
+    def remove(self, row: OptionRow) -> None:
+        if row in self.rows:
+            self.rows.remove(row)
+        self.layout_.removeWidget(row)
+        row.deleteLater()

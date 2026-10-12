@@ -14,7 +14,7 @@
 
 ## Where games go
 
-Settings > General > "Install folders" > "Edit install dirs" opens the folders in order of priority (on a Steam Deck, for
+Settings > Library > "Install folders" > "Edit install dirs" opens the folders in order of priority (on a Steam Deck, for
 example, `/media/deck/decksd/mog-games`, `/media/deck/decksd2/mog-games` and `/home/deck/mog-games`).
 
 - `+` adds one, `-` removes the selected one from the list (the games in it stay on disk), Move up / Move down change

@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from mog_client import config, installdirs, launcher, logstore  # noqa: E402
+from mog_client.api import fmt_bytes  # noqa: E402
 from mog_client.config import Settings, load_settings  # noqa: E402
 from mog_client.gui import app as gui  # noqa: E402
 from mog_client.gui import gamepad  # noqa: E402
@@ -85,6 +86,8 @@ def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qa
 
     win.on_pad(gamepad.TRIGGER_R)
     win.on_pad(gamepad.TRIGGER_R)
+    assert name() == "Library"
+    win.on_pad(gamepad.TRIGGER_R)
     assert name() == "Logs" and win.legend_context() == "logs"
     pump(qapp)
     bar = page.logview.view.verticalScrollBar()
@@ -94,9 +97,8 @@ def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qa
     win.on_pad("scroll:1.000")
     assert bar.value() > end - 60
 
-    win.on_pad(gamepad.TRIGGER_L)
-    win.on_pad(gamepad.TRIGGER_L)
-    win.on_pad(gamepad.TRIGGER_L)
+    for _ in range(4):
+        win.on_pad(gamepad.TRIGGER_L)
     assert name() == "Logs" and win.legend_context() == "logs"  # wraps round, and About is not a tab any more
 
 
@@ -396,7 +398,7 @@ def test_down_walks_the_rows_and_from_the_last_goes_to_the_first(win, qapp):
     win.activateWindow()
     chain = page._chain()
     assert chain[0] is page.sync_saves_box and chain[-1] is page.save_button
-    assert page.sync_start_box in chain and page.launcher in chain and page.folders_button in chain
+    assert page.sync_start_box in chain and page.launcher in chain and page.folders_button not in chain  # that one is on Library
 
     seen = []
     page.sync_saves_box.setFocus()
@@ -1244,7 +1246,7 @@ def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_
 
     win.open_settings()
     tabs = win.current_page().tabs
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Logs"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Library", "Logs"]
 
 
 def test_signing_out_asks_first_then_forgets_the_password_and_opens_settings(win, qapp):
@@ -1344,7 +1346,6 @@ def test_picking_a_save_from_another_machine_waits_for_ok_and_the_dialog_has_no_
         [("Restore one", 1), ("Restore two", 2)],
         chosen.append,
         skip="Skip",
-        confirm=True,
     )
     win.activateWindow()
     pump(qapp)
@@ -1365,7 +1366,7 @@ def test_picking_a_save_from_another_machine_waits_for_ok_and_the_dialog_has_no_
 
 
 def test_a_picker_without_skip_keeps_its_close_button(win, qapp):
-    win.choose("Restore which save?", "x", [("one", 1)], lambda v: None, confirm=True)
+    win.choose("Restore which save?", "x", [("one", 1)], lambda v: None)
     pump(qapp)
     assert win.modal.close_button.isVisibleTo(win)
 
@@ -2195,7 +2196,9 @@ def test_the_file_picker_is_a_small_card_too(win, qapp, monkeypatch, tmp_path):
     picker = win.current_page()
     assert isinstance(picker, gui.BrowsePage) and win.modal.page is picker and win.stack.currentWidget() is game_page
     assert win.modal.title.text() == "Choose a folder"
-    picker._activate(picker.list.item(0))  # "Use this folder"
+    picker._activate(picker.list.item(0))  # "Use this folder": selected, OK takes it
+    assert picked == [] and picker.ok.isEnabled()
+    picker.ok.click()
     assert picked == [str(tmp_path)] and win.current_page() is game_page and not win.modal.showing
 
 
@@ -2222,7 +2225,7 @@ def test_a_mod_already_on_this_computer_shows_where_and_can_be_deleted(win, qapp
     assert page.list.item(0).text().startswith("mod1\nfolder") and not page.delete_button.isEnabled()
 
 
-def test_a_click_selects_a_mod_and_does_not_start_its_download(win, qapp, monkeypatch, tmp_path):
+def test_picking_a_mod_selects_it_and_only_the_download_button_starts_the_download(win, qapp, monkeypatch, tmp_path):
     game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
     started = []
     monkeypatch.setattr(win.app, "download_mod", lambda game, mod: started.append(mod["name"]))
@@ -2231,7 +2234,10 @@ def test_a_click_selects_a_mod_and_does_not_start_its_download(win, qapp, monkey
 
     page.list.itemClicked.emit(page.list.item(1))
     assert started == []
-    page.list.itemActivated.emit(page.list.item(1))  # Enter
+    page.list.setCurrentRow(1)
+    page.list.itemActivated.emit(page.list.item(1))  # Enter, A or a double click: on to the button
+    assert started == []
+    page.download_button.click()
     assert started == ["mod2.zip"]
     page.list.setCurrentRow(0)
     page.download_button.click()
@@ -3442,7 +3448,7 @@ def test_ok_and_the_cards_close_button_sit_in_one_row_and_it_says_back_over_anot
     _rich_game(win, monkeypatch)
     win.show_game(41)
     win.push(gui.SavesOptionsPage(win, win.current_page(), rec))
-    win.choose("Restore which save?", "Put a saved version back.", [("karasu: 2026-10-10 20:25", 1)], lambda _v: None, confirm=True)
+    win.choose("Restore which save?", "Put a saved version back.", [("karasu: 2026-10-10 20:25", 1)], lambda _v: None)
     pump(qapp)
     page = win.current_page()
     ok = next(b for b in page.findChildren(QPushButton) if b.text() == "OK")
@@ -3457,7 +3463,7 @@ def test_ok_and_the_cards_close_button_sit_in_one_row_and_it_says_back_over_anot
     assert win.modal.close_button.parentWidget() is win.modal.card and win.modal.close_button.text() == "Close"
     win.back()
     pump(qapp)
-    win.choose("Pick", "x", [("a", 1)], lambda _v: None, confirm=True)  # over the game page alone
+    win.choose("Pick", "x", [("a", 1)], lambda _v: None)  # over the game page alone
     pump(qapp)
     assert win.modal.close_button.text() == "Close"
 
@@ -3621,3 +3627,134 @@ def test_the_poll_sends_the_launch_settings_the_server_has_not_taken_and_only_wh
     launchsettings.queue(41, {"proton": "GE-Proton9-27"}, True)
     win.app.poll_notifications()
     assert sent == [fake]
+
+
+def _library_tab_ready(qapp, page, expected: int) -> None:
+    """Waits for the disk to be read: every row listed and none still saying it is being measured."""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        qapp.processEvents()
+        rows = page._library_rows
+        if len(rows) == expected and not any(r.status.text() == "Measuring..." for r in rows):
+            break
+        time.sleep(0.01)
+    pump(qapp)
+
+
+def test_the_library_tab_holds_the_folders_and_the_launcher_scan_and_lists_games_biggest_first(win, qapp, tmp_path):
+    for name, size in (("Small", 10), ("Big", 5000), ("Mid", 300)):
+        folder = tmp_path / "games" / name
+        folder.mkdir(parents=True)
+        (folder / "data.bin").write_bytes(b"x" * size)
+    records = {
+        1: config.InstalledGame(1, "Small", str(tmp_path / "games" / "Small"), state="installed"),
+        2: config.InstalledGame(2, "Big", str(tmp_path / "games" / "Big"), state="installed"),
+        3: config.InstalledGame(3, "Mid", str(tmp_path / "games" / "Mid"), state="installed"),
+        4: config.InstalledGame(4, "Gone", str(tmp_path / "unplugged" / "Gone"), state="installed"),
+    }
+    config.save_library(records)
+    win.open_settings()
+    page = win.current_page()
+    names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+    assert names == ["General", "Server", "Library", "Logs"]
+    in_general = {row.title.text() for row in page.general.rows}
+    in_library = {row.title.text() for row in page.library_tab.rows}
+    assert "Install folders" in in_library and "Install folders" not in in_general
+    assert "Scan for launchers" in in_library and "Scan for launchers" not in in_general
+
+    page.tabs.setCurrentWidget(page.library_tab)
+    _library_tab_ready(qapp, page, 4)
+    assert [r.title.text() for r in page._library_rows] == ["Big", "Mid", "Small", "Gone"]
+    assert page._library_rows[0].status.text() == fmt_bytes(5000)
+    assert "not there" in page._library_rows[3].status.text()
+    assert "4" in page._installed_title.text()
+
+    page._library_rows[0].control.click()  # Uninstall asks before it does anything
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.ConfirmPage) and "Big" in win.current_page().text_label.text()
+
+
+# --- picking only selects; OK answers ------------------------------------------------------------------------
+
+
+def test_a_choice_is_answered_by_ok_not_by_picking_the_entry(win, qapp):
+    answers = []
+    win.choose("Pick", "which", [("A", 1), ("B", 2)], answers.append)
+    pump(qapp)
+    page = win.current_page()
+    page.list.setCurrentRow(1)
+    page.list.itemActivated.emit(page.list.item(1))  # Enter, A or a double click
+    assert answers == [] and win.current_page() is page
+    next(b for b in page.findChildren(QPushButton) if b.text() == "OK").click()
+    assert answers == [2] and win.current_page() is not page
+
+
+def test_the_installer_picker_is_answered_by_ok_not_by_picking_the_entry(win, qapp, monkeypatch):
+    game_page, page = _picker_for(win, qapp, monkeypatch)
+    started = []
+    monkeypatch.setattr(game_page, "start_with", lambda *a, **k: started.append(a))
+    page.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
+    rows = [page.list.item(i) for i in range(page.list.count())]
+    row = next(r for r in rows if "gothic2.exe" in r.text())
+    page.list.setCurrentItem(row)
+    page.list.itemActivated.emit(row)
+    assert win.current_page() is page and page.ok.isEnabled() and started == []  # only selected
+    page.ok.click()
+    assert win.current_page() is not page and len(started) == 1
+
+
+def test_ok_on_the_installer_picker_is_greyed_while_nothing_can_be_picked(win, qapp, monkeypatch):
+    _game_page, page = _picker_for(win, qapp, monkeypatch)
+    page.list.clear()
+    page.list.addItem("a heading")
+    page.list.item(0).setFlags(Qt.NoItemFlags)
+    page._sync_ok()
+    assert not page.ok.isEnabled()
+
+
+def test_the_file_picker_opens_folders_but_only_selects_a_file(win, qapp, tmp_path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "game.exe").write_bytes(b"MZ")
+    picked = []
+    win.push(gui.BrowsePage(win, tmp_path, picked.append))
+    pump(qapp)
+    page = win.current_page()
+    names = [page.list.item(i).text() for i in range(page.list.count())]
+    folder = names.index("bin/")
+    page._activate(page.list.item(folder))  # a folder is opened
+    assert page.cwd == tmp_path / "bin" and picked == []
+    page._load(tmp_path)
+    page.list.setCurrentRow([page.list.item(i).text() for i in range(page.list.count())].index("game.exe"))
+    assert page.ok.isEnabled()
+    page._activate(page.list.currentItem())
+    assert picked == []  # selected only
+    page.ok.click()
+    assert picked == [str(tmp_path / "game.exe")]
+
+
+def test_ok_on_the_file_picker_is_greyed_on_a_folder(win, qapp, tmp_path):
+    (tmp_path / "bin").mkdir()
+    win.push(gui.BrowsePage(win, tmp_path, lambda _p: None))
+    pump(qapp)
+    page = win.current_page()
+    page.list.setCurrentRow([page.list.item(i).text() for i in range(page.list.count())].index("bin/"))
+    assert not page.ok.isEnabled()
+
+
+def test_a_change_while_the_buttons_are_made_does_not_double_them(win, qapp, tmp_path, monkeypatch):
+    """Regression test: starting an install sometimes showed the page's buttons twice (Pause and both Cancels, two sets), and
+    they were right again on coming back to the page. Making the buttons reads the progress, which asks whether they are
+    stale; when the install's state had changed in between, they were made inside the making of them, and added twice."""
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    pump(qapp)
+    page = win.current_page()
+    win.app.installs[1] = threading.Event()
+    keys = iter([("before",), ("after",)])
+    last = []
+    monkeypatch.setattr(page, "_buttons_key", lambda: last.append(next(keys, ("after",))) or last[-1])  # it changes once
+
+    page.rebuild()
+    pump(qapp)
+    texts = [page.buttons.itemAt(i).widget().text() for i in range(page.buttons.count()) if page.buttons.itemAt(i).widget()]
+    assert texts == ["Pause", "Cancel local install", "Cancel server install"]

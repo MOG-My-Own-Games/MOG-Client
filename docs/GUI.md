@@ -110,8 +110,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - Changing a game's engine rewrites that one script; the desktop entry keeps its file and the Steam shortcut is not
   touched. Entries are always edited in place, never deleted and recreated (a new Steam shortcut would count as a new
   game). Entries made by an older version are edited in place once, keeping their artwork.
-- Games launch through the first of Faugus Launcher, umu, Proton and Wine that is installed (Linux). Settings lists what
-  was found and "Rescan launchers" looks again; the scan also runs at the first start and after an update. On Windows
+- Games launch through the first of Faugus Launcher, umu, Proton and Wine that is installed (Linux). Settings > Library lists what
+  was found and "Scan for launchers" looks again; the scan also runs at the first start and after an update. On Windows
   the game starts directly.
 - A game's own files go in a folder of their own inside the install folder. When what the server sends has no single
   folder (files at the top, or several folders), the client puts it in a folder named for the game; a game that comes in
@@ -127,9 +127,11 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - A legend at the bottom lists the controls that work on the page being shown. It shows the controller's button icons
   (Xbox, PlayStation, Nintendo or Steam Deck glyphs) while a controller is connected and was the last thing used, and key
   icons otherwise; pressing a key switches it to the keyboard at once. Icons: Kenney Input Prompts, CC0.
-- In the "Choose executable" page and the lists of saves to put back, picking a row only selects it. Set the other
-  options and confirm with the button ("Use this executable", "OK"). "Later" and "Skip" leave without choosing, so those
-  cards have no Close button.
+- In every list you pick from ("Choose an installer", "Choose executable", the lists of saves to put back, the other
+  questions with a list, the file and folder pickers, the engine and version of a game, the mods), picking a row (a click,
+  Enter, A or a double click) only selects it and moves on to the button; the button ("OK", "Use this executable",
+  "Download") does it. A folder in the file picker is the exception: it opens. "Later" and "Skip" leave without choosing,
+  so those cards have no Close button.
 - Errors and results that matter appear in a message over the window with an OK button (A or Enter); everything else goes
   to the log.
 - The window can be made as small as about 720x460 (800x600 and a small desktop mode included). A game's page then keeps
@@ -147,8 +149,12 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   Notifications (with the unread count), Refresh library and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.
-- Four tabs, switched with L2 and R2 (Ctrl+Page Up/Down): General (saves, install folders, launcher, updates, sounds),
-  Server, Logs and About.
+- Four tabs, switched with L2 and R2 (Ctrl+Page Up/Down): General (saves, launcher, updates, sounds), Server, Library and
+  Logs.
+- The Library tab holds the install folders and "Scan for launchers", and below them every game installed on this device
+  with the space it takes, the biggest first, and an Uninstall button (the same questions as Uninstall in the game's own
+  Options: its saves are backed up first and the prefix is only deleted when asked). A game whose folder is not there
+  (a drive that is not connected) is listed last, without a size.
 - The Logs tab shows everything the client logged (white for info, yellow for warnings, red for errors), filterable by
   level and scrollable with the right stick. The same log is kept in `logs/client.log` in the client's data folder.
 

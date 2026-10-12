@@ -156,6 +156,32 @@ def present(rec: InstalledGame) -> bool:
     return Path(rec.install_dir).is_dir()
 
 
+def folder_size(folder: Path) -> int:
+    """Bytes the files under `folder` take (a link is counted as the link, never followed). What cannot be read counts 0."""
+    total = 0
+    stack = [str(folder)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total
+
+
+def by_size(records: Iterable[InstalledGame], sizes: dict[int, int | None]) -> list[tuple[InstalledGame, int | None]]:
+    """The games with their size, the biggest first. A game with no known size (its folder is not there) goes last, by name."""
+    pairs = [(rec, sizes.get(rec.game_id)) for rec in records]
+    return sorted(pairs, key=lambda p: (p[1] is None, -(p[1] or 0), p[0].name.casefold()))
+
+
 def resumable(rec: InstalledGame) -> bool:
     """Whether a partly downloaded game's folder, or the folder that holds it, can be written to."""
     folder = Path(rec.install_dir)

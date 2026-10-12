@@ -1046,7 +1046,7 @@ class ModsPage(Page):
         self.render()
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(self.fetch)  # Enter, A on the pad, a double click: not a single click
+        self.list.itemActivated.connect(lambda _: self.download_button.setFocus())  # picking is not downloading: its button is
         self.list.currentRowChanged.connect(lambda _row: self._sync_buttons())
         win.app.bridge.activity.connect(self.render)
         lay = QVBoxLayout(self)
@@ -1330,15 +1330,15 @@ class OptionsPage(Page):
 
 
 class ChoicePage(Page):
-    """A list to pick one answer from, then OK (or Enter on an entry). `skip` adds a red button that
-    answers None; Esc or Back leaves without answering. With `confirm`, picking an entry only selects it (Enter or A
-    moves on to the next control) and OK is what answers; with a `skip` button the page needs no Close of its own."""
+    """A list to pick one answer from, then OK. Picking an entry (a click, Enter or A) only selects it and moves on to the
+    next control; OK is what answers. `skip` adds a red button that answers None; Esc or Back leaves without answering;
+    with a `skip` button the page needs no Close of its own."""
 
     modal = True
 
     def __init__(
         self, win: "MainWindow", title: str, text: str, options: list, on_choose, skip: str | None = None,
-        confirm: bool = False, game: int | None = None,
+        game: int | None = None,
     ):
         super().__init__()
         self.title, self.win, self.on_choose = title, win, on_choose
@@ -1352,7 +1352,7 @@ class ChoicePage(Page):
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(self.focusNextChild if confirm else self.choose)
+        self.list.itemActivated.connect(lambda _: self.focusNextChild())  # picking is not confirming
         ok = QPushButton("OK")
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
@@ -1729,11 +1729,17 @@ class InstallerPickerPage(Page):
         self.found: dict[int, list[dict] | str] = {}
         self.portable: set[int] = set()  # versions the server found no installer in: probably the game itself
         self.list = QListWidget()
-        self.list.itemActivated.connect(self.choose)
+        self.list.itemActivated.connect(lambda _: self.focusNextChild())  # picking is not confirming: OK is
+        self.list.currentItemChanged.connect(lambda *_: self._sync_ok())
+        self.ok = QPushButton("OK")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.accept)
         self.status = QLabel("Looking for installers...")
         lay = QVBoxLayout(self)
         lay.addWidget(self.status)
         lay.addWidget(self.list, 1)
+        self.button_row = _centered_row(self.ok)
+        lay.addLayout(self.button_row)
         win.app.bridge.installers.connect(self.on_installers)
         for version in group.versions:
             win.app.load_installers(version["id"])
@@ -1790,12 +1796,21 @@ class InstallerPickerPage(Page):
             if self.list.item(i).data(Qt.UserRole):
                 self.list.setCurrentRow(i)
                 break
+        self._sync_ok()
 
     @staticmethod
     def _note(text: str) -> QListWidgetItem:
         item = QListWidgetItem(text)
         item.setFlags(Qt.NoItemFlags)
         return item
+
+    def _sync_ok(self) -> None:
+        item = self.list.currentItem()
+        self.ok.setEnabled(item is not None and bool(item.data(Qt.UserRole)))
+
+    def accept(self) -> None:
+        if self.list.currentItem() is not None:
+            self.choose(self.list.currentItem())
 
     def choose(self, item: QListWidgetItem) -> None:
         picked = item.data(Qt.UserRole)
@@ -1824,7 +1839,7 @@ class AboutPage(Page):
 
 
 class SettingsPage(Page):
-    """Settings in tabs (General, Server, Logs, About); the pad's L2 and R2 switch between them."""
+    """Settings in tabs (General, Server, Library, Logs); the pad's L2 and R2 switch between them."""
 
     title = "Settings"
     SAVED_TABS = (0, 1)  # the tabs with fields to save
@@ -1867,10 +1882,15 @@ class SettingsPage(Page):
         self.logview = LogView()
         self.tabs = FocusTabs()
         self.tabs.tabBar().setFocusPolicy(Qt.StrongFocus)  # reached with Up from the first row
+        self._sizes: dict[int, int | None] = {}  # what each installed game takes, once measured (None: its folder is not there)
+        self._measuring = 0  # which look at the disk is the latest: an older one's answer is dropped
+        self._library_rows: list[OptionRow] = []
         self.general = self._general_tab()
         self.server = self._server_tab()
+        self.library_tab = self._library_tab()
         self.tabs.addTab(self.general, "General")
         self.tabs.addTab(self.server, "Server")
+        self.tabs.addTab(self.library_tab, "Library")
         self.tabs.addTab(self.logview, "Logs")
         self.tabs.currentChanged.connect(self._on_tab)
         self.save_button = QPushButton("Save")
@@ -1886,6 +1906,7 @@ class SettingsPage(Page):
             self.save_button,
             *self._focus_targets(self.general, enabled_only=False),
             *self._focus_targets(self.server, enabled_only=False),
+            *self._focus_targets(self.library_tab, enabled_only=False),
             *self.logview.findChildren(QPushButton),
             self.logview.view,
         )
@@ -1982,15 +2003,6 @@ class SettingsPage(Page):
             )
         )
         menu.section("Games")
-        self._folders_row = menu.add(
-            OptionRow(
-                "Install folders",
-                "Where games are installed, in order of priority: the first folder that is connected and has room is "
-                "used. Games in any of them show in the library.",
-                self.folders_button,
-            )
-        )
-        self._update_folders_row()
         menu.add(
             OptionRow(
                 "Launcher",
@@ -2002,19 +2014,6 @@ class SettingsPage(Page):
                 wide=True,
             )
         )
-        self.launcher_status = QLabel()  # replaced below on systems that have launchers to look for
-        if sys.platform != "win32":
-            rescan = QPushButton("Rescan")
-            rescan.clicked.connect(self.rescan_launchers)
-            row = menu.add(
-                OptionRow(
-                    "Scan for launchers",
-                    "Look again for what is installed. This also happens at the first start and after an update.",
-                    rescan,
-                )
-            )
-            self.launcher_status = row.status
-            self._scan_row = row
         menu.section("Application")
         self.update_status = QLabel()
         if updater.supported():
@@ -2059,6 +2058,110 @@ class SettingsPage(Page):
         self.steam_button.setEnabled(selfsteam.available())
         self._steam_row.set_status(selfsteam.status(self.win.app.settings))
 
+    def _library_tab(self) -> MenuView:
+        menu = MenuView()
+        menu.section("Games")
+        self._folders_row = menu.add(
+            OptionRow(
+                "Install folders",
+                "Where games are installed, in order of priority: the first folder that is connected and has room is "
+                "used. Games in any of them show in the library.",
+                self.folders_button,
+            )
+        )
+        self._update_folders_row()
+        self.launcher_status = QLabel()  # replaced below on systems that have launchers to look for
+        if sys.platform != "win32":
+            rescan = QPushButton("Rescan")
+            rescan.clicked.connect(self.rescan_launchers)
+            row = menu.add(
+                OptionRow(
+                    "Scan for launchers",
+                    "Look again for what is installed. This also happens at the first start and after an update.",
+                    rescan,
+                )
+            )
+            self.launcher_status = row.status
+            self._scan_row = row
+        self._installed_title = menu.section("Installed games")
+        self._library_menu = menu
+        return menu
+
+    def _library_records(self) -> list[InstalledGame]:
+        return list(load_library().values())
+
+    def refresh_library(self) -> None:
+        """Measure what each installed game takes (off the interface: a big folder takes seconds) and list them."""
+        self._measuring += 1
+        mine = self._measuring
+        records = self._library_records()
+        self._sizes = {k: v for k, v in self._sizes.items() if k in {r.game_id for r in records}}
+        self.render_library()
+
+        def work() -> None:
+            found = {
+                rec.game_id: installdirs.folder_size(Path(rec.install_dir)) if installdirs.present(rec) else None
+                for rec in records
+            }
+            self.win.app.bridge.call.emit(lambda: self._measured(mine, found))
+
+        self.win.app.run_bg(work)
+
+    def _measured(self, mine: int, found: dict[int, int | None]) -> None:
+        if mine != self._measuring:
+            return
+        try:
+            self._sizes.update(found)
+            self.render_library()
+        except RuntimeError:  # the page was closed while the disk was being read
+            pass
+
+    def render_library(self) -> None:
+        """The installed games, the biggest first, each with its size and a button to uninstall it."""
+        menu = self._library_menu
+        for row in self._library_rows:
+            menu.remove(row)
+        self._library_rows = []
+        records = self._library_records()
+        measured = [r for r in records if r.game_id in self._sizes]
+        total = sum(self._sizes[r.game_id] or 0 for r in measured)
+        self._installed_title.setText(
+            ("Installed games" + (f" - {len(records)}, {fmt_bytes(total)}" if records and len(measured) == len(records) else ""))
+            .upper()
+        )
+        if not records:
+            self._library_rows.append(menu.add(OptionRow("No game is installed on this device", "", QLabel())))
+        for rec, size in installdirs.by_size(records, self._sizes):
+            busy = self.win.app.jobs.get(rec.game_id)
+            button = QPushButton("Uninstalling..." if busy == "uninstall" else "Uninstall")
+            button.setProperty("danger", True)
+            button.setEnabled(not busy)
+            button.clicked.connect(lambda _=False, r=rec: self.uninstall_game(r))
+            note = {"installing": "Partly downloaded", "awaiting_executable": "Waiting for its executable"}.get(rec.state)
+            row = OptionRow(rec.name, f"{rec.install_dir}" + (f" - {note}" if note else ""), button)
+            if rec.game_id not in self._sizes:
+                row.set_status("Measuring...")
+            elif size is None:
+                row.set_status("Its folder is not there (drive not connected?)")
+            else:
+                row.set_status(fmt_bytes(size))
+            self._library_rows.append(menu.add(row))
+            for widget in (button, *button.findChildren(QWidget)):
+                widget.installEventFilter(self)  # Up and Down walk through the rows, as on the other tabs
+
+    def uninstall_game(self, rec: InstalledGame) -> None:
+        gid = rec.game_id
+
+        def changed() -> None:
+            try:
+                self.render_library()
+            except RuntimeError:  # the page was closed meanwhile
+                return
+            if gid not in self.win.app.jobs:  # over: its game page shows what is left of it
+                self.win.app.bridge.finished.emit(gid, "")
+
+        run_uninstall(self.win, rec, False, changed)
+
     def _server_tab(self) -> MenuView:
         menu = MenuView()
         menu.section("MOG-Server")
@@ -2072,6 +2175,8 @@ class SettingsPage(Page):
 
     def _on_tab(self, index: int) -> None:
         self.save_button.setVisible(index in self.SAVED_TABS)
+        if self.tabs.pages.widget(index) is self.library_tab:
+            self.refresh_library()
         if QApplication.focusWidget() is not self.tabs.tabBar():  # switching tabs from the bar keeps the focus there
             self.focus_default()
         self.win.refresh_legend()
@@ -2292,9 +2397,15 @@ class BrowsePage(Page):
         self.where = QLabel()
         self.list = QListWidget()
         self.list.itemActivated.connect(self._activate)
+        self.list.currentItemChanged.connect(lambda *_: self._sync_ok())
+        self.ok = QPushButton("OK")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.accept)
         lay = QVBoxLayout(self)
         lay.addWidget(self.where)
         lay.addWidget(self.list, 1)
+        self.button_row = _centered_row(self.ok)
+        lay.addLayout(self.button_row)
         self._load(start)
 
     def focus_default(self) -> None:
@@ -2321,17 +2432,33 @@ class BrowsePage(Page):
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
+        self._sync_ok()
+
+    def _picks_here(self, item: QListWidgetItem | None) -> bool:
+        """Whether OK would take what `item` is: the folder being browsed (folders mode, on its own entry), or a file."""
+        if item is None:
+            return False
+        if self.folders:
+            return self.list.row(item) == 0
+        return not Path(item.data(Qt.UserRole)).is_dir()
+
+    def _sync_ok(self) -> None:
+        self.ok.setEnabled(self._picks_here(self.list.currentItem()))
 
     def _activate(self, item: QListWidgetItem) -> None:
-        target = Path(item.data(Qt.UserRole))
-        if self.folders and self.list.row(item) == 0:
-            self.win.back()
-            self.on_pick(str(self.cwd))
-        elif target.is_dir():
-            self._load(target)
+        """A folder opens; a file, or "Use this folder", is only selected: OK takes it."""
+        if self._picks_here(item):
+            self.focusNextChild()
         else:
-            self.win.back()
-            self.on_pick(str(target))
+            self._load(Path(item.data(Qt.UserRole)))
+
+    def accept(self) -> None:
+        item = self.list.currentItem()
+        if not self._picks_here(item):
+            return
+        picked = self.cwd if self.folders else Path(item.data(Qt.UserRole))
+        self.win.back()
+        self.on_pick(str(picked))
 
 
 class ExecutablePage(Page):
@@ -2675,6 +2802,78 @@ class ViewerPage(Page):
             self._render()
         else:
             super().keyPressEvent(e)
+
+
+def run_uninstall(win: "MainWindow", rec: InstalledGame, and_server_cache: bool = False, on_change=lambda: None) -> None:
+    """Take a game off this device: the saves are backed up and questions asked first, then the files go. `on_change` runs
+    whenever the state of the game's job changes (it began, ended or was called off), for the page that shows it."""
+    app = win.app
+
+    def start() -> None:
+        """From the first Yes the main button shows it: the saves are backed up and questions asked before the
+        files go, and the button should not look idle meanwhile."""
+        app.jobs[rec.game_id] = "uninstall"
+        on_change()
+        win.saves.final_backup(rec, after_files, on_abort=stop)
+
+    def stop() -> None:
+        app.jobs.pop(rec.game_id, None)
+        on_change()
+
+    def remove(delete_prefix: bool) -> None:
+        app.jobs[rec.game_id] = "uninstall"
+        on_change()
+
+        def work() -> None:
+            leftovers = manager.uninstall(rec, delete_prefix)
+            cache_error = ""
+            had_cache = True
+            if and_server_cache:
+                try:
+                    had_cache = app.client().clear_cache(rec.game_id)
+                except Exception as e:  # noqa: BLE001 - reported below
+                    cache_error = str(e)
+            app.bridge.call.emit(lambda: finish(leftovers, cache_error, had_cache))
+
+        def finish(leftovers: list[str], cache_error: str, had_cache: bool = True) -> None:
+            app.jobs.pop(rec.game_id, None)
+            if cache_error:
+                app.bridge.error.emit(f"Could not delete the server cache: {cache_error}")
+            if leftovers:
+                win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
+            else:
+                cache = " and its server cache deleted" if had_cache else " (it had no cache on the server)"
+                win.message(f"{rec.name} uninstalled" + (cache if and_server_cache and not cache_error else ""), "info")
+            win.refresh_items()
+            on_change()
+
+        def failed(message: str) -> None:
+            app.jobs.pop(rec.game_id, None)
+            win.message(f"Could not uninstall {rec.name}: {message}", "error")
+            on_change()
+
+        app.run_bg(work, on_error=failed)
+
+    def after_files() -> None:
+        if rec.prefix and Path(rec.prefix).exists():
+            win.ask(
+                "Also delete the local Wine prefix?\nIt may contain your save files. This cannot be undone.",
+                lambda: remove(True),
+                on_no=lambda: remove(False),
+                danger=True,
+                game=rec.game_id,
+                on_cancel=stop,
+            )
+        else:
+            remove(False)
+
+    what = "its shortcuts and the install cache on the server" if and_server_cache else "its shortcuts"
+    win.ask(
+        f"Delete the game files of {rec.name}, {what}?",
+        start,
+        danger=True,
+        game=rec.game_id,
+    )
 
 
 class GamePage(Page):
@@ -3026,16 +3225,32 @@ class GamePage(Page):
         self.buttons.addWidget(btn)
         return btn
 
+    _rebuilding = False
+    _rebuild_again = False
+
     def rebuild(self) -> None:
-        while self.buttons.count():
-            w = self.buttons.takeAt(0).widget()
-            if w:
-                w.deleteLater()
-        self.buttons.addStretch()  # the buttons sit in the middle, none wider than the stylesheet allows
-        self.play_ring = None
-        self._fill_buttons()
-        self.buttons.addStretch()
-        self.update_transfer()
+        """Make the buttons again. Asked while they are being made (filling them reads the progress, which looks at
+        whether they are stale), it is done once more afterwards: made in the middle, they would be added twice."""
+        if self._rebuilding:
+            self._rebuild_again = True
+            return
+        self._rebuilding = True
+        try:
+            while True:
+                self._rebuild_again = False
+                while self.buttons.count():
+                    w = self.buttons.takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+                self.buttons.addStretch()  # the buttons sit in the middle, none wider than the stylesheet allows
+                self.play_ring = None
+                self._fill_buttons()
+                self.buttons.addStretch()
+                self.update_transfer()
+                if not self._rebuild_again:
+                    break
+        finally:
+            self._rebuilding = False
 
     def _buttons_key(self) -> tuple:
         """What the buttons depend on: when it changes, the ones shown are stale."""
@@ -3281,8 +3496,11 @@ class GamePage(Page):
 
         def go() -> None:
             def work():
-                self.app.client().clear_cache(gid)
-                self.app.bridge.message.emit("info", "The install cache on the server was deleted")
+                gone = self.app.client().clear_cache(gid)
+                self.app.bridge.message.emit(
+                    "info",
+                    "The install cache on the server was deleted" if gone else "There was no install cache on the server",
+                )
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not delete the server cache: {m}"))
 
@@ -3456,71 +3674,7 @@ class GamePage(Page):
             self.win.open_steam_integration(then=page.refresh_steam)
 
     def uninstall(self, rec: InstalledGame, and_server_cache: bool = False) -> None:
-        def start() -> None:
-            """From the first Yes the main button shows it: the saves are backed up and questions asked before the
-            files go, and the button should not look idle meanwhile."""
-            self.app.jobs[rec.game_id] = "uninstall"
-            self.rebuild()
-            self.win.saves.final_backup(rec, after_files, on_abort=stop)
-
-        def stop() -> None:
-            self.app.jobs.pop(rec.game_id, None)
-            self.rebuild()
-
-        def remove(delete_prefix: bool) -> None:
-            self.app.jobs[rec.game_id] = "uninstall"
-            self.rebuild()
-
-            def work() -> None:
-                leftovers = manager.uninstall(rec, delete_prefix)
-                cache_error = ""
-                if and_server_cache:
-                    try:
-                        self.app.client().clear_cache(rec.game_id)
-                    except Exception as e:  # noqa: BLE001 - reported below
-                        cache_error = str(e)
-                self.app.bridge.call.emit(lambda: finish(leftovers, cache_error))
-
-            def finish(leftovers: list[str], cache_error: str) -> None:
-                self.app.jobs.pop(rec.game_id, None)
-                if cache_error:
-                    self.app.bridge.error.emit(f"Could not delete the server cache: {cache_error}")
-                if leftovers:
-                    self.win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
-                else:
-                    self.win.message(
-                        f"{rec.name} uninstalled" + (" and its server cache deleted" if and_server_cache else ""), "info"
-                    )
-                self.win.refresh_items()
-                self.rebuild()
-
-            def failed(message: str) -> None:
-                self.app.jobs.pop(rec.game_id, None)
-                self.win.message(f"Could not uninstall {rec.name}: {message}", "error")
-                self.rebuild()
-
-            self.app.run_bg(work, on_error=failed)
-
-        def after_files() -> None:
-            if rec.prefix and Path(rec.prefix).exists():
-                self.win.ask(
-                    "Also delete the local Wine prefix?\nIt may contain your save files. This cannot be undone.",
-                    lambda: remove(True),
-                    on_no=lambda: remove(False),
-                    danger=True,
-                    game=rec.game_id,
-                    on_cancel=stop,
-                )
-            else:
-                remove(False)
-
-        what = "its shortcuts and the install cache on the server" if and_server_cache else "its shortcuts"
-        self.win.ask(
-            f"Delete the game files of {rec.name}, {what}?",
-            start,
-            danger=True,
-            game=rec.game_id,
-        )
+        run_uninstall(self.win, rec, and_server_cache, self.rebuild)
 
 
 ROLE_COVER, ROLE_PROGRESS, ROLE_INSTALLED, ROLE_CORNER, ROLE_ABSENT, ROLE_PULSE, ROLE_BUSY, ROLE_SETUP, ROLE_UPLOAD = (Qt.UserRole + n for n in range(1, 10))
@@ -4660,10 +4814,9 @@ class MainWindow(QMainWindow):
         self.busy.end()
 
     def choose(
-        self, title: str, text: str, options: list, on_choose, skip: str | None = None, confirm: bool = False,
-        game: int | None = None,
+        self, title: str, text: str, options: list, on_choose, skip: str | None = None, game: int | None = None,
     ) -> None:
-        self.push(ChoicePage(self, title, text, options, on_choose, skip, confirm, game))
+        self.push(ChoicePage(self, title, text, options, on_choose, skip, game))
 
     def checklist(self, title: str, text: str, items: list, on_done) -> None:
         self.push(ChecklistPage(self, title, text, items, on_done))

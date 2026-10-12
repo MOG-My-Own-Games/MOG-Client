@@ -156,3 +156,22 @@ def test_pruning_never_goes_outside_the_keep_folders_or_into_a_link(tmp_path):
     (root / "Game" / "link").symlink_to(target)
     installdirs.prune_empty(root / "Game", [root])
     assert (root / "Game" / "link").is_symlink() and target.is_dir()
+
+
+def test_a_folder_is_measured_by_the_files_under_it_and_links_are_not_followed(tmp_path):
+    folder = tmp_path / "Game"
+    (folder / "data").mkdir(parents=True)
+    (folder / "a.bin").write_bytes(b"x" * 100)
+    (folder / "data" / "b.bin").write_bytes(b"y" * 50)
+    outside = tmp_path / "big.bin"
+    outside.write_bytes(b"z" * 10_000)
+    (folder / "link.bin").symlink_to(outside)
+    assert installdirs.folder_size(folder) == 150 + len(str(outside))  # the link counts as a link
+    assert installdirs.folder_size(tmp_path / "nowhere") == 0
+
+
+def test_the_games_are_listed_biggest_first_and_those_without_a_size_last():
+    recs = [InstalledGame(i, name, f"/g/{name}") for i, name in enumerate(["b", "A", "c", "d"], start=1)]
+    sizes = {1: 5, 2: 900, 3: None}  # "d" was never measured
+    assert [r.name for r, _ in installdirs.by_size(recs, sizes)] == ["A", "b", "c", "d"]
+    assert [s for _, s in installdirs.by_size(recs, sizes)] == [900, 5, None, None]
