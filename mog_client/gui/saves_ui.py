@@ -207,18 +207,18 @@ class SaveSync:
             self.win.message(f"No save files found for {rec.name} yet", "info")
         elif status == "needs-prefix":
             if quiet:
-                self.win.message(f"Where does {rec.name} keep its saves? Open its Options > Where is the prefix", "warning")
+                self.win.message(f"Where does {rec.name} keep its saves? Open its Options > Linux Options > Prefix location", "warning")
             else:
                 self.choose_prefix(rec, retry)
         elif status == "restore-pending":
             text = (
                 f"Saves from another machine are waiting for {rec.name}, so nothing was backed up: that would replace them. "
-                "Start the game once and close it, or pick them in Options > Restore a saved version."
+                "Start the game once and close it, or pick them in Options > Saves... > Restore a saved version."
             )
             self.win.notify(text) if quiet else self.win.message(text, "warning")
         elif status == "needs-confirmation":
             if quiet:
-                self.win.message(f"Confirm which folders are {rec.name}'s saves: Options > Back up saves now", "warning")
+                self.win.message(f"Confirm which folders are {rec.name}'s saves: Options > Saves... > Back up saves now", "warning")
             else:
                 self.confirm_folders(rec, result.folders, retry, native=rec.native)
         elif status == "needs-folder" and not quiet:
