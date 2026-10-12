@@ -28,9 +28,9 @@ Save sync can be switched off for all games in Settings or for one game in its O
   first). When both sides changed nothing is overwritten, you are told, and the choice is offered when the game is started
   from MOG.
 - **When the game ends** (started from MOG, its desktop entry or its Steam shortcut), when MOG opens (for games started by
-  hand), on "Back up saves now" and when the game is uninstalled.
+  hand), on Options > Saves... > "Back up saves now" and when the game is uninstalled.
 - **Before the game starts**: a newer save from another machine is offered when started from MOG, after an install, and
-  under Options > "Restore a saved version...".
+  under Options > Saves... > "Restore a saved version...".
 - A restore never replaces a file without first copying it to a backup (`saves/<game id>/backups` in the client's data
   folder).
 

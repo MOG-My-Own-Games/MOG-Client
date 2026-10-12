@@ -37,16 +37,61 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
 - Options:
-  - **Launch engine**: per game, overrides the one in Settings.
+  - **Linux Options** (only on Linux; not shown on Windows or other systems) opens a menu on top of this one, with a
+    Back button (not Close) that returns here; the engine and Proton lists it opens say Back too, and return to it:
+    - **Engine: ..., version** (shown as `Engine: umu-launcher, GE-Proton9-27`; in the second, violet gradient when the
+      engine or its version is not the default): one page with the **engine** on the left (Default, Faugus, umu, Proton,
+      Wine; the ones this device has) and, beside it, the **versions** that engine can run, which change with the engine
+      (Left and Right move between the lists). Picking only selects: **OK** applies the engine and version, **Default**
+      selects the default engine and version (apply them with OK), and Back leaves without changing anything.
+      - Faugus, umu and Proton run Proton builds: the Default, the builds on this device (Steam's library,
+        `compatibilitytools.d`) and the last Proton-GE of every major (GE-Proton8-32, GE-Proton9-27, ...; the list comes
+        from GitHub, kept for a day), as an old game often runs best on an old major.
+      - Wine runs the system's wine or a build Lutris or Bottles keeps.
+      - The engine is per game and overrides the one in Settings; the launch script is rewritten, so the desktop entry and
+        Steam shortcut follow. A Proton version is kept on the server (after choosing you say whether it holds for all of the
+        game's devices or only this one); the engine and a Wine build stay on this device.
+      - A Proton-GE this device lacks is **downloaded when you choose it** (once, checked against its SHA-512, into
+        `~/.local/share/Steam/compatibilitytools.d`, where Steam, Faugus and umu look), because Faugus does not fetch a
+        build itself. The same happens the first time you play a game on a device that lacks the build its other devices use.
+      - When something set here or on another device is not on this machine (an engine, a Proton or Wine build), a warning
+        says so when it is chosen and when you play: "The selected Proton build X was not found, so the default Y is used".
+        The game starts with the default.
+    - **Wine configuration (winecfg)** (Windows games): opens winecfg in the game's prefix; the button reads "winecfg is open..." until it is
+      closed. What it changed (Windows version, DLL overrides, Direct3D, DirectSound, X11 and virtual desktop options) is
+      kept on the server the same way. When you play on a device, the Proton build and settings the server holds for the
+      game are taken first (once for the same settings), and the game starts even when that fails.
+    - **Winetricks** (Windows games): a list of the usual verbs (vcrun2019, dotnet48, d3dx9, ...); the ones already in the prefix
+      are ticked. Pressing Done installs the newly ticked ones into the game's prefix, unattended, through the game's
+      engine (`umu-run winetricks` for umu and Faugus; winetricks itself, on the prefix, for Wine and Proton, which needs it
+      installed). The button reads "winetricks is running..." meanwhile. Like winecfg, you then say whether the verbs hold
+      for all of the game's devices or only this one, and they are kept on the server: when the game is reinstalled, or played on
+      another device, the verbs it lacks are installed into the new prefix before the game starts (before the winecfg
+      settings are applied). Verbs cannot be removed from here.
+    - **Prefix location**: where the game's Wine prefix is, for the save sync (shown when save sync is on).
   - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts.
   - **Refresh metadata**: fetches the metadata and artwork from the server again and rebuilds the icons and entries,
     editing the Steam shortcut in place.
   - **Repair: check the installed files**: compares every file the server installed with the server's hash and
     downloads again each one that differs or is missing. It needs the install cache to still be on the server, shows in
     the sidebar as "Checking files...", and replaces a file you changed yourself.
-  - Save sync options (see [SAVES.md](SAVES.md)).
-  - **Uninstall** from this device, **delete the install cache** on the server, or both. Uninstalling asks before
-    deleting `pfx/`, which may hold save files; if you keep it, everything else in the folder goes.
+  - **Saves...** opens a menu (Back returns to Options) with a **Save sync (this game)** switch and, while it is on,
+    **Back up saves now**, **Restore a saved version...** and, while a restore is waiting, **Cancel restoring saves**
+    (see [SAVES.md](SAVES.md)).
+  - **Uninstall...** opens a menu (Back returns to Options) with **Uninstall from this device**, **Uninstall and delete
+    the server cache** and **Delete server cache only**. Uninstalling asks before deleting `pfx/`, which may hold save
+    files; if you keep it, everything else in the folder goes. For a game that is not installed here, Options shows
+    **Delete server cache only** directly.
+- **When the server cannot be reached**, what is changed in a game's Linux Options (the Proton version, what winecfg and
+  winetricks did) is not lost: it is written to `launch-outbox.json` in the data folder and kept there until the server
+  answers that it has it. It is sent again every 15 seconds while the client is open and before a game starts. A later change
+  to the same thing replaces the one waiting, and what waits is never replaced by the server's older value (the next Play
+  does not undo it). A change the server refuses for good (a 4xx such as an unknown game, or a verb it does not accept) is
+  dropped and logged so it does not block the rest. A change meant for "only this device" waits until this machine has a
+  name on the server; it is never sent for all devices instead. The file outlives an uninstall of the game.
+- Under the header the strip of thumbnails holds the game's videos first (Intro, then Gameplay, with a play mark and
+  the kind along the foot) and its screenshots after. Opening a screenshot shows it full size; opening a video opens it
+  in the browser, as the client has no player of its own. The videos are the ones the server lists for the game.
 - A game whose folder on the server has a `mods` folder gets a Mods button. Each top-level folder or archive in it is
   one mod (`mods/mod1/file.zip` and `mods/mod2.zip` are mod1 and mod2). Picking one downloads it to the `mods` folder of
   the game's own folder (nothing is installed, and save sync leaves the file alone). A folder is zipped by the server
