@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
@@ -33,7 +33,9 @@ def win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(config, "config_dir", lambda: tmp_path / "config")
     monkeypatch.setattr(launcher, "_known", ["faugus", "umu", "wine"])
     config.save_settings(Settings(base="http://server:5000", user="u", password="p"))
-    window = gui.MainWindow(gui.App())
+    app = gui.App()
+    monkeypatch.setattr(app, "fetch_videos", lambda game_id: None)  # no test reaches for the network
+    window = gui.MainWindow(app)
     window.resize(1100, 640)
     window.show()
     yield window
@@ -3046,3 +3048,576 @@ def test_a_game_page_that_was_already_built_follows_an_install_that_starts_elsew
     win.app.bridge.activity.emit()
     pump(qapp)
     assert page.first.text() == "Install"
+
+
+def test_a_game_page_lists_its_videos_before_the_screenshots_and_opens_one_in_the_browser(win, qapp, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    page = win.current_page()
+    shot = QPixmap(64, 36)
+    shot.fill()
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    shot.save(buffer, "PNG")
+    blob = bytes(buffer.data())
+
+    page._on_image(page.shot_urls[0], blob)
+    page._on_video(41, {"kind": "intro", "video_id": "abcdefghijk", "title": "Trailer"}, blob)
+    page._on_video(41, {"kind": "gameplay", "video_id": "lmnopqrstuv", "title": "Play"}, blob)
+    page._on_video(99, {"kind": "intro", "video_id": "zzzzzzzzzzz", "title": "Other game"}, blob)  # not this page's
+
+    ids = [page.shots.item(i).data(gui.VIDEO_ROLE) for i in range(page.shots.count())]
+    assert ids == ["abcdefghijk", "lmnopqrstuv", None]  # videos first, in the server's order, then the screenshot
+
+    page._open_shot(page.shots.item(1))
+
+    assert opened == ["https://www.youtube.com/watch?v=lmnopqrstuv"] and win.current_page() is page  # no viewer pushed
+
+
+def test_a_game_with_videos_and_no_screenshots_still_shows_the_strip(win, qapp, monkeypatch):
+    game = _rich_game(win, monkeypatch)
+    game["igdb_metadata"]["screenshots"] = []
+    win.show_game(41)
+    win.resize(1280, 800)
+    pump(qapp)
+    page = win.current_page()
+    assert not page.shots.isVisible()
+    pix = QPixmap(64, 36)
+    pix.fill()
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    pix.save(buffer, "PNG")
+
+    page._on_video(41, {"kind": "intro", "video_id": "abcdefghijk", "title": ""}, bytes(buffer.data()))
+    pump(qapp)
+
+    assert page.shots.isVisible()
+
+
+def _texts(page):
+    return [b.text() for b in page.findChildren(QPushButton)]
+
+
+def _game_record(tmp_path, exe, **extra):
+    from mog_client.config import InstalledGame
+
+    return InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), state="installed", executable=str(tmp_path / exe), **extra)
+
+
+def _options(win, rec):
+    from types import SimpleNamespace
+
+    return gui.OptionsPage(win, SimpleNamespace(delete_server_cache=lambda: None), rec)
+
+
+def test_the_linux_entries_are_in_one_linux_page_of_the_options(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    rec = _game_record(tmp_path, "g.exe", proton="GE-Proton9-1", launcher="umu")
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: True)
+
+    options = _texts(_options(win, rec))
+    assert "Linux Options" in options
+    assert not any(t.startswith(("Engine", "Prefix")) or "winecfg" in t for t in options)
+
+    linux = _texts(gui.LinuxOptionsPage(win, SimpleNamespace(), rec))
+    assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "Prefix location"]
+
+
+def test_a_linux_game_has_no_winecfg_no_version_and_no_prefix_location_without_save_sync(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+
+    linux = _texts(gui.LinuxOptionsPage(win, SimpleNamespace(), _game_record(tmp_path, "start.sh", proton="X")))
+
+    assert linux == ["Engine: default"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_the_linux_button_is_only_on_linux(win, tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(gui.sys, "platform", platform)
+
+    assert "Linux Options" not in _texts(_options(win, _game_record(tmp_path, "g.exe")))
+
+
+def test_choosing_linux_opens_its_page(win, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    rec = _game_record(tmp_path, "g.exe")
+    pushed = []
+    monkeypatch.setattr(win, "back", lambda: None)
+    monkeypatch.setattr(win, "push", pushed.append)
+
+    page = _options(win, rec)
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Linux Options").click()
+
+    assert [type(p) for p in pushed] == [gui.LinuxOptionsPage]
+
+
+def test_the_menus_opened_from_a_menu_say_back_and_return_to_it_where_the_first_says_close(win, qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {})
+    rec = _game_record(tmp_path, "g.exe")
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    game = win.current_page()
+    options = gui.OptionsPage(win, game, rec)
+    win.push(options)
+    pump(qapp)
+    assert win.modal.close_button.text() == "Close"
+
+    next(b for b in options.findChildren(QPushButton) if b.text() == "Linux Options").click()
+    pump(qapp)
+    linux = win.current_page()
+    assert isinstance(linux, gui.LinuxOptionsPage) and win.modal.close_button.text() == "Back"
+
+    win.push(gui.EnginePage(win, rec, lambda _engine, _version: None))
+    pump(qapp)
+    assert win.modal.close_button.text() == "Back"
+
+    win.modal.close_button.click()  # Back: to Linux Options, then to Options, which says Close
+    pump(qapp)
+    assert win.current_page() is linux
+    win.modal.close_button.click()
+    pump(qapp)
+    assert win.current_page() is options and win.modal.close_button.text() == "Close"
+
+
+def _engine_page(win, rec, monkeypatch, engines=("faugus", "umu", "proton", "wine"), releases=()):
+    monkeypatch.setattr(gui, "available_launchers", lambda: list(engines))
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": engines[0])
+    return gui.EnginePage(win, rec, lambda _e, _v: None, list(releases))
+
+
+def _items(widget):
+    return [widget.item(i).text() for i in range(widget.count())]
+
+
+def test_the_engine_page_lists_the_engines_and_what_the_current_one_can_run(win, monkeypatch, tmp_path):
+    from mog_client import launcher
+    from mog_client.config import InstalledGame
+
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: {"GE-Proton9-27": "a", "Proton 9.0": "b"})
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), launcher="faugus", proton="GE-Proton8-5")
+
+    page = _engine_page(win, rec, monkeypatch, releases=["GE-Proton8-32", "GE-Proton9-27", "GE-Proton10-4"])
+
+    assert _items(page.engines) == [
+        "Default: Faugus Launcher",
+        "Faugus Launcher   \u2713",
+        "umu-launcher",
+        "Proton (system)",
+        "Wine (system)",
+    ]
+    assert _items(page.versions) == [
+        "Default (Faugus picks its own)",
+        "Proton 9.0",
+        "GE-Proton9-27",
+        "GE-Proton10-4 (downloaded when chosen)",
+        "GE-Proton8-32 (downloaded when chosen)",
+        "GE-Proton8-5 (not on this device)   \u2713",
+    ]
+
+
+def test_moving_to_another_engine_lists_that_engines_versions(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launcher
+    from mog_client.config import InstalledGame
+
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: {"Proton 9.0": "b"})
+    monkeypatch.setattr(launcher, "wine_runners", lambda: {"wine-ge-8-26": "w"})
+    monkeypatch.setattr(launcher, "system_wine_version", lambda: "wine-9.0")
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), launcher="faugus", wine="wine-ge-8-26")
+    page = _engine_page(win, rec, monkeypatch)
+
+    page.engines.setCurrentRow(2)  # umu
+    assert _items(page.versions)[:2] == ["Default (the latest Proton-GE)   \u2713", "Proton 9.0"]
+
+    page.engines.setCurrentRow(4)  # wine
+    assert _items(page.versions) == ["Default (the system's wine, wine-9.0)", "wine-ge-8-26   \u2713"]
+
+
+def test_nothing_is_applied_until_ok_and_default_selects_the_defaults(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launcher
+    from mog_client.config import InstalledGame
+
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: {"Proton 9.0": "b"})
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), launcher="faugus", proton="Proton 9.0")
+    chosen = []
+    monkeypatch.setattr(gui, "available_launchers", lambda: ["faugus", "umu"])
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": "faugus")
+    monkeypatch.setattr(win, "back", lambda: None)
+    page = gui.EnginePage(win, rec, lambda e, v: chosen.append((e, v)), [])
+    win.push(page)
+    pump(qapp)
+
+    page.engines.setCurrentRow(2)  # umu
+    page.engines.sideways.emit(1)
+    assert QApplication.focusWidget() is page.versions
+    page.versions.sideways.emit(-1)
+    assert QApplication.focusWidget() is page.engines
+
+    page.versions.setCurrentRow(1)
+    page.versions.itemActivated.emit(page.versions.item(1))  # Enter or a double click on a version only moves on
+    assert chosen == [] and QApplication.focusWidget() is page.ok
+    page.engines.itemActivated.emit(page.engines.item(2))
+    assert chosen == []
+
+    page.ok.click()
+    assert chosen == [("umu", "Proton 9.0")]
+
+    chosen.clear()
+    page.defaults.click()  # selects, and still applies nothing
+    assert chosen == [] and page.engines.currentRow() == 0 and page.versions.currentRow() == 0
+    page.ok.click()
+    assert chosen == [("auto", "")]
+
+
+def test_the_buttons_of_the_engine_page_are_in_one_row_default_ok_then_back(win, qapp, monkeypatch, tmp_path):
+    from mog_client.config import InstalledGame
+
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), executable=str(tmp_path / "g.exe"))
+    page = _engine_page(win, rec, monkeypatch)
+    win.push(page)
+    pump(qapp)
+    xs = {b.text(): b.mapTo(page, b.rect().center()) for b in (page.defaults, page.ok, win.modal.close_button)}
+
+    assert win.modal.close_button.text() == "Close" and win.modal.close_button.parentWidget() is page
+    assert xs["Default"].y() == xs["OK"].y() == xs["Close"].y() and xs["Default"].x() < xs["OK"].x() < xs["Close"].x()
+
+
+def test_a_linux_game_has_no_versions_to_pick(win, monkeypatch, tmp_path):
+    rec = _game_record(tmp_path, "start.sh")
+
+    page = _engine_page(win, rec, monkeypatch)
+
+    assert _items(page.versions) == ["A Linux game runs as it is: it has no versions"]
+
+
+def test_playing_takes_the_launch_settings_from_the_server_first_and_still_starts_when_that_fails(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings, manager
+    from mog_client.config import InstalledGame
+
+    rec = InstalledGame(game_id=41, name="G", install_dir=str(tmp_path), state="installed", executable=str(tmp_path / "g.exe"))
+    _rich_game(win, monkeypatch)  # first: loading the games drops the records that do not fit one
+    manager.save_library({41: rec})
+    win.show_game(41)
+    page = win.current_page()
+    order = []
+    monkeypatch.setattr(launchsettings, "pull", lambda *a, **k: order.append("pull"))
+    monkeypatch.setattr(page, "_play", lambda r: order.append("play"))
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    ran = []
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: ran.append(fn))
+
+    page.play()
+    ran.pop()()  # the worker
+    pump(qapp)
+    assert order == ["pull", "play"]
+
+    order.clear()
+    monkeypatch.setattr(launchsettings, "pull", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("server down")))
+    page.play()
+    ran.pop()()
+    pump(qapp)
+    assert order == ["play"]
+
+
+def test_a_linux_game_plays_without_asking_the_server_for_launch_settings(win, qapp, monkeypatch, tmp_path):
+    from mog_client import manager
+    from mog_client.config import InstalledGame
+
+    rec = InstalledGame(game_id=41, name="G", install_dir=str(tmp_path), state="installed", executable=str(tmp_path / "start.sh"))
+    _rich_game(win, monkeypatch)  # first: loading the games drops the records that do not fit one
+    manager.save_library({41: rec})
+    win.show_game(41)
+    page = win.current_page()
+    played = []
+    monkeypatch.setattr(page, "_play", lambda r: played.append(r.game_id))
+    monkeypatch.setattr(page.app, "run_bg", lambda *a, **k: pytest.fail("no worker for a Linux game"))
+
+    page.play()
+
+    assert played == [41]
+
+
+def test_the_saves_entries_are_in_a_saves_page_with_a_switch_for_the_sync(win, qapp, tmp_path, monkeypatch):
+    from mog_client import manager
+    from mog_client.gui.widgets import Toggle
+
+    rec = _game_record(tmp_path, "g.exe", save_sync=False)
+    _rich_game(win, monkeypatch)
+    manager.save_library({4: rec})
+    win.show_game(41)
+    game = win.current_page()
+    options = _texts(_options(win, rec))
+    assert "Saves..." in options
+    assert not any(t.startswith(("Save sync", "Back up", "Restore", "Cancel restoring")) for t in options)
+
+    saves = gui.SavesOptionsPage(win, game, rec)
+    switch = saves.findChildren(Toggle)[0]
+    assert not switch.isChecked() and not any(t in _texts(saves) for t in ("Back up saves now", "Restore a saved version..."))
+
+    switch.setChecked(True)  # the switch changes the game's setting and brings the buttons in
+    pump(qapp)
+    assert rec.save_sync is True or (rec.save_sync is None and win.app.settings.sync_saves)
+    assert {"Back up saves now", "Restore a saved version..."} <= set(_texts(saves))
+
+    switch.setChecked(False)
+    pump(qapp)
+    assert not any(t in _texts(saves) for t in ("Back up saves now", "Restore a saved version..."))
+    assert rec.save_sync is False or (rec.save_sync is None and not win.app.settings.sync_saves)
+
+
+def test_the_saves_page_says_back_and_its_actions_close_both_menus(win, qapp, tmp_path, monkeypatch):
+    from mog_client import manager
+
+    rec = _game_record(tmp_path, "g.exe", save_sync=True)
+    manager.save_library({4: rec})
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    game = win.current_page()
+    backed = []
+    monkeypatch.setattr(win.saves, "backup_now", lambda r: backed.append(r.game_id))
+    options = gui.OptionsPage(win, game, rec)
+    win.push(options)
+    next(b for b in options.findChildren(QPushButton) if b.text() == "Saves...").click()
+    pump(qapp)
+    saves = win.current_page()
+    assert isinstance(saves, gui.SavesOptionsPage) and win.modal.close_button.text() == "Back"
+
+    next(b for b in saves.findChildren(QPushButton) if b.text() == "Back up saves now").click()
+    pump(qapp)
+
+    assert backed == [4] and win.current_page() is game
+
+
+def test_the_uninstall_entries_are_in_an_uninstall_menu_and_a_game_not_installed_keeps_the_cache_button(win, qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+
+    rec = _game_record(tmp_path, "g.exe")
+    manager.save_library({4: rec})
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    game = win.current_page()
+    asked = []
+    monkeypatch.setattr(game, "uninstall", lambda r, and_server_cache=False: asked.append(and_server_cache))
+    monkeypatch.setattr(game, "delete_server_cache", lambda: asked.append("cache"))
+
+    texts = _texts(gui.OptionsPage(win, game, rec))
+    assert "Uninstall..." in texts
+    assert not any(t.startswith(("Uninstall from", "Uninstall and", "Delete")) for t in texts)
+    assert "Delete server cache only" in _texts(gui.OptionsPage(win, SimpleNamespace(delete_server_cache=lambda: None), None))
+
+    def open_menu():
+        options = gui.OptionsPage(win, game, rec)
+        win.push(options)
+        next(b for b in options.findChildren(QPushButton) if b.text() == "Uninstall...").click()
+        pump(qapp)
+        return win.current_page()
+
+    menu = open_menu()
+    assert isinstance(menu, gui.UninstallOptionsPage) and win.modal.close_button.text() == "Back"
+    assert _texts(menu) == ["Uninstall from this device", "Uninstall and delete the server cache", "Delete server cache only"]
+
+    for label, expected in (("Uninstall from this device", False), ("Uninstall and delete the server cache", True), ("Delete server cache only", "cache")):
+        menu = menu if isinstance(win.current_page(), gui.UninstallOptionsPage) else open_menu()
+        next(b for b in menu.findChildren(QPushButton) if b.text() == label).click()
+        pump(qapp)
+        assert asked[-1] == expected and win.current_page() is game  # both menus are closed
+
+
+def test_ok_and_the_cards_close_button_sit_in_one_row_and_it_says_back_over_another_card(win, qapp, tmp_path, monkeypatch):
+    from mog_client import manager
+
+    rec = _game_record(tmp_path, "g.exe")
+    manager.save_library({4: rec})
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    win.push(gui.SavesOptionsPage(win, win.current_page(), rec))
+    win.choose("Restore which save?", "Put a saved version back.", [("karasu: 2026-10-10 20:25", 1)], lambda _v: None, confirm=True)
+    pump(qapp)
+    page = win.current_page()
+    ok = next(b for b in page.findChildren(QPushButton) if b.text() == "OK")
+    close = win.modal.close_button
+
+    assert close.text() == "Back" and close.isVisibleTo(win.modal)
+    assert close.parentWidget() is page and ok.mapTo(page, ok.rect().center()).y() == close.mapTo(page, close.rect().center()).y()
+    assert ok.mapTo(page, ok.rect().center()).x() < close.mapTo(page, close.rect().center()).x()  # OK first, then Back
+
+    win.back()  # to Saves, which sits straight on the game page: the button goes home under the card's page, saying Close
+    pump(qapp)
+    assert win.modal.close_button.parentWidget() is win.modal.card and win.modal.close_button.text() == "Close"
+    win.back()
+    pump(qapp)
+    win.choose("Pick", "x", [("a", 1)], lambda _v: None, confirm=True)  # over the game page alone
+    pump(qapp)
+    assert win.modal.close_button.text() == "Close"
+
+
+def test_a_choice_in_linux_options_shows_in_its_button_at_once_and_in_the_second_gradient(win, qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    rec = _game_record(tmp_path, "g.exe")
+    monkeypatch.setattr(gui, "sync_enabled", lambda r, s: False)
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": "umu")
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), rec)
+    button = lambda: next(b for b in page.findChildren(QPushButton) if b.text().startswith("Engine"))  # noqa: E731
+
+    assert (button().text(), button().property("custom")) == ("Engine: default", False)
+
+    rec.proton, rec.launcher = "GE-Proton9-27", "umu"  # what the background work sets
+    win.app.bridge.finished.emit(rec.game_id + 1, "")  # another game: nothing changes
+    assert button().text() == "Engine: default"
+    win.app.bridge.finished.emit(rec.game_id, "")
+    assert (button().text(), button().property("custom")) == ("Engine: umu-launcher, GE-Proton9-27", True)
+
+    rec.launcher = "auto"  # the default engine with a version of its own is still not the default
+    win.app.bridge.finished.emit(rec.game_id, "")
+    assert (button().text(), button().property("custom")) == ("Engine: default, GE-Proton9-27", True)
+
+    rec.proton = None
+    win.app.bridge.finished.emit(rec.game_id, "")
+    assert (button().text(), button().property("custom")) == ("Engine: default", False)
+
+
+def test_the_second_gradient_is_in_the_global_style_and_differs_from_the_accent():
+    from mog_client.gui import theme, widgets
+
+    assert 'QPushButton[custom="true"] { background: qlineargradient' in theme.STYLE
+    assert widgets.CUSTOM_STOPS != widgets.ACCENT_STOPS and widgets.accent_qss(widgets.CUSTOM_STOPS) in theme.STYLE
+
+
+def _game_page(win, monkeypatch, tmp_path, **extra):
+    from mog_client import manager
+
+    rec = _game_record(tmp_path, "g.exe", **extra)
+    _rich_game(win, monkeypatch)  # first: loading the games drops the records that do not fit one
+    manager.save_library({41: rec})
+    rec.game_id = 41
+    win.show_game(41)
+    return win.current_page(), rec
+
+
+def test_playing_warns_when_what_was_set_elsewhere_is_not_on_this_machine_and_still_starts(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path, proton="GE-Proton9-27")
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    monkeypatch.setattr(launchsettings, "pull", lambda *a, **k: None)
+    monkeypatch.setattr(gui, "selection_problems", lambda r, pref: ["The selected Proton build GE-Proton9-27 was not found, so the default umu is used"])
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    told, started = [], []
+    win.app.bridge.message.connect(lambda level, text: told.append((level, text)))
+    monkeypatch.setattr(page, "_play", lambda r: started.append(1))
+
+    page.play()
+    pump(qapp)
+
+    assert told == [("warning", "The selected Proton build GE-Proton9-27 was not found, so the default umu is used")] and started == [1]
+
+
+def test_choosing_an_engine_and_version_applies_both_keeps_the_version_on_the_server_and_warns_of_what_is_missing(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings, manager
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(manager, "set_launcher", lambda r, engine, pref="auto": calls.append(("engine", engine)) or False)
+    monkeypatch.setattr(manager, "set_proton", lambda r, name, pref="auto": (setattr(r, "proton", name), calls.append(("proton", name))))
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": "umu")
+    monkeypatch.setattr(launchsettings, "needs_download", lambda r, pref: False)
+    monkeypatch.setattr(gui, "selection_problems", lambda r, pref: ["The selected Proton build GE-Proton9-27 was not found, so the default the latest Proton-GE is used"])
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: calls.append(("server", changes)))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    pushed, told = [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(gui.protonge, "available", lambda *a, **k: ["GE-Proton9-27"])
+    win.app.bridge.message.connect(lambda level, text: told.append((level, text)))
+
+    page.choose_engine(rec)
+    pump(qapp)
+    engine_page = pushed[0]
+    assert isinstance(engine_page, gui.EnginePage)
+    engine_page.on_done("umu", "GE-Proton9-27")
+    pump(qapp)
+
+    assert calls == [("engine", "umu"), ("proton", "GE-Proton9-27"), ("server", {"proton": "GE-Proton9-27"})]
+    assert [lvl for lvl, _t in told] == ["info", "warning"] and "GE-Proton9-27" in told[0][1]
+
+
+def test_winetricks_lists_the_verbs_with_the_prefixs_ticked_and_installs_only_the_new_ones(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    rec.winetricks = ["vcrun2019", "custom9"]
+    pushed, ran, told, kept = [], [], [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda r, pref, verbs: (ran.append(verbs), r.winetricks.extend(verbs)))
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: kept.append(changes))
+    monkeypatch.setattr(win, "message", lambda text, level="info", **k: told.append(text))
+    win.app.bridge.message.connect(lambda level, text: told.append(text))
+
+    page.open_winetricks(rec)
+    checklist = pushed[0]
+    assert isinstance(checklist, gui.ChecklistPage)
+    labels = {checklist.list.item(i).data(Qt.UserRole): (checklist.list.item(i).text(), checklist.list.item(i).checkState() == Qt.Checked) for i in range(checklist.list.count())}
+    assert labels["vcrun2019"][1] is True and labels["dotnet48"][1] is False
+    assert labels["custom9"] == ("custom9 (set elsewhere)", True)  # a verb from another device that is not in the catalog
+
+    checklist.on_done(["vcrun2019", "custom9"])  # nothing new
+    assert ran == [] and "Nothing new" in told[-1]
+
+    checklist.on_done(["vcrun2019", "dotnet48", "d3dx9"])
+    pump(qapp)
+
+    assert ran == [["dotnet48", "d3dx9"]] and "winetricks" not in page.app.jobs.get(rec.game_id, "")
+    assert kept == [{"winetricks": ["vcrun2019", "custom9", "dotnet48", "d3dx9"]}]  # asks where it holds, as winecfg does
+    assert any("dotnet48, d3dx9 installed" in t for t in told)
+
+
+def test_a_failed_winetricks_says_so_keeps_nothing_and_frees_the_game(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    pushed, errors, kept = [], [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(win, "message", lambda *a, **k: None)
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: kept.append(changes))
+
+    def fail(*a, **k):
+        raise RuntimeError("winetricks is not installed")
+
+    monkeypatch.setattr(launchsettings, "run_winetricks", fail)
+    win.app.bridge.error.connect(errors.append)
+
+    page.open_winetricks(rec)
+    pushed[0].on_done(["vcrun2019"])
+    pump(qapp)
+
+    assert errors == ["winetricks: winetricks is not installed"] and kept == [] and rec.game_id not in page.app.jobs
+
+
+def test_the_poll_sends_the_launch_settings_the_server_has_not_taken_and_only_when_some_wait(win, qapp, monkeypatch):
+    from mog_client import launchsettings
+
+    sent = []
+    fake = type("C", (), {"notifications": lambda self: {"notifications": [], "unread": 0}})()
+    monkeypatch.setattr(win.app, "client", lambda: fake)
+    monkeypatch.setattr(launchsettings, "flush_all", lambda client, say: sent.append(client))
+    monkeypatch.setattr(gui.threading, "Thread", lambda target, daemon=True: type("T", (), {"start": lambda self: target()})())
+
+    win.app.poll_notifications()
+    assert sent == []  # nothing waits
+
+    launchsettings.queue(41, {"proton": "GE-Proton9-27"}, True)
+    win.app.poll_notifications()
+    assert sent == [fake]
