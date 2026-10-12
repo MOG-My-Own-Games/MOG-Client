@@ -198,3 +198,47 @@ def test_it_says_when_it_is_still_waiting_and_when_the_game_has_shown_up(tmp_pat
 
     assert events.count("started") == 1 and events[-1] == "started"
     assert events[0] == "wait" and set(events[:-1]) == {"wait"}
+
+
+def _process(root, pid, cmdline, env):
+    folder = root / str(pid)
+    folder.mkdir()
+    (folder / "cmdline").write_bytes(cmdline.replace(" ", "\0").encode())
+    (folder / "environ").write_bytes("\0".join(f"{k}={v}" for k, v in env.items()).encode())
+
+
+def test_winecfg_is_found_by_its_own_process_in_the_games_prefix_though_it_is_no_exe_of_the_games_folder(tmp_path):
+    prefix = tmp_path / "Game" / "pfx"
+    _process(tmp_path, 100, "C:\\windows\\system32\\winecfg.exe", {"WINEPREFIX": str(prefix)})
+    _process(tmp_path, 101, "C:\\windows\\system32\\winecfg.exe", {"STEAM_COMPAT_DATA_PATH": str(prefix)})
+    _process(tmp_path, 102, "C:\\windows\\system32\\winecfg.exe", {"WINEPREFIX": str(tmp_path / "Other" / "pfx")})
+    _process(tmp_path, 103, "C:\\windows\\system32\\services.exe", {"WINEPREFIX": str(prefix)})
+    _process(tmp_path, 104, "faugus-launcher --run WINEPREFIX=x umu-run winecfg", {"HOME": "/home/u"})
+
+    assert sorted(watcher.tool_pids("winecfg", prefix, tmp_path)) == [100, 101]
+    assert watcher.running_pids(tmp_path / "Game", tmp_path) == []  # which is why the game watcher never saw it
+
+
+def test_the_wait_for_a_tool_ends_when_it_is_closed_and_not_when_the_prefixs_other_processes_linger(tmp_path):
+    prefix = tmp_path / "pfx"
+    _process(tmp_path, 100, "C:\\windows\\system32\\winecfg.exe", {"WINEPREFIX": str(prefix)})
+    _process(tmp_path, 103, "C:\\windows\\system32\\services.exe", {"WINEPREFIX": str(prefix)})
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+        if now[0] >= 5 and (tmp_path / "100").exists():
+            (tmp_path / "100" / "cmdline").write_bytes(b"")  # winecfg is closed; services.exe stays
+
+    assert watcher.wait_for_tool("winecfg", prefix, tmp_path, sleep=sleep, clock=lambda: now[0]) is True
+    assert 5 <= now[0] <= 12
+
+
+def test_a_tool_that_never_shows_up_is_given_up_on(tmp_path):
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    assert watcher.wait_for_tool("winecfg", tmp_path / "pfx", tmp_path, appear_timeout=30, sleep=sleep, clock=lambda: now[0]) is False
+    assert watcher.wait_for_tool("winecfg", tmp_path / "pfx", tmp_path, abort_before_start=lambda: True, sleep=sleep, clock=lambda: now[0]) is False
