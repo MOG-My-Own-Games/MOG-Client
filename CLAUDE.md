@@ -16,6 +16,28 @@ Do not run `git commit`, `git push`, or open a PR unless the user explicitly
 asks for that specific action in that turn. Implementing and testing a
 change is not itself a request to commit it.
 
+## Prepare the commits, never make them
+
+Whatever you change, write down the commit it will become in `TODO-commits.md` at the root of the repo, in the same turn
+and without committing (the rule above stands). The file is gitignored: the commit-only agent (`.kilo/AGENTS.md`) works
+from it, so it does not have to read the whole diff to group the work.
+
+One entry per logical change, in the order the commits should be made, as a message line and a line of files:
+
+```
+feat(scope): imperative description
+path/one.py:12-34, path/two.py:123-456
+```
+
+- The message follows `.kilo/AGENTS.md` (Conventional Commits, English, imperative, no trailing period, under 72 characters,
+  `feat`, `fix`, `chore` or `doc`; a documentation-only change is `doc`).
+- The files are relative to the repo, each with the lines of the change (`file.py:12-34`, several ranges `file.py:12-34;80-95`).
+  A new file is just its path. Tests go in the entry of the change they cover, not in one of their own.
+- When a later change touches what an entry already lists, update that entry (message and ranges) instead of adding another.
+  Re-read the ranges when you are done: edits move lines.
+- Order: backend, then client, then docs. Create the file when it is missing; never delete other entries, which are
+  waiting for the commit agent (it deletes an entry once it has committed it).
+
 ## Structure
 
 ```
@@ -34,6 +56,12 @@ mog_client/
   steam.py      shortcuts.vdf read/write + grid artwork
   selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
   scrape.py     Artwork URLs from the server's already-scraped metadata
+  winecfg.py    What winecfg changed in a prefix as .reg text: export from user.reg, and the filter an import goes through (Qt-free)
+  winetricks.py The winetricks verbs offered, the check of one from the server, and which are still to install (Qt-free)
+  protondl.py   Downloads a Proton-GE release (SHA-512 checked, safely unpacked) into compatibilitytools.d (Qt-free)
+  protonge.py   The last Proton-GE release of each major, from GitHub with a day's cache (Qt-free)
+  launchsettings.py  The game's Proton build, winecfg settings and winetricks verbs on the server: pull before play, push after a change (kept in launch-outbox.json until the server says 200, see `flush_all`), run winecfg/regedit/winetricks
+  videos.py     The server's video list for a game (Qt-free): entries, thumbnail and watch URLs
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)
     widgets.py  accent gradient (same stops as MOG-Server's --accent-gradient) + Toggle switch
     keyboard.py in-app on-screen keyboard layout/text logic; osk.py decides when it opens (MOG_OSK)
