@@ -389,6 +389,33 @@ def set_launcher(rec: InstalledGame, engine: str, preference: str = "auto") -> b
     return steam_changed
 
 
+def set_proton(rec: InstalledGame, name: str | None, preference: str = "auto") -> None:
+    """Make the game run under another Proton build (None: the engine's own). The desktop entry and the Steam shortcut run
+    the launch script, so rewriting that is all it takes."""
+    previous = rec.proton
+    rec.proton = name
+    try:
+        if sys.platform != "win32":
+            write_launch_script(rec, preference)
+    except (RuntimeError, OSError):
+        rec.proton = previous
+        raise
+    _update(rec, proton=name)
+
+
+def set_wine(rec: InstalledGame, name: str | None, preference: str = "auto") -> None:
+    """Make the game run under another Wine build (None: the system's), as `set_proton` does for Proton."""
+    previous = rec.wine
+    rec.wine = name
+    try:
+        if sys.platform != "win32":
+            write_launch_script(rec, preference)
+    except (RuntimeError, OSError):
+        rec.wine = previous
+        raise
+    _update(rec, wine=name)
+
+
 def refresh_launch_files(settings: Settings) -> None:
     """Write every installed game's launch script (a batch file on Windows) and entries again, so they
     hold what this version knows. Run once after an update. On Linux the entries already run the script, so
