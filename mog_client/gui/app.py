@@ -118,7 +118,7 @@ from mog_client.gui.logview import LogView
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
 from mog_client.gui.modal import FitScrollArea, ModalHost
 from mog_client.gui.overlay import MessageOverlay
-from mog_client.gui.pictures import largest_pixmap
+from mog_client.gui.pictures import largest_pixmap, with_play_badge
 from mog_client.gui.playing import PlayingOverlay
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
@@ -139,21 +139,27 @@ from mog_client.gui.widgets import (
     clear_icon,
 )
 from mog_client.launcher import (
+    Version,
     available_launchers,
     client_command,
     detect_launcher,
+    effective_launcher,
+    engine_versions,
     ensure_scanned,
     launch,
     launch_failure,
     launcher_label,
     list_executables,
+    list_proton_builds,
     pfx_dir,
     remember_client,
+    selection_problems,
 )
 from mog_client.progress import RateMeter, format_eta
 from mog_client.saves import devices, runner, sync
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
+from mog_client import launchsettings, protonge, videos, winetricks
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
@@ -220,6 +226,7 @@ class Bridge(QObject):
     note = Signal(str)  # only the log
     cover = Signal(int, bytes)
     image = Signal(str, bytes)  # url, bytes (screenshots)
+    video = Signal(int, object, bytes)  # game id, the video ({"kind", "video_id", "title"}), its thumbnail
     user = Signal(str, object)  # who is signed in: user name, avatar bytes (or None)
     icon = Signal(int, bytes)  # game id, its small icon (the active installs list)
     header_art = Signal(int, bytes)  # game id, the hero or banner behind its page's header
@@ -260,7 +267,7 @@ class App:
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
-        self.jobs: dict[int, str] = {}  # games being set up ("setup") or removed ("uninstall"), shown on their main button
+        self.jobs: dict[int, str] = {}  # games with a job (see JOB_TEXT), shown on their main button
         self._icons_asked: set[int] = set()
         self.mods: dict[int, list[dict]] = {}  # each game's mods, once asked
         self.mod_jobs: dict[tuple[int, str], tuple[str, int]] = {}  # (game, mod) -> (stage, percent) while it is fetched
@@ -309,7 +316,10 @@ class App:
 
         def work():
             try:
-                self.bridge.notifications.emit(self.client().notifications())
+                client = self.client()
+                if launchsettings.has_waiting():  # launch settings the server has not taken yet: sent as soon as it can
+                    launchsettings.flush_all(client, lambda m: self.bridge.note.emit(m))
+                self.bridge.notifications.emit(client.notifications())
             except Exception:  # noqa: BLE001, S110 - the inbox is best effort, a failed poll just retries
                 pass
 
@@ -517,6 +527,26 @@ class App:
 
             with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
                 list(pool.map(one, enumerate(urls)))
+
+        self.run_bg(work, on_error=lambda _m: None)
+
+    def fetch_videos(self, game_id: int) -> None:
+        """The game's videos, one signal each in the server's order (the thumbnails are fetched one after another, so
+        the page can add them as they come and keep that order)."""
+
+        def work() -> None:
+            for entry in self.client().videos(game_id):
+                url = videos.thumbnail_url(entry["video_id"])
+                cache = data_dir() / "shots" / hashlib.sha1(url.encode()).hexdigest()
+                if not cache.is_file():
+                    try:
+                        blob = fetch_url(url)
+                    except RuntimeError as e:
+                        logstore.warning(f"Could not fetch the thumbnail of the video {entry['video_id']}: {e}")
+                        continue
+                    cache.parent.mkdir(parents=True, exist_ok=True)
+                    cache.write_bytes(blob)
+                self.bridge.video.emit(game_id, entry, cache.read_bytes())
 
         self.run_bg(work, on_error=lambda _m: None)
 
@@ -751,6 +781,8 @@ class Page(QWidget):
     modal = False  # drawn as a small card over the page beneath it (see ModalHost) instead of filling the window
     compact = False  # a modal card sized to what the page holds (a question), not the full-size card
     show_close = True  # a modal card's own Close button; off where the page has its own way out
+    close_text: str | None = None  # what that button says; by default Close, or Back on a card opened from another card
+    button_row: QHBoxLayout | None = None  # the page's own row of buttons (OK, Done): the Close button joins it, in line
 
     def focus_default(self) -> None:
         self.setFocus()
@@ -1098,6 +1130,166 @@ class ModsPage(Page):
         self.render()
 
 
+def add_option_button(
+    win: "MainWindow", lay: QVBoxLayout, text: str, action, danger: bool = False, pop: int = 1
+) -> QPushButton:
+    """A row of an options page: one width for all, centered; choosing it closes `pop` pages (this one, and the menus
+    below it that `action` is not to come back to; none for a row that opens a menu of its own) and runs `action`."""
+    button = QPushButton(text)
+    button.setProperty("danger", danger)
+    button.setFixedWidth(OPTIONS_BUTTON_WIDTH)
+    button.setMinimumHeight(button.sizeHint().height())  # a short window scrolls the list, it never squeezes a button
+    button.clicked.connect(lambda: ([win.back() for _ in range(pop)], action()))
+    lay.addWidget(button, 0, Qt.AlignHCenter)
+    return button
+
+
+def mark_custom(button: QPushButton, text: str, custom: bool) -> None:
+    """Set a button's text and whether it is drawn in the second gradient (a setting that is not at its default)."""
+    button.setText(text)
+    button.setProperty("custom", custom)
+    button.style().unpolish(button)
+    button.style().polish(button)
+
+
+class LinuxOptionsPage(Page):
+    """What only a Linux install has: the launch engine, the Proton build, winecfg and where the prefix is."""
+
+    modal = True
+    compact = True
+
+    title = "Linux Options"
+
+    def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame):
+        super().__init__()
+        self.win, self.rec = win, rec
+        self.first: QPushButton | None = None
+        self.engine_button: QPushButton | None = None
+        content = QWidget()
+        lay = QVBoxLayout(content)
+
+        def add(text: str, action, pop: int = 2) -> QPushButton:
+            # Two pages to close (this one and Options) unless the row opens a list that comes back here.
+            button = add_option_button(win, lay, text, action, pop=pop)
+            self.first = self.first or button
+            return button
+
+        self.engine_button = add("", lambda: page.choose_engine(rec), pop=0)
+        if not rec.native:
+            add("Wine configuration (winecfg)", lambda: page.open_winecfg(rec))
+            add("Winetricks", lambda: page.open_winetricks(rec), pop=0)
+        if sync_enabled(rec, win.app.settings):
+            add("Prefix location", lambda: win.saves.choose_prefix(rec))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(FitScrollArea(content))
+        self.refresh()
+        win.app.bridge.finished.connect(self._changed)  # a choice made in a list opened from here is applied in the background
+
+    def _changed(self, game_id: int, _error: str) -> None:
+        if game_id == self.rec.game_id:
+            self.refresh()
+
+    def refresh(self) -> None:
+        """What the engine and its version are now; one that is not the default shows in the second gradient."""
+        rec = self.rec
+        engine = launcher_label(rec.launcher) if rec.launcher != "auto" else "default"
+        version = rec.wine if (detect_launcher(effective_launcher(rec, self.win.app.settings.launcher)) == "wine") else rec.proton
+        text = f"Engine: {engine}" + (f", {version}" if version and not rec.native else "")
+        mark_custom(self.engine_button, text, rec.launcher != "auto" or bool(version and not rec.native))
+
+    def focus_default(self) -> None:
+        if self.first:
+            self.first.setFocus()
+
+
+class SavesOptionsPage(Page):
+    """The save sync of one game: its switch, and, while it is on, backing up and restoring by hand."""
+
+    modal = True
+    compact = True
+
+    title = "Saves"
+
+    def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame):
+        super().__init__()
+        self.win, self.page, self.rec = win, page, rec
+        self.sync = Toggle()
+        self.sync.setChecked(sync_enabled(rec, win.app.settings))
+        self.sync.toggled.connect(self._toggled)
+        row = OptionRow(
+            "Save sync (this game)",
+            "Back this game's saves up to the server and bring newer ones from your other devices.",
+            self.sync,
+        )
+        row.setFixedWidth(OPTIONS_BUTTON_WIDTH)
+        self.actions = QVBoxLayout()
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.addWidget(row, 0, Qt.AlignHCenter)
+        lay.addLayout(self.actions)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(FitScrollArea(content))
+        self._fill()
+
+    def _toggled(self, wanted: bool) -> None:
+        self.page.set_save_sync(self.rec, wanted)
+        self._fill()
+
+    def _fill(self) -> None:
+        """The buttons for backing up and restoring, which only mean something while the sync is on."""
+        while self.actions.count():
+            item = self.actions.takeAt(0)
+            if widget := item.widget():
+                widget.setParent(None)
+                widget.deleteLater()
+        if not sync_enabled(self.rec, self.win.app.settings):
+            return
+        rec, saves = self.rec, self.win.saves
+        add_option_button(self.win, self.actions, "Back up saves now", lambda: saves.backup_now(rec), pop=2)
+        add_option_button(self.win, self.actions, "Restore a saved version...", lambda: saves.restore_pick(rec), pop=0)
+        if rec.game_id in saves.restoring:
+            add_option_button(self.win, self.actions, "Cancel restoring saves", lambda: saves.cancel_restore(rec.game_id), pop=2)
+
+    def focus_default(self) -> None:
+        self.sync.setFocus()
+
+
+class UninstallOptionsPage(Page):
+    """Taking a game off this device and/or its install cache off the server: each row asks before it does anything."""
+
+    modal = True
+    compact = True
+
+    title = "Uninstall"
+
+    def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame):
+        super().__init__()
+        self.first: QPushButton | None = None
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        partial = rec.state not in ("installed", "awaiting_executable")
+        rows = [
+            ("Discard the partial download" if partial else "Uninstall from this device", lambda: page.uninstall(rec)),
+            (
+                "Discard it and delete the server cache" if partial else "Uninstall and delete the server cache",
+                lambda: page.uninstall(rec, and_server_cache=True),
+            ),
+            ("Delete server cache only", page.delete_server_cache),
+        ]
+        for text, action in rows:
+            button = add_option_button(win, lay, text, action, danger=True, pop=2)
+            self.first = self.first or button
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(FitScrollArea(content))
+
+    def focus_default(self) -> None:
+        if self.first:
+            self.first.setFocus()
+
+
 class OptionsPage(Page):
     """The less common actions of a game: launch engine, shortcuts, and deleting it here or on the server."""
 
@@ -1113,40 +1305,21 @@ class OptionsPage(Page):
         content = QWidget()
         lay = QVBoxLayout(content)
 
-        def add(text: str, action, danger: bool = False) -> None:
-            button = QPushButton(text)
-            button.setProperty("danger", danger)
-            button.setFixedWidth(OPTIONS_BUTTON_WIDTH)  # one width for all, centered
-            button.setMinimumHeight(button.sizeHint().height())  # a short window scrolls the list, it never squeezes a button
-            button.clicked.connect(lambda: (win.back(), action()))
-            lay.addWidget(button, 0, Qt.AlignHCenter)
+        def add(text: str, action, danger: bool = False, pop: int = 1) -> None:
+            button = add_option_button(win, lay, text, action, danger, pop)
             self.first = self.first or button
 
         if rec and rec.state == "installed" and installdirs.present(rec):
-            if sys.platform != "win32":
-                engine = f"{launcher_label(rec.launcher)} (this game)" if rec.launcher != "auto" else "default"
-                add(f"Launch engine: {engine}", lambda: page.choose_launcher(rec))
+            if sys.platform.startswith("linux"):
+                add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
             add("Repair: check the installed files", lambda: page.repair(rec))
-            on = sync_enabled(rec, win.app.settings)
-            add(f"Save sync: {'on' if on else 'off'} (this game)", lambda: page.toggle_save_sync(rec))
-            if on:
-                add("Back up saves now", lambda: win.saves.backup_now(rec))
-                add("Restore a saved version...", lambda: win.saves.restore_pick(rec))
-                if rec.game_id in win.saves.restoring:
-                    add("Cancel restoring saves", lambda: win.saves.cancel_restore(rec.game_id))
-                if sys.platform != "win32":
-                    add("Where is this game's prefix?", lambda: win.saves.choose_prefix(rec))
+            add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
         if rec:
-            partial = rec.state not in ("installed", "awaiting_executable")
-            add("Discard the partial download" if partial else "Uninstall from this device", lambda: page.uninstall(rec), True)
-            add(
-                "Discard it and delete the server cache" if partial else "Uninstall and delete the server cache",
-                lambda: page.uninstall(rec, and_server_cache=True),
-                True,
-            )
-        add("Delete the install cache on the server", page.delete_server_cache, True)
+            add("Uninstall...", lambda: win.push(UninstallOptionsPage(win, page, rec)), True, pop=0)
+        else:
+            add("Delete server cache only", page.delete_server_cache, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(FitScrollArea(content))
@@ -1194,7 +1367,8 @@ class ChoicePage(Page):
             lay.addWidget(header)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
-        lay.addLayout(_centered_row(*buttons))
+        self.button_row = _centered_row(*buttons)
+        lay.addLayout(self.button_row)
 
     def focus_default(self) -> None:
         self.list.setFocus()
@@ -1238,7 +1412,8 @@ class ChecklistPage(Page):
         lay = QVBoxLayout(self)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
-        lay.addLayout(_row(done))
+        self.button_row = _row(done)
+        lay.addLayout(self.button_row)
 
     def focus_default(self) -> None:
         self.list.setFocus()
@@ -1286,7 +1461,8 @@ class SteamAccountsPage(Page):
         lay = QVBoxLayout(self)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
-        lay.addLayout(_centered_row(self.everyone, go))
+        self.button_row = _centered_row(self.everyone, go)
+        lay.addLayout(self.button_row)
 
     def focus_default(self) -> None:
         self.everyone.setFocus()
@@ -1304,43 +1480,128 @@ class SteamAccountsPage(Page):
         self.on_done(accounts)
 
 
-class LauncherPage(Page):
-    """Pick the engine that starts one game; its desktop entry and Steam shortcut follow."""
+class SideList(QListWidget):
+    """A list that hands the focus to the one beside it on Left and Right (a pad has no mouse)."""
+
+    sideways = Signal(int)  # -1 for the list on the left, 1 for the one on the right
+    hands_down = False  # Down from the last row goes on to the buttons below
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() in (Qt.Key_Left, Qt.Key_Right):
+            self.sideways.emit(-1 if e.key() == Qt.Key_Left else 1)
+        elif e.key() == Qt.Key_Down and self.hands_down and self.currentRow() >= self.count() - 1:
+            self.focusNextChild()
+        else:
+            super().keyPressEvent(e)
+
+
+class EnginePage(Page):
+    """One game's launch engine on the left and, beside it, what that engine can run: the versions it supports or has
+    installed on this device. Picking only selects (Enter moves on to the next control); OK applies both, and Default selects
+    the default engine and version."""
 
     modal = True
 
-    title = "Launch engine"
+    title = "Engine and version"
 
-    def __init__(self, win: "MainWindow", rec: InstalledGame, on_done):
+    def __init__(self, win: "MainWindow", rec: InstalledGame, on_done, releases: list[str] = ()):
         super().__init__()
-        self.on_done = on_done
-        self.win = win
-        self.list = QListWidget()
+        self.win, self.rec, self.on_done, self.releases = win, rec, on_done, list(releases)
+        self.engines = SideList()
+        self.versions = SideList()
+        for widget in (self.engines, self.versions):
+            widget.setWordWrap(True)  # a long label wraps, and a list never scrolls sideways
+            widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         default = detect_launcher(win.app.settings.launcher)
-        default_label = launcher_label(default) if default else "none found"
-        entries = [("auto", f"Default (the launcher in Settings: {default_label})")]
+        entries = [("auto", f"Default: {launcher_label(default) if default else 'none found'}")]
         entries += [(name, launcher_label(name)) for name in available_launchers()]
         for key, text in entries:
             item = QListWidgetItem(text + ("   \u2713" if key == rec.launcher else ""))
             item.setData(Qt.UserRole, key)
-            self.list.addItem(item)
+            self.engines.addItem(item)
             if key == rec.launcher:
-                self.list.setCurrentItem(item)
-        if not self.list.currentItem():
-            self.list.setCurrentRow(0)
-        self.list.itemActivated.connect(self.choose)
-        note = QLabel("The game's desktop entry and Steam shortcut are updated to use it; Steam may need a restart.")
+                self.engines.setCurrentItem(item)
+        if not self.engines.currentItem():
+            self.engines.setCurrentRow(0)
+        self.engines.currentItemChanged.connect(lambda *_: self._fill_versions())
+        self.versions.hands_down = True
+        self.engines.itemActivated.connect(lambda _item: self.versions.setFocus())
+        self.engines.sideways.connect(lambda step: self.versions.setFocus() if step > 0 else None)
+        self.versions.itemActivated.connect(lambda _item: self.ok.setFocus())
+        self.versions.sideways.connect(lambda step: self.engines.setFocus() if step < 0 else None)
+        self.defaults = QPushButton("Default")
+        self.defaults.setToolTip("Select the default engine and its default version")
+        self.defaults.clicked.connect(self.select_defaults)
+        self.ok = QPushButton("OK")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.confirm)
+        note = QLabel(
+            "Pick the engine, then one of its versions. Faugus, umu and Proton run Proton builds (the last Proton-GE of each "
+            "major is offered, and downloaded when chosen); Wine runs the system's or a build Lutris or Bottles keeps."
+        )
         note.setWordWrap(True)
+        lists = QHBoxLayout()
+        for heading, widget in (("Engine", self.engines), ("Version", self.versions)):
+            column = QVBoxLayout()
+            label = QLabel(heading)
+            label.setStyleSheet("font-weight: bold;")
+            column.addWidget(label)
+            column.addWidget(widget, 1)
+            lists.addLayout(column, 1)
         lay = QVBoxLayout(self)
-        lay.addWidget(self.list, 1)
+        lay.addLayout(lists, 1)
         lay.addWidget(note)
+        self.button_row = _centered_row(self.defaults, self.ok)  # the Back button joins it
+        lay.addLayout(self.button_row)
+        self._fill_versions()
+
+    def engine(self) -> str:
+        """The engine on the left that will run the game: the one picked, or, for Default, the launcher in Settings."""
+        key = self.engines.currentItem().data(Qt.UserRole)
+        return (detect_launcher(self.win.app.settings.launcher) or "") if key == "auto" else key
+
+    def _current_version(self, engine: str) -> str:
+        return (self.rec.wine if engine == "wine" else self.rec.proton) or ""
+
+    def _fill_versions(self) -> None:
+        """What the engine now on the left can run, the game's own choice ticked."""
+        engine = self.engine()
+        self.versions.clear()
+        if self.rec.native:
+            self.versions.addItem("A Linux game runs as it is: it has no versions")
+            self.versions.item(0).setFlags(Qt.NoItemFlags)
+            return
+        listed = engine_versions(engine, self.releases)
+        wanted = self._current_version(engine)
+        if wanted and wanted not in {v.key for v in listed}:
+            listed.append(Version(wanted, f"{wanted} (not on this device)", False))
+        for version in listed:
+            item = QListWidgetItem(version.label + ("   \u2713" if version.key == wanted else ""))
+            item.setData(Qt.UserRole, version.key)
+            self.versions.addItem(item)
+            if version.key == wanted:
+                self.versions.setCurrentItem(item)
+        if not self.versions.currentItem() and self.versions.count():
+            self.versions.setCurrentRow(0)
+        if not listed:
+            self.versions.addItem("This engine has no versions to pick")
+            self.versions.item(0).setFlags(Qt.NoItemFlags)
 
     def focus_default(self) -> None:
-        self.list.setFocus()
+        self.engines.setFocus()
 
-    def choose(self, item: QListWidgetItem) -> None:
+    def select_defaults(self) -> None:
+        """Select the default engine and, in the list beside it, the engine's own pick; nothing is applied until OK."""
+        self.engines.setCurrentRow(0)  # fills the versions again
+        if self.versions.count() and self.versions.item(0).flags() & Qt.ItemIsEnabled:
+            self.versions.setCurrentRow(0)
+
+    def confirm(self) -> None:
+        engine = self.engines.currentItem().data(Qt.UserRole)
+        item = self.versions.currentItem()
+        version = item.data(Qt.UserRole) if item is not None and item.flags() & Qt.ItemIsEnabled else ""
         self.win.back()
-        self.on_done(item.data(Qt.UserRole))
+        self.on_done(engine, version or "")
 
 
 class KeyButton(QPushButton):
@@ -2179,6 +2440,16 @@ class ExecutablePage(Page):
 
 
 SHOT_SIZE = QSize(224, 126)
+# What the main button says while a game has a job: it is set up, removed, or has winecfg open.
+JOB_TEXT = {
+    "setup": "Setting up...",
+    "uninstall": "Uninstalling...",
+    "winecfg": "winecfg is open...",
+    "proton": "Downloading Proton...",
+    "winetricks": "winetricks is running...",
+}
+# Set on a strip item that is a video: its YouTube id (a screenshot has its URL in Qt.UserRole instead).
+VIDEO_ROLE = Qt.UserRole + 1
 
 
 class SearchBox(QLineEdit):
@@ -2475,6 +2746,7 @@ class GamePage(Page):
         self.shots.setFixedHeight(SHOT_SIZE.height() + 30)
         self.shot_urls = screenshot_urls(game)
         self.shot_pix: dict[str, QPixmap] = {}
+        self._videos = 0  # video thumbnails at the front of the strip
         self.shots.setVisible(bool(self.shot_urls))
         self.shots.itemActivated.connect(self._open_shot)
 
@@ -2495,6 +2767,7 @@ class GamePage(Page):
         b.log.connect(self._on_log)
         b.finished.connect(self._on_finished)
         b.image.connect(self._on_image)
+        b.video.connect(self._on_video)
         b.game_size.connect(self._on_size)
         b.game_sizes.connect(self._on_sizes)
         b.mods_loaded.connect(self._on_mods)
@@ -2503,6 +2776,7 @@ class GamePage(Page):
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.cover_for(gid)))
         b.activity.connect(self._sync_buttons)  # an install that began or ended elsewhere
         self.app.fetch_images(self.shot_urls, game["id"])
+        self.app.fetch_videos(game["id"])
         self.app.fetch_header_art(game)
         self._update_version_label()
         self.app.load_size(game["id"])
@@ -2528,7 +2802,7 @@ class GamePage(Page):
         short = self.height() < self._full_min.height() + ROOM_SLACK
         narrow = self.width() < self._full_min.width() + ROOM_SLACK
         self._short, self._narrow = short, narrow
-        self.shots.setVisible(bool(self.shot_urls) and not short)
+        self.shots.setVisible(bool(self.shot_urls or self._videos) and not short)
         self.summary.setVisible(not short)
         self.hltb_box.setVisible(self.has_hltb and not narrow)
         self.head.setContentsMargins(*((8, 8, 8, 8) if short else (14, 14, 14, 14)))
@@ -2655,10 +2929,32 @@ class GamePage(Page):
         item.setData(Qt.DecorationRole, pix.scaled(SHOT_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         item.setData(Qt.UserRole, url)
         self.shots.addItem(item)
+        self._show_strip()
+
+    def _on_video(self, game_id: int, entry: dict, blob: bytes) -> None:
+        pix = QPixmap()
+        if game_id != self.game["id"] or not pix.loadFromData(blob):
+            return
+        item = QListWidgetItem()
+        item.setData(Qt.DecorationRole, with_play_badge(pix, videos.LABELS[entry["kind"]], SHOT_SIZE))
+        item.setData(VIDEO_ROLE, entry["video_id"])
+        item.setToolTip(entry["title"])
+        self.shots.insertItem(self._videos, item)  # before the screenshots, after the videos already there
+        self._videos += 1
+        self._show_strip()
+
+    def _show_strip(self) -> None:
         if self.shots.count() == 1:
             self.shots.setCurrentRow(0)
+        if not self.shots.isVisibleTo(self) and not self._short:
+            self.shots.setVisible(True)  # a game with videos and no screenshots
+            self._fit_to_room()
 
     def _open_shot(self, item: QListWidgetItem) -> None:
+        video_id = item.data(VIDEO_ROLE)
+        if video_id:
+            QDesktopServices.openUrl(QUrl(videos.watch_url(video_id)))
+            return
         ordered = [u for u in self.shot_urls if u in self.shot_pix]
         self.win.push(ViewerPage(ordered, self.shot_pix, ordered.index(item.data(Qt.UserRole))))
 
@@ -2763,9 +3059,10 @@ class GamePage(Page):
         self._shown_key = self._buttons_key()
         self.first = None
         if job := self.app.jobs.get(gid):
-            self.status.setText("Setting up..." if job == "setup" else "Uninstalling...")
+            doing = JOB_TEXT[job]
+            self.status.setText(doing)
             self.bar.setRange(0, 0)  # the bar moves too: no figure, but it is going on
-            busy = self._button("Setting up..." if job == "setup" else "Uninstalling...", lambda: None, True)
+            busy = self._button(doing, lambda: None, True)
             busy.setEnabled(False)
             self.play_ring = SpinRing(busy)
             self.play_ring.set_active(True)
@@ -2877,9 +3174,30 @@ class GamePage(Page):
 
     def play(self) -> None:
         rec = load_library()[self.game["id"]]
+        self.pull_launch_settings(rec, lambda: self._play(rec))
+
+    def _play(self, rec: InstalledGame) -> None:
         if self.win.saves.wait_for_restore(rec, lambda: self.start(rec)):
             return  # its saves are still coming: the user was told, and can cancel that and play anyway
         self.win.saves.before_launch(rec, lambda: self.start(rec))
+
+    def pull_launch_settings(self, rec: InstalledGame, then) -> None:
+        """Take the Proton build and winecfg settings the server keeps for the game before it starts; the game starts
+        whatever happens to that."""
+        if sys.platform == "win32" or rec.native:
+            then()
+            return
+
+        def work() -> None:
+            try:
+                launchsettings.pull(self.app.client(), rec, self.app.settings.launcher, lambda m: self.app.bridge.note.emit(m))
+            except Exception as e:  # noqa: BLE001 - an unreachable server or a refused import never stops a game from starting
+                self.app.bridge.message.emit("warning", f"Could not take the launch settings from the server: {e}")
+            for problem in selection_problems(rec, self.app.settings.launcher):  # what was set elsewhere and is not here
+                self.app.bridge.message.emit("warning", problem)
+            self.app.bridge.call.emit(then)
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(then))
 
     def start(self, rec: InstalledGame) -> None:
         try:
@@ -2894,9 +3212,7 @@ class GamePage(Page):
     def show_options(self, rec: InstalledGame | None) -> None:
         self.win.push(OptionsPage(self.win, self, rec))
 
-    def toggle_save_sync(self, rec: InstalledGame) -> None:
-        now = sync_enabled(rec, self.app.settings)
-        wanted = not now
+    def set_save_sync(self, rec: InstalledGame, wanted: bool) -> None:
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
         self.win.message(f"Save sync for {rec.name} is {'on' if wanted else 'off'}", "info")
 
@@ -2977,21 +3293,135 @@ class GamePage(Page):
             game=self.game["id"],
         )
 
-    def choose_launcher(self, rec: InstalledGame) -> None:
-        def done(engine: str) -> None:
-            def work():
-                try:
-                    manager.set_launcher(rec, engine, self.app.settings.launcher)
-                except RuntimeError as e:
-                    self.app.bridge.error.emit(str(e))
-                    return
-                what = launcher_label(engine) if engine != "auto" else "the default engine"
-                self.app.bridge.message.emit(*steam_outcome(rec, f"{rec.name} now launches through {what}"))
-                self.app.bridge.finished.emit(rec.game_id, "")
+    def _keep_on_server(self, rec: InstalledGame, changes: dict, what: str) -> None:
+        """Ask whether `changes` hold for all of the game's devices or this one, and keep them on the server."""
+
+        def chosen(answer) -> None:
+            def work() -> None:
+                kept = launchsettings.push(self.app.client(), rec, changes, everywhere=answer == "all")
+                where = "all devices" if answer == "all" else "this device"
+                if kept:
+                    self.app.bridge.message.emit("info", f"{what} for {rec.name} kept on the server for {where}")
+                else:
+                    self.app.bridge.message.emit(
+                        "warning", f"{what} for {rec.name} could not reach the server: it is kept here and sent as soon as the server takes it"
+                    )
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
 
-        self.win.push(LauncherPage(self.win, rec, done))
+        self.win.choose(
+            "Which devices?",
+            f"Use this on every device that plays {rec.name}, or only on this one? Another device takes it the next time you play there.",
+            [("All devices", "all"), ("Only this device", "device")],
+            chosen,
+            game=rec.game_id,
+        )
+
+    def choose_engine(self, rec: InstalledGame) -> None:
+        """Pick the launch engine and one of the versions it can run, then apply both."""
+
+        def done(engine: str, version: str) -> None:
+            def work() -> None:
+                preference = self.app.settings.launcher
+                try:
+                    if engine != rec.launcher:
+                        manager.set_launcher(rec, engine, preference)
+                    kind = detect_launcher(effective_launcher(rec, preference))
+                    proton_changed = kind in ("faugus", "umu", "proton") and (version or None) != rec.proton
+                    if proton_changed:
+                        manager.set_proton(rec, version or None, preference)
+                    elif kind == "wine" and (version or None) != rec.wine:
+                        manager.set_wine(rec, version or None, preference)
+                except (RuntimeError, OSError) as e:
+                    self.app.bridge.error.emit(str(e))
+                    return
+                if launchsettings.needs_download(rec, preference):
+                    self.app.jobs[rec.game_id] = "proton"
+                    self.app.bridge.call.emit(self.rebuild)
+                    try:
+                        launchsettings.ensure_build(rec, preference, lambda m: self.app.bridge.note.emit(m))
+                    except RuntimeError as e:
+                        self.app.bridge.error.emit(f"Could not fetch {rec.proton}: {e}")
+                    finally:
+                        self.app.jobs.pop(rec.game_id, None)
+                what = launcher_label(engine) if engine != "auto" else "the default engine"
+                self.app.bridge.message.emit(*steam_outcome(rec, f"{rec.name} now launches through {what}" + (f", {version}" if version else "")))
+                for problem in selection_problems(rec, preference):
+                    self.app.bridge.message.emit("warning", problem)
+                self.app.bridge.finished.emit(rec.game_id, "")
+                if proton_changed:
+                    self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"proton": rec.proton}, "The Proton version"))
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
+
+        def show() -> None:
+            releases = protonge.available(data_dir() / "proton-ge.json", fetch_url)
+            self.app.bridge.call.emit(lambda: self.win.push(EnginePage(self.win, rec, done, releases)))
+
+        self.app.run_bg(show, on_error=lambda m: self.app.bridge.error.emit(m))
+
+    def open_winetricks(self, rec: InstalledGame) -> None:
+        """A list of the usual winetricks verbs, the ones already in the prefix ticked; the newly ticked are installed into it,
+        and the verbs of the prefix are kept on the server, so a reinstall or another device gets them too."""
+        items = [(f"{verb}: {text}", verb, verb in rec.winetricks) for verb, text in winetricks.CATALOG]
+        known = {verb for verb, _text in winetricks.CATALOG}
+        items += [(f"{verb} (set elsewhere)", verb, True) for verb in rec.winetricks if verb not in known]
+
+        def done(picked: list[str]) -> None:
+            todo = winetricks.missing(picked, rec.winetricks)
+            if not todo:
+                self.win.message("Nothing new to install: what is ticked is already in the prefix", "info")
+                return
+            if rec.game_id in self.app.jobs:
+                self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+                return
+            self.app.jobs[rec.game_id] = "winetricks"
+            self.rebuild()
+            self.win.message(f"Installing {', '.join(todo)} with winetricks. This can take a while.", "info")
+
+            def work() -> None:
+                try:
+                    launchsettings.run_winetricks(rec, self.app.settings.launcher, todo)
+                    ok = True
+                except RuntimeError as e:
+                    self.app.bridge.error.emit(f"winetricks: {e}")
+                    ok = False
+                finally:
+                    self.app.jobs.pop(rec.game_id, None)
+                    self.app.bridge.finished.emit(rec.game_id, "")
+                if ok:
+                    self.app.bridge.message.emit("info", f"{', '.join(todo)} installed into the prefix of {rec.name}")
+                    self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winetricks": list(rec.winetricks)}, "The winetricks verbs"))
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"winetricks: {m}"))
+
+        self.win.checklist(
+            "Winetricks",
+            "Tick what the game needs. Ticked ones are already in this prefix; the others are installed when you press Done "
+            "(it can take a while, and some need the internet).",
+            items,
+            done,
+        )
+
+    def open_winecfg(self, rec: InstalledGame) -> None:
+        """Open winecfg in the game's prefix; when it is closed, what it changed is kept on the server."""
+        if rec.game_id in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
+        self.app.jobs[rec.game_id] = "winecfg"
+        self.rebuild()
+        self.win.message(f"winecfg is open for {rec.name}. Close it when you are done.", "info")
+
+        def work() -> None:
+            try:
+                text = launchsettings.run_winecfg(rec, self.app.settings.launcher)
+            finally:
+                self.app.jobs.pop(rec.game_id, None)
+                self.app.bridge.finished.emit(rec.game_id, "")
+            manager._update(rec, winecfg_applied=launchsettings.digest(text) if text else None)
+            self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winecfg_reg": text or None}, "The Wine settings"))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"winecfg: {m}"))
 
     def choose_executable(self, rec: InstalledGame) -> None:
         """The executable and shortcuts of a game. Straight after an install the saves other machines left are offered
@@ -4124,7 +4554,7 @@ class MainWindow(QMainWindow):
         base = next(p for p in reversed(self.history) if not p.modal) if page.modal else page
         self.stack.setCurrentWidget(base)
         if page.modal:
-            self.modal.show_page(page, page.title)
+            self.modal.show_page(page, page.title, back=len(self.history) >= 2 and self.history[-2].modal)
         else:
             self.modal.hide_page()
         page, shown = base, page
