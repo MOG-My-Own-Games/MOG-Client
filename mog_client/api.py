@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import logstore, net, trace
+from mog_client import logstore, net, trace, videos
 
 POLL_INTERVAL = 3
 STREAM_TIMEOUT = 30.0  # per socket read, not for the whole transfer
@@ -606,6 +606,34 @@ class MogClient:
         paths = data.get("paths") if status == 200 and isinstance(data, dict) else None
         return [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else None
 
+    def videos(self, game_id: int) -> list[dict]:
+        """The game's intro and gameplay videos (see videos.entries); empty when it has none or the server cannot say."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/videos")
+        except RuntimeError:
+            return []
+        return videos.entries(data) if status == 200 else []
+
+    def launch_settings(self, game_id: int, device_id: int | None) -> dict | None:
+        """What the server keeps about how to launch the game: {"shared", "device"}, each None or {"proton",
+        "winecfg_reg", "updated_at"}. None when the server cannot say (an older one)."""
+        query = f"?device_id={device_id}" if device_id is not None else ""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/launch-settings{query}")
+        except RuntimeError:
+            return None
+        return data if status == 200 and isinstance(data, dict) else None
+
+    def put_launch_settings(self, game_id: int, device_id: int | None, changes: dict) -> int | None:
+        """Keep `changes` ("proton", "winecfg_reg", "winetricks"; None clears one) for this device, or for all of the game's
+        when `device_id` is None. The server's status (200: it has them), or None when it could not be reached."""
+        body = {"scope": "device" if device_id is not None else "all", "device_id": device_id, **changes}
+        try:
+            status, _content, _headers = self.c.request("PUT", f"/api/games/{game_id}/launch-settings", body=body)
+        except RuntimeError:
+            return None
+        return status
+
     def games_revision(self) -> str | None:
         """A value that changes when the server's library does, or None (an older server)."""
         try:
@@ -737,17 +765,27 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def _absolute(self, game: dict) -> dict:
+        """An image the administrator uploaded has a URL relative to the server (`/resources/media/...`); everything else here
+        takes a full URL, so it is made one."""
+        if str(game.get("cover_path") or "").startswith("/"):
+            game["cover_path"] = self.c.base + game["cover_path"]
+        for chosen in (game.get("media") or {}).values():
+            if isinstance(chosen, dict) and str(chosen.get("url") or "").startswith("/"):
+                chosen["url"] = self.c.base + chosen["url"]
+        return game
+
     def list_games(self) -> list[dict]:
         status, data = self.c.get_json("/api/games")
         if status != 200:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
-        return data
+        return [self._absolute(g) for g in data]
 
     def get_game(self, game_id: int) -> dict:
         status, data = self.c.get_json(f"/api/games/{game_id}")
         if status != 200:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
-        return data
+        return self._absolute(data)
 
 
 def fetch_url(url: str, timeout: float = 30.0) -> bytes:
