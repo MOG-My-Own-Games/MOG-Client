@@ -9,8 +9,10 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from mog_client import protondl
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -141,18 +143,163 @@ def launcher_label(name: str) -> str:
     return LAUNCHER_LABELS[name]
 
 
-def find_proton() -> Path | None:
-    """Newest Proton found in Steam's library or compatibilitytools.d."""
-    roots = [
+def _natural(name: str) -> list:
+    """A sort key that reads the numbers in a name as numbers, so GE-Proton10-1 comes after GE-Proton9-1."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
+
+
+def steam_roots() -> list[Path]:
+    return [
         Path.home() / ".local/share/Steam",
         Path.home() / ".steam/steam",
         Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
     ]
-    found = []
-    for root in roots:
+
+
+def list_proton_builds() -> dict[str, Path]:
+    """The Proton builds on this machine, by name (their folder's name), each with the `proton` script of it: the ones in
+    Steam's library and in compatibilitytools.d (where Proton-GE and UMU-Proton are put too), newest name last."""
+    found: dict[str, Path] = {}
+    for root in steam_roots():
         for pattern in ("steamapps/common/Proton*/proton", "compatibilitytools.d/*/proton"):
-            found += [p for p in root.glob(pattern) if p.is_file()]
-    return max(found, key=lambda p: p.parent.name, default=None)
+            for script in root.glob(pattern):
+                if script.is_file():
+                    found.setdefault(script.parent.name, script)
+    return {name: found[name] for name in sorted(found, key=_natural)}
+
+
+def find_proton() -> Path | None:
+    """Newest Proton found in Steam's library or compatibilitytools.d."""
+    builds = list_proton_builds()
+    return builds[next(reversed(builds))] if builds else None
+
+
+def proton_install_root() -> Path:
+    """Where a Proton build is put so Steam, Faugus and umu all find it."""
+    return steam_roots()[0] / "compatibilitytools.d"
+
+
+def resolve_proton(name: str | None, engine: str) -> tuple[str | None, str | None]:
+    """The game's chosen Proton build for the engine that will run it, as (what to hand the engine, a problem to tell).
+    Nothing chosen gives (None, None): the engine picks its own. A build on this machine is used from its folder; one
+    that is not here (it is fetched when it is chosen, or before the game starts: `protondl`) is left to umu to fetch when
+    it is a Proton-GE release and the engine is umu; for any other the engine's own pick is used and the problem says
+    so. Faugus only checks that the build is there and shows a message when it is not, so it is never told one that is not."""
+    if not name:
+        return None, None
+    if engine in ("wine", "native"):
+        return None, f"{LAUNCHER_LABELS[engine]} has no Proton builds; {name} is not used"
+    local = list_proton_builds().get(name)
+    if local is not None:
+        return (str(local) if engine == "proton" else str(local.parent)), None
+    if engine == "umu" and protondl.is_ge(name):
+        return name, None
+    return None, f"Proton build {name} is not on this device; the launcher's own is used"
+
+
+WINE_RUNNER_DIRS = (
+    ".local/share/lutris/runners/wine",
+    ".local/share/bottles/runners",
+    ".var/app/com.usebottles.bottles/data/bottles/runners",
+)
+
+
+def wine_runners() -> dict[str, Path]:
+    """The Wine builds on this machine besides the system's, by folder name, each with its `wine` program: the ones Lutris
+    and Bottles keep, newest name last."""
+    found: dict[str, Path] = {}
+    for rel in WINE_RUNNER_DIRS:
+        for program in (Path.home() / rel).glob("*/bin/wine"):
+            if program.is_file():
+                found.setdefault(program.parent.parent.name, program)
+    return {name: found[name] for name in sorted(found, key=_natural)}
+
+
+def system_wine_version() -> str | None:
+    """What `wine --version` says (wine-9.0), or None when there is none or it does not answer."""
+    program = shutil.which("wine")
+    if not program:
+        return None
+    try:
+        out = subprocess.run([program, "--version"], capture_output=True, text=True, timeout=5, env=host_environ())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def resolve_wine(name: str | None) -> tuple[Path | None, str | None]:
+    """The program of the game's chosen Wine build, as (path, a problem to tell); (None, None) for the system's."""
+    if not name:
+        return None, None
+    program = wine_runners().get(name)
+    if program is not None:
+        return program, None
+    return None, f"Wine build {name} is not on this device; the system's wine is used"
+
+
+@dataclass(frozen=True)
+class Version:
+    """One of the versions an engine can run: `key` is what is kept for the game ("" is the engine's own pick), `here` that it
+    is installed (else it is downloaded when chosen)."""
+
+    key: str
+    label: str
+    here: bool = True
+
+
+ENGINE_DEFAULTS = {
+    "faugus": "Default (Faugus picks its own)",
+    "umu": "Default (the latest Proton-GE)",
+    "proton": "Default (the newest on this device)",
+}
+
+
+def engine_versions(engine: str | None, releases: list[str] = ()) -> list[Version]:
+    """What the engine can run: for Faugus, umu and Proton the Proton builds on this device and the last Proton-GE of each major
+    (`releases`) it can have downloaded; for Wine the system's and the builds Lutris and Bottles keep. Nothing for the rest."""
+    if engine in ENGINE_DEFAULTS:
+        local = list_proton_builds()
+        out = [Version("", ENGINE_DEFAULTS[engine])]
+        out += [Version(name, name) for name in reversed(local)]
+        out += [Version(name, f"{name} (downloaded when chosen)", False) for name in reversed(releases) if name not in local]
+        return out
+    if engine == "wine":
+        system = system_wine_version()
+        out = [Version("", f"Default (the system's wine{f', {system}' if system else ''})")]
+        return out + [Version(name, name) for name in reversed(wine_runners())]
+    return []
+
+
+def _default_version(engine: str) -> str:
+    """What an engine runs when the game names no version, for a message."""
+    if engine == "faugus":
+        return "Faugus's own Proton"
+    if engine == "umu":
+        return "the latest Proton-GE"
+    if engine == "proton":
+        newest = find_proton()
+        return newest.parent.name if newest else "the system's Proton"
+    return "the system's wine"
+
+
+def selection_problems(game: InstalledGame, preference: str = "auto") -> list[str]:
+    """What the game was set to run under that this machine lacks (a choice made on another one, or by a launcher or build
+    since removed), each as a sentence saying what is used instead."""
+    if game.native or sys.platform == "win32":
+        return []
+    problems = []
+    available = available_launchers()
+    chosen = game.launcher if game.launcher and game.launcher != "auto" else None
+    if chosen and chosen not in available:
+        fallback = detect_launcher(preference)
+        instead = launcher_label(fallback) if fallback else "none (no launcher is installed)"
+        problems.append(f"The selected engine {launcher_label(chosen)} was not found, so the default {instead} is used")
+    engine = detect_launcher(effective_launcher(game, preference))
+    if engine in ENGINE_DEFAULTS and game.proton and resolve_proton(game.proton, engine)[0] is None:
+        problems.append(f"The selected Proton build {game.proton} was not found, so the default {_default_version(engine)} is used")
+    if engine == "wine" and game.wine and resolve_wine(game.wine)[0] is None:
+        problems.append(f"The selected Wine build {game.wine} was not found, so the default {_default_version('wine')} is used")
+    return problems
 
 
 # Faugus first, then umu, Proton and Wine. PortProton (between Faugus and umu in the intended
@@ -267,11 +414,19 @@ def ensure_native_permissions(install_dir: str) -> None:
 
 
 def launch_command(
-    game: InstalledGame, preference: str = "auto", require_umu: bool = True
+    game: InstalledGame,
+    preference: str = "auto",
+    require_umu: bool = True,
+    program: str | None = None,
+    args: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
-    """Command + extra environment that runs the game's chosen executable."""
-    if not game.executable:
+    """Command + extra environment that runs the game's chosen executable, or, with `program` (winecfg, regedit), that
+    program in the game's prefix through the same engine."""
+    if program is None and not game.executable:
         raise RuntimeError("no executable chosen for this game")
+    exe = program or game.executable
+    if game.native and program is not None:
+        raise RuntimeError("a Linux game runs as it is: it has no Wine prefix")
     if game.native:
         ensure_executable(game.executable)
         ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
@@ -280,18 +435,22 @@ def launch_command(
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
-        return [game.executable], {}
+        return [exe, *args], {}
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
     env = {"WINEPREFIX": str(prefix), "GAMEID": f"umu-mog-{game.game_id}"}
+    build, _problem = resolve_proton(game.proton, launcher)
+    if program == "winetricks" and launcher in ("wine", "proton"):
+        return _winetricks_command(game, launcher, prefix, build, args)
     if launcher == "wine":
-        return ["wine", game.executable], {"WINEPREFIX": str(prefix)}
+        program, _problem = resolve_wine(game.wine)
+        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix)}
     if launcher == "proton":
-        proton = find_proton()
+        proton = Path(build) if build else find_proton()
         steam_root = next(
             str(p.parent) for p in proton.parents if p.name in ("steamapps", "compatibilitytools.d")
         )
-        return [str(proton), "run", game.executable], {
+        return [str(proton), "run", exe, *args], {
             "STEAM_COMPAT_DATA_PATH": str(prefix),
             "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
         }
@@ -299,10 +458,35 @@ def launch_command(
         runner, umu_path, _ = faugus_invocation()
         if require_umu and not Path(umu_path).is_file() and not shutil.which("umu-run"):
             raise RuntimeError("open Faugus once so it can download umu-run, then try again")
-        # No PROTONPATH: Faugus picks the Proton build itself.
+        if build:  # without one Faugus picks the Proton build itself
+            env["PROTONPATH"] = build
         inline = "".join(f"{k}={shlex.quote(v)} " for k, v in env.items())
-        return [*runner, f"{inline}{shlex.quote(umu_path)} {shlex.quote(game.executable)}"], {}
-    return ["umu-run", game.executable], {**env, "PROTONPATH": "GE-Proton"}
+        tail = " ".join(shlex.quote(a) for a in (exe, *args))
+        return [*runner, f"{inline}{shlex.quote(umu_path)} {tail}"], {}
+    return ["umu-run", exe, *args], {**env, "PROTONPATH": build or "GE-Proton"}
+
+
+def _winetricks_command(
+    game: InstalledGame, launcher: str, prefix: Path, build: str | None, args: tuple[str, ...]
+) -> tuple[list[str], dict[str, str]]:
+    """winetricks run on the game's prefix: Wine's own, or, for Proton, with the build's wine and the prefix it keeps one level
+    down (what protontricks does). umu and Faugus take `winetricks` as the program like any other, so they do not come here."""
+    if not shutil.which("winetricks"):
+        raise RuntimeError("winetricks is not installed: install it from your distribution, then try again")
+    if launcher == "wine":
+        runner, _problem = resolve_wine(game.wine)
+        env = {"WINEPREFIX": str(prefix)}
+        if runner is not None:
+            env["WINE"] = str(runner)
+        return ["winetricks", *args], env
+    proton = Path(build) if build else find_proton()
+    if proton is None:
+        raise RuntimeError("no Proton build found to run winetricks with")
+    wine = next((p for p in (proton.parent / "files/bin/wine", proton.parent / "dist/bin/wine") if p.is_file()), None)
+    if wine is None:
+        raise RuntimeError(f"{proton.parent.name} has no wine to run winetricks with")
+    real_prefix = prefix / "pfx" if (prefix / "pfx").is_dir() else prefix
+    return ["winetricks", *args], {"WINEPREFIX": str(real_prefix), "WINE": str(wine)}
 
 
 # What a bundled build (PyInstaller, AppImage) puts in the environment for its own libraries and
@@ -361,10 +545,7 @@ def launch_log_path(game: InstalledGame) -> Path:
     return data_dir() / "logs" / f"launch-{game.game_id}.log"
 
 
-def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
-    """Start the game through its launcher, detached, with the launcher's output in a log file."""
-    cmd, extra = launch_command(game, preference)
-    log_path = launch_log_path(game)
+def _spawn(game: InstalledGame, cmd: list[str], extra: dict[str, str], log_path: Path) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as log:
         log.write(f"$ {shlex.join(cmd)}\n")
@@ -380,6 +561,18 @@ def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
         )
     proc.log_path = log_path  # type: ignore[attr-defined]
     return proc
+
+
+def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
+    """Start the game through its launcher, detached, with the launcher's output in a log file."""
+    cmd, extra = launch_command(game, preference)
+    return _spawn(game, cmd, extra, launch_log_path(game))
+
+
+def start_tool(game: InstalledGame, preference: str, program: str, args: tuple[str, ...] = ()) -> subprocess.Popen:
+    """Start a Wine program (winecfg, regedit) in the game's prefix through the game's engine, logged apart from the game."""
+    cmd, extra = launch_command(game, preference, program=program, args=args)
+    return _spawn(game, cmd, extra, data_dir() / "logs" / f"tool-{game.game_id}.log")
 
 
 def launch_failure(proc: subprocess.Popen, lines: int = 3) -> str | None:
