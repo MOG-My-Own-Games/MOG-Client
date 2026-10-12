@@ -11,3 +11,4 @@ dist/
 
 *.AppImage
 *.exe_version.py
+TODO-commits.md
