@@ -169,6 +169,9 @@ class InstalledGame:
     winetricks: list[str] = field(default_factory=list)
     # A digest of the winecfg settings last put into this game's prefix from the server, so they are not applied twice.
     winecfg_applied: str | None = None
+    # Whether the server has held launch settings for this game that this device sent or took: when it later holds none, they
+    # were deleted there, and the game goes back to the launcher's own (a game that never had any keeps what it has).
+    launch_synced: bool = False
     # Chosen when the install began: the game's archive is extracted as it is (it holds a game that needs no
     # installer), so a restarted session does the same.
     extract_only: bool = False

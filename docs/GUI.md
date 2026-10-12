@@ -60,7 +60,11 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
     - **Wine configuration (winecfg)** (Windows games): opens winecfg in the game's prefix; the button reads "winecfg is open..." until it is
       closed. What it changed (Windows version, DLL overrides, Direct3D, DirectSound, X11 and virtual desktop options) is
       kept on the server the same way. When you play on a device, the Proton build and settings the server holds for the
-      game are taken first (once for the same settings), and the game starts even when that fails.
+      game are taken first (once for the same settings), and the game starts even when that fails. When the settings of a game
+      were deleted on the server (its Settings tab), the game goes back to the launcher's own Proton the next time it starts and
+      the prefix is put back as it was before the winecfg settings: only the values they changed are touched (the launcher's
+      own defaults in the same keys stay), from a note kept when they were applied or made. Settings applied before that was
+      recorded, and what winetricks installed, stay in the prefix.
     - **Winetricks** (Windows games): a list of the usual verbs (vcrun2019, dotnet48, d3dx9, ...); the ones already in the prefix
       are ticked. Pressing Done installs the newly ticked ones into the game's prefix, unattended, through the game's
       engine (`umu-run winetricks` for umu and Faugus; winetricks itself, on the prefix, for Wine and Proton, which needs it

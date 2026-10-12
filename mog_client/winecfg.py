@@ -57,9 +57,10 @@ def _filtered(sections: list[tuple[str, list[str]]]) -> str:
     return f"{HEADER}\n\n" + "\n\n".join(blocks) + "\n" if blocks else ""
 
 
-def _collect(lines: list[str], header_to_key) -> list[tuple[str, list[str]]]:
+def _collect(lines: list[str], header_to_key, keep_deletes: bool = False) -> list[tuple[str, list[str]]]:
     """(key below Software\\Wine, its value lines) for the sections `header_to_key` accepts and the values `_wanted` keeps.
-    The continuation lines of a long value (`hex:...,\\`) are joined to its first line with a newline."""
+    The continuation lines of a long value (`hex:...,\\`) are joined to its first line with a newline. A value deletion
+    (`"name"=-`) is dropped, except with `keep_deletes` (our own undo text has them)."""
     sections: list[tuple[str, list[str]]] = []
     key: str | None = None
     values: list[str] | None = None
@@ -80,7 +81,7 @@ def _collect(lines: list[str], header_to_key) -> list[tuple[str, list[str]]]:
                 sections.append((key, values))
             continue
         name = _value_name(line)
-        if values is None or name is None or _DELETES.match(line) or not _wanted(key, name):
+        if values is None or name is None or (_DELETES.match(line) and not keep_deletes) or not _wanted(key, name):
             continue
         values.append(line)
         continuing = line.endswith("\\")
@@ -110,3 +111,50 @@ def clean_import(reg_text: str) -> str:
     """`reg_text` (from the server, so not trusted) reduced to the settings this module exports: any other key, key
     deletion or value deletion is dropped. Empty when nothing is left."""
     return _filtered(_collect(reg_text.splitlines(), _from_reg_header))
+
+
+def _index(reg_text: str, keep_deletes: bool = False) -> dict[tuple[str, str], tuple[str, str]]:
+    """{(key, value name), both lower case: (key, the value's text)} of a `.reg` as `export_settings` and `clean_import` leave it."""
+    found: dict[tuple[str, str], tuple[str, str]] = {}
+    for key, values in _collect(reg_text.splitlines(), _from_reg_header, keep_deletes):
+        for value in values:
+            name = _value_name(value.split("\n", 1)[0])
+            if name is not None:
+                found[(key.lower(), name.lower())] = (key, value)
+    return found
+
+
+def _reg_of(entries: list[tuple[str, str]]) -> str:
+    """`.reg` text for (key, value text) pairs, grouped by key in the order they come."""
+    sections: dict[str, list[str]] = {}
+    for key, value in entries:
+        sections.setdefault(key, []).append(value)
+    blocks = [f"[{ROOT}\\{key}]\n" if key else f"[{ROOT}]\n" for key in sections]
+    return (
+        f"{HEADER}\n\n" + "\n\n".join(block + "\n".join(values) for block, values in zip(blocks, sections.values())) + "\n"
+        if sections
+        else ""
+    )
+
+
+def undo_text(before: str, after: str) -> str:
+    """A `.reg` that puts back what changing `before` into `after` altered: a value that was not there is deleted, one that
+    was there with another value gets it back; a value that did not change is left out. Both are `.reg` text as
+    `export_settings` makes it (empty for none). Empty when nothing changed."""
+    was, now = _index(before), _index(after)
+    undo: list[tuple[str, str]] = []
+    for ident, (key, value) in now.items():
+        if ident not in was:
+            name = _value_name(value.split("\n", 1)[0])
+            undo.append((key, "@=-" if name == "@" else f'"{_VALUE.match(value).group("quoted")}"=-'))
+        elif was[ident][1] != value:
+            undo.append(was[ident])
+    return _reg_of(undo)
+
+
+def merge_undo(older: str, newer: str) -> str:
+    """Two undo texts as one: for a value both put back, the older one's (what it was before either change) wins."""
+    kept = _index(older, keep_deletes=True)
+    entries = list(kept.values())
+    entries += [pair for ident, pair in _index(newer, keep_deletes=True).items() if ident not in kept]
+    return _reg_of(entries)

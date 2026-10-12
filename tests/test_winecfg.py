@@ -56,3 +56,29 @@ def test_the_registry_file_is_found_in_a_wine_prefix_and_one_level_down_in_a_pro
     assert winecfg.find_user_reg(tmp_path) == tmp_path / "pfx" / "user.reg"
     (tmp_path / "user.reg").write_text("")
     assert winecfg.find_user_reg(tmp_path) == tmp_path / "user.reg"
+
+
+H = "Windows Registry Editor Version 5.00\n\n"
+DLL = "[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]\n"
+
+
+def test_the_undo_puts_back_old_values_and_deletes_new_ones_and_skips_what_did_not_change():
+    before = H + DLL + '"msvcp140"="native,builtin"\n"d3d9"="builtin"\n'
+    after = H + DLL + '"msvcp140"="native,builtin"\n"d3d9"="native"\n"dxgi"="native"\n'
+    undo = winecfg.undo_text(before, after)
+    assert undo == H + DLL + '"d3d9"="builtin"\n"dxgi"=-\n'
+    assert winecfg.undo_text(after, after) == ""
+    assert winecfg.undo_text("", "") == ""
+
+
+def test_the_undo_only_covers_what_the_settings_cover():
+    after = H + DLL + '"dxgi"="native"\n\n[HKEY_CURRENT_USER\\Software\\Other]\n"x"="y"\n'
+    assert "Other" not in winecfg.undo_text("", after)
+
+
+def test_two_undos_merge_with_the_older_value_winning_and_deletions_kept():
+    older = H + DLL + '"d3d9"="builtin"\n"dxgi"=-\n'
+    newer = H + DLL + '"d3d9"="native"\n"extra"=-\n'
+    merged = winecfg.merge_undo(older, newer)
+    assert '"d3d9"="builtin"' in merged and '"d3d9"="native"' not in merged
+    assert '"dxgi"=-' in merged and '"extra"=-' in merged

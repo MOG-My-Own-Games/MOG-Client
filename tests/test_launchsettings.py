@@ -81,6 +81,169 @@ def test_pulling_leaves_alone_what_the_server_does_not_hold(monkeypatch, game):
     assert game.proton == "Proton 9.0"
 
 
+def _synced(game):
+    game.launch_synced = True
+    manager.save_library({game.game_id: game})
+
+
+def test_settings_deleted_on_the_server_send_the_game_back_to_the_launchers_own(monkeypatch, game):
+    """The server held settings for the game (this device took them) and holds none now: they were deleted there, so the
+    game runs under the launcher's own Proton again and the winecfg settings count as not applied."""
+    game.proton, game.winecfg_applied = "GE-Proton9-1", launchsettings.digest(REG)
+    _synced(game)
+    monkeypatch.setattr(manager, "set_proton", lambda rec, name, pref="auto": setattr(rec, "proton", name))
+    monkeypatch.setattr(launchsettings, "apply_reg", lambda *a: pytest.fail("nothing to apply"))
+    said = []
+
+    launchsettings.pull(Server({"shared": None, "device": None, "devices": []}), game, "auto", said.append)
+
+    kept = manager.load_library()[7]
+    assert game.proton is None and kept.winecfg_applied is None and kept.launch_synced is False
+    assert "deleted on the server" in said[0] and "nothing was recorded" in said[1]  # an install from before the undo was kept
+
+
+def test_a_game_the_server_never_held_settings_for_keeps_what_it_has(monkeypatch, game):
+    game.proton = "Proton 9.0"
+    monkeypatch.setattr(launchsettings, "apply_reg", lambda *a: pytest.fail("nothing to apply"))
+
+    launchsettings.pull(Server({"shared": None, "device": None}), game, "auto")
+
+    assert game.proton == "Proton 9.0" and manager.load_library()[7].launch_synced is False
+
+
+def test_an_older_server_that_cannot_say_is_not_taken_for_having_deleted_them(monkeypatch, game):
+    game.proton = "GE-Proton9-1"
+    _synced(game)
+
+    launchsettings.pull(Server(None), game, "auto")
+
+    assert game.proton == "GE-Proton9-1" and manager.load_library()[7].launch_synced is True
+
+
+def test_a_change_still_waiting_to_be_sent_is_not_undone_by_an_empty_answer(monkeypatch, game):
+    game.proton = "GE-Proton10-1"
+    _synced(game)
+    monkeypatch.setattr(launchsettings, "waiting_fields", lambda game_id: {"proton"})
+    monkeypatch.setattr(launchsettings, "flush", lambda client, game_id, say=None: False)
+
+    launchsettings.pull(Server({"shared": None, "device": None}), game, "auto")
+
+    assert game.proton == "GE-Proton10-1"
+
+
+def test_taking_or_sending_settings_remembers_that_the_server_holds_them(monkeypatch, game):
+    monkeypatch.setattr(manager, "set_proton", lambda rec, name, pref="auto": setattr(rec, "proton", name))
+    launchsettings.pull(Server({"shared": _row("GE-Proton9-1"), "device": None}), game, "auto")
+    assert manager.load_library()[7].launch_synced is True
+
+    manager.save_library({7: InstalledGame(game_id=7, name="G", install_dir=game.install_dir, state="installed")})
+    launchsettings.push(Server(), manager.load_library()[7], {"proton": "GE-Proton9-2"}, everywhere=True)
+    assert manager.load_library()[7].launch_synced is True
+
+
+WINE_USER_REG = (
+    "WINE REGISTRY Version 2\n\n"
+    "[Software\\\\Wine\\\\DllOverrides] 1700000000\n"
+    '"msvcp140"="native,builtin"\n'  # the launcher's own default: not ours to touch
+    '"d3d9"="builtin"\n'
+)
+APPLIED = (
+    'Windows Registry Editor Version 5.00\n\n[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]\n'
+    '"msvcp140"="native,builtin"\n"d3d9"="native"\n"dxgi"="native"\n'
+)
+
+
+@pytest.fixture
+def prefix(monkeypatch, tmp_path, game):
+    folder = tmp_path / "pfx"
+    folder.mkdir()
+    (folder / "user.reg").write_text(WINE_USER_REG)
+    monkeypatch.setattr(launchsettings, "prefix_of", lambda rec: folder)
+    monkeypatch.setattr(launchsettings.config, "data_dir", lambda: tmp_path / "data")
+    imported = []
+
+    def start_tool(rec, pref, program, args=()):
+        imported.append(open(args[1]).read())  # the file is gone once regedit has read it
+        return SimpleNamespace(wait=lambda timeout: 0)
+
+    monkeypatch.setattr(launchsettings.launcher, "start_tool", start_tool)
+    monkeypatch.setattr(launchsettings.watcher, "wait_for_tool", lambda *a, **k: True)
+    return SimpleNamespace(folder=folder, imported=imported)
+
+
+def test_applying_settings_notes_only_what_they_change_in_the_prefix(game, prefix):
+    launchsettings.apply_reg(game, "auto", APPLIED)
+
+    undo = launchsettings.undo_path(game).read_text()
+    assert '"d3d9"="builtin"' in undo and '"dxgi"=-' in undo  # put back, and removed
+    assert "msvcp140" not in undo  # the launcher's own value did not change
+
+
+def test_taking_the_settings_back_puts_the_prefix_as_it_was(game, prefix):
+    launchsettings.apply_reg(game, "auto", APPLIED)
+    prefix.imported.clear()
+
+    assert launchsettings.revert_reg(game, "auto") is True
+
+    assert len(prefix.imported) == 1 and '"dxgi"=-' in prefix.imported[0] and "msvcp140" not in prefix.imported[0]
+    assert not launchsettings.undo_path(game).exists()
+    assert launchsettings.revert_reg(game, "auto") is False  # nothing is kept for a second time
+
+
+def test_a_second_application_keeps_the_oldest_value_to_put_back(game, prefix):
+    launchsettings.apply_reg(game, "auto", APPLIED)
+    (prefix.folder / "user.reg").write_text(WINE_USER_REG + '"d3d9"="native"\n"dxgi"="native"\n')
+    launchsettings.apply_reg(game, "auto", APPLIED.replace('"d3d9"="native"', '"d3d9"="disabled"'))
+
+    undo = launchsettings.undo_path(game).read_text()
+    assert '"d3d9"="builtin"' in undo and '"d3d9"="native"' not in undo  # what it was before either
+
+
+def test_settings_deleted_on_the_server_are_taken_out_of_the_prefix(monkeypatch, game, prefix):
+    launchsettings.apply_reg(game, "auto", APPLIED)
+    game.winecfg_applied = launchsettings.digest(APPLIED)
+    _synced(game)
+    prefix.imported.clear()
+    said = []
+
+    launchsettings.pull(Server({"shared": None, "device": None, "devices": []}), game, "auto", said.append)
+
+    assert len(prefix.imported) == 1 and '"dxgi"=-' in prefix.imported[0]
+    assert manager.load_library()[7].winecfg_applied is None and "taken out of its prefix" in said[-1]
+
+
+def test_when_regedit_fails_the_settings_stay_recorded_for_the_next_start(monkeypatch, game, prefix):
+    launchsettings.apply_reg(game, "auto", APPLIED)
+    game.winecfg_applied = launchsettings.digest(APPLIED)
+    _synced(game)
+    monkeypatch.setattr(
+        launchsettings.launcher, "start_tool", lambda *a, **k: SimpleNamespace(wait=lambda timeout: 1, returncode=1)
+    )
+    monkeypatch.setattr(launchsettings.launcher, "launch_failure", lambda proc: "regedit broke")
+    said = []
+
+    launchsettings.pull(Server({"shared": None, "device": None, "devices": []}), game, "auto", said.append)
+
+    kept = manager.load_library()[7]
+    assert kept.winecfg_applied is not None and kept.launch_synced is True  # tried again at the next start
+    assert launchsettings.undo_path(game).exists() and "could not be taken out" in said[-1]
+
+
+def test_winecfg_run_here_notes_what_it_changed(monkeypatch, game, prefix):
+    monkeypatch.setattr(launchsettings.launcher, "start_tool", lambda rec, pref, program, args=(): SimpleNamespace(poll=lambda: None))
+    changed = WINE_USER_REG + '"dxgi"="native"\n'
+
+    def wait(*a, **k):
+        (prefix.folder / "user.reg").write_text(changed)  # winecfg wrote the registry
+        return True
+
+    text = launchsettings.run_winecfg(game, "auto", sleep=lambda s: None, wait=wait)
+
+    assert '"dxgi"="native"' in text
+    undo = launchsettings.undo_path(game).read_text()
+    assert '"dxgi"=-' in undo and "msvcp140" not in undo
+
+
 def test_settings_from_the_server_are_filtered_before_they_reach_regedit(monkeypatch, game):
     started = []
     monkeypatch.setattr(

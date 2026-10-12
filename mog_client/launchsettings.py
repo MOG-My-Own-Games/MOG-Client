@@ -81,7 +81,14 @@ def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[
     from the ones last applied. Nothing the server lacks is touched. Raises RuntimeError when applying the settings fails."""
     flush(client, rec.game_id)  # what was changed here and not sent yet goes first, and is not overwritten by the server's older value
     unsent = waiting_fields(rec.game_id)
-    wanted = effective(client.launch_settings(rec.game_id, device_id(client)))
+    answer = client.launch_settings(rec.game_id, device_id(client))
+    wanted = effective(answer)
+    if answer is not None:  # an older server cannot say: nothing then is taken for deleted
+        if answer.get("shared") or answer.get("device"):
+            if not rec.launch_synced:
+                manager._update(rec, launch_synced=True)
+        elif rec.launch_synced:
+            _align_with_empty_server(rec, preference, unsent, say)
     if "proton" in unsent:
         wanted["proton"] = None
     if "winecfg_reg" in unsent:
@@ -99,6 +106,33 @@ def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[
         say(f"Applying the Wine settings of {rec.name} kept on the server")
         apply_reg(rec, preference, reg)
         manager._update(rec, winecfg_applied=digest(reg))
+
+
+def _align_with_empty_server(rec: InstalledGame, preference: str, unsent: set[str], say: Callable[[str], None]) -> None:
+    """The server held launch settings for the game and holds none now: someone deleted them there. The game goes back to
+    the launcher's own Proton build, and what winecfg settings changed in its prefix is put back (see `revert_reg`; if that
+    fails the next start tries again). What winetricks put there stays, since nothing can take it out; what is still waiting
+    to be sent is not touched."""
+    if rec.proton and "proton" not in unsent:
+        manager.set_proton(rec, None, preference)
+        say(f"The launch settings of {rec.name} were deleted on the server: it runs under the launcher's own Proton again")
+    if rec.winecfg_applied and "winecfg_reg" not in unsent:
+        try:
+            if revert_reg(rec, preference):
+                say(f"The Wine settings of {rec.name} were taken out of its prefix")
+            else:
+                say(f"The Wine settings of {rec.name} stay in its prefix: nothing was recorded of what they changed")
+        except (RuntimeError, OSError) as e:
+            say(f"The Wine settings of {rec.name} could not be taken out of its prefix: {e}")
+            return  # kept as they are, so the next start tries again
+        manager._update(rec, winecfg_applied=None)
+    manager._update(rec, launch_synced=False)
+
+
+def _mark_synced(game_id: int) -> None:
+    rec = config.load_library().get(game_id)
+    if rec is not None and not rec.launch_synced:
+        manager._update(rec, launch_synced=True)
 
 
 # --- Keeping changes for the server until it has them ---
@@ -179,6 +213,7 @@ def flush(client: MogClient, game_id: int, say: Callable[[str], None] = lambda _
             status = client.put_launch_settings(game_id, target, entry["changes"])
             if status == 200:
                 _drop(game_id, entry)
+                _mark_synced(game_id)
             elif worth_retrying(status):
                 return False
             else:
@@ -204,19 +239,64 @@ def push(client: MogClient, rec: InstalledGame, changes: dict, everywhere: bool)
     return flush(client, rec.game_id)
 
 
-def apply_reg(rec: InstalledGame, preference: str, reg_text: str) -> None:
-    """Import settings into the game's prefix with the engine's own regedit; only what `winecfg.clean_import` leaves."""
-    reg = winecfg.clean_import(reg_text)
-    if not reg:
+def _winecfg_dir() -> Path:
+    return config.data_dir() / "winecfg"
+
+
+def undo_path(rec: InstalledGame) -> Path:
+    """What puts the game's prefix back as it was before winecfg settings were put in it or made in it (a `.reg` of the old
+    values, and deletions of the values that were new). Only what really changed is in it: a prefix is full of the launcher's
+    own defaults in these same keys, and those are not ours to touch."""
+    return _winecfg_dir() / f"{rec.game_id}.undo.reg"
+
+
+def _prefix_settings(rec: InstalledGame) -> str:
+    reg_file = winecfg.find_user_reg(prefix_of(rec))
+    return winecfg.export_settings(reg_file.read_text(errors="replace")) if reg_file else ""
+
+
+def remember_undo(rec: InstalledGame, undo: str) -> None:
+    """Add `undo` to what is kept for putting the prefix back; a value already in it keeps the older entry (what it was before
+    any of the changes)."""
+    if not undo:
         return
-    path = config.data_dir() / "winecfg" / f"{rec.game_id}.reg"
+    path = undo_path(rec)
+    older = path.read_text(errors="replace") if path.is_file() else ""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(reg)
+    path.write_text(winecfg.merge_undo(older, undo) if older else undo)
+
+
+def _import_reg(rec: InstalledGame, preference: str, path: Path) -> None:
     proc = launcher.start_tool(rec, preference, "regedit", ("/S", str(path)))
     if proc.wait(timeout=300) != 0:
         raise RuntimeError(launcher.launch_failure(proc) or "regedit failed")
     # A launcher such as Faugus's may hand over and return at once: wait for regedit itself, if it is still there.
     watcher.wait_for_tool("regedit", prefix_of(rec), appear_timeout=10.0, linger=1.0)
+
+
+def apply_reg(rec: InstalledGame, preference: str, reg_text: str) -> None:
+    """Import settings into the game's prefix with the engine's own regedit; only what `winecfg.clean_import` leaves. What
+    they change is noted first, so `revert_reg` can put it back."""
+    reg = winecfg.clean_import(reg_text)
+    if not reg:
+        return
+    remember_undo(rec, winecfg.undo_text(_prefix_settings(rec), reg))
+    path = _winecfg_dir() / f"{rec.game_id}.reg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(reg)
+    _import_reg(rec, preference, path)
+
+
+def revert_reg(rec: InstalledGame, preference: str) -> bool:
+    """Put the game's prefix back as it was before winecfg settings were put in it or made in it, by importing what
+    `remember_undo` kept. False when nothing was kept (settings from before that was recorded stay where they are);
+    RuntimeError when regedit fails, and what was kept stays for another try."""
+    path = undo_path(rec)
+    if not path.is_file():
+        return False
+    _import_reg(rec, preference, path)
+    path.unlink(missing_ok=True)
+    return True
 
 
 def run_winetricks(rec: InstalledGame, preference: str, verbs: list[str]) -> None:
@@ -241,6 +321,7 @@ def run_winecfg(
     The wait is for winecfg's own process: it is no .exe of the game's folder, which is all the game watcher looks for."""
     reg_file = winecfg.find_user_reg(prefix_of(rec))
     before = reg_file.stat().st_mtime if reg_file else 0.0
+    settings_before = _prefix_settings(rec)
     proc = launcher.start_tool(rec, preference, "winecfg")
     if not wait("winecfg", prefix_of(rec), abort_before_start=lambda: proc.poll() not in (None, 0)):
         raise RuntimeError(launcher.launch_failure(proc) or "winecfg did not start")
@@ -254,4 +335,6 @@ def run_winecfg(
     reg_file = winecfg.find_user_reg(prefix_of(rec))
     if reg_file is None:
         return ""
-    return winecfg.export_settings(reg_file.read_text(errors="replace"))
+    settings = winecfg.export_settings(reg_file.read_text(errors="replace"))
+    remember_undo(rec, winecfg.undo_text(settings_before, settings))
+    return settings
