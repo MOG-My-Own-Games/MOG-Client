@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mog_client.gui.widgets import ACCENT_HOVER_STOPS, accent_qss, scrollbar_qss
+from mog_client.gui.widgets import ACCENT_HOVER_STOPS, CUSTOM_HOVER_STOPS, CUSTOM_STOPS, accent_qss, scrollbar_qss
 
 STYLE = """
 * { font-size: 18px; }
@@ -13,6 +13,8 @@ QPushButton { background: {accent}; color: white; border: 2px solid transparent;
 QPushButton:hover { background: {accent_hover}; }
 QPushButton:focus { border-color: white; }
 QPushButton#key { padding: 2px; font-size: 17px; border-radius: 6px; max-width: 16777215px; }
+QPushButton[custom="true"] { background: {custom}; }
+QPushButton[custom="true"]:hover { background: {custom_hover}; }
 QPushButton[danger="true"] { background: #e2574c; }
 QPushButton[danger="true"]:hover { background: #c94439; }
 QComboBox QAbstractItemView { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; outline: none; selection-background-color: #1e2733; selection-color: white; }
@@ -57,4 +59,4 @@ QMenu::separator { height: 1px; background: #343c49; margin: 6px 10px; }
 #hltbTime { color: #ffffff; font-size: 19px; font-weight: bold; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
 QProgressBar::chunk { background: {accent}; border-radius: 6px; }
-""".replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()
+""".replace("{custom_hover}", accent_qss(CUSTOM_HOVER_STOPS)).replace("{custom}", accent_qss(CUSTOM_STOPS)).replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()

@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
 
 ACCENT_STOPS = ((0.0, "#9e3bf7"), (1.0, "#2859f9"))
 ACCENT_HOVER_STOPS = ((0.0, "#aa53f8"), (1.0, "#426dfa"))
+# The second gradient: a setting that is not at its default shows in it (a button with the property custom=true).
+CUSTOM_STOPS = ((0.0, "#d946ef"), (1.0, "#8b2cf5"))
+CUSTOM_HOVER_STOPS = ((0.0, "#e062f2"), (1.0, "#9d4bf7"))
 
 
 def accent_qss(stops=ACCENT_STOPS) -> str:
