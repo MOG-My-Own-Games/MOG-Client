@@ -56,18 +56,31 @@ class ModalHost(QWidget):
     def showing(self) -> bool:
         return self.isVisible()
 
-    def show_page(self, page: QWidget, title: str) -> None:
+    def show_page(self, page: QWidget, title: str, back: bool = False) -> None:
+        """`back` says the page was opened from another card, which its button returns to: it reads Back, not Close."""
         if self.page is not page:
             self.release()
             self.page = page
             self.body.insertWidget(1, page)
-            self.body.addWidget(self.close_button, 0, Qt.AlignHCenter)
+            self._place_close_button(page)
             self.close_button.setVisible(getattr(page, "show_close", True))
             page.show()
+        self.close_button.setText(getattr(page, "close_text", None) or ("Back" if back else "Close"))
         self.title.setText(title)
         self.fit_to_parent()
         self.show()
         self.raise_()
+
+    def _place_close_button(self, page: QWidget) -> None:
+        """Below the page, or, for a page with a row of buttons of its own (OK, Done), in that row after them."""
+        row = getattr(page, "button_row", None)
+        if row is None:
+            self.body.addWidget(self.close_button, 0, Qt.AlignHCenter)
+            return
+        index = row.count()
+        if index and row.itemAt(index - 1).spacerItem() is not None:
+            index -= 1  # before the stretch that centres the row
+        row.insertWidget(index, self.close_button)
 
     def release(self, page: QWidget | None = None) -> None:
         """Take the page out of the card (it is going away, or another one is taking its place)."""
@@ -75,7 +88,10 @@ class ModalHost(QWidget):
             return
         if self.page is not None:
             self.body.removeWidget(self.page)
-            self.body.removeWidget(self.close_button)
+            if self.close_button.parentWidget() is self.card:
+                self.body.removeWidget(self.close_button)
+            else:  # in the page's own row, which goes away with the page
+                self.close_button.setParent(self.card)
             self.page.hide()
             self.page.setParent(None)
             self.page = None
