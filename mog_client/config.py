@@ -161,6 +161,14 @@ class InstalledGame:
     launcher: str = "auto"
     # None follows Settings.sync_saves; True or False overrides it for this game.
     save_sync: bool | None = None
+    # The Proton build this game runs under, by name (None: the engine's own). Kept on the server too, see launchsettings.py.
+    proton: str | None = None
+    # The Wine build this game runs under when its engine is Wine, by name (None: the system's wine). Local to this device.
+    wine: str | None = None
+    # The winetricks verbs installed in this game's prefix (see winetricks.py); a reinstall starts with none.
+    winetricks: list[str] = field(default_factory=list)
+    # A digest of the winecfg settings last put into this game's prefix from the server, so they are not applied twice.
+    winecfg_applied: str | None = None
     # Chosen when the install began: the game's archive is extracted as it is (it holds a game that needs no
     # installer), so a restarted session does the same.
     extract_only: bool = False
