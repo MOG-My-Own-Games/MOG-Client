@@ -101,3 +101,24 @@ def test_no_howlongtobeat_rows_without_times_or_from_an_older_server():
     assert hltb_lines({"hltb_metadata": None}) == []
     assert hltb_lines({"hltb_id": 0, "hltb_metadata": {}}) == []
     assert hltb_lines({"hltb_metadata": {"main_story": "n/a"}}) == []
+
+
+def test_an_image_uploaded_to_the_server_gets_the_servers_address_in_front_so_every_url_is_a_full_one():
+    from mog_client.api import Client, MogClient
+
+    client = MogClient(Client("http://server:5000", "u", "p"))
+    game = {
+        "id": 1,
+        "cover_path": "/resources/media/1/cover-0123456789ab.png",
+        "media": {
+            "cover": {"url": "/resources/media/1/cover-0123456789ab.png", "source": "upload"},
+            "hero": {"url": "https://cdn2.steamgriddb.com/h.png", "source": "steamgriddb"},
+            "logo": None,
+        },
+    }
+
+    out = client._absolute(game)
+
+    assert out["cover_path"] == "http://server:5000/resources/media/1/cover-0123456789ab.png"
+    assert out["media"]["cover"]["url"] == out["cover_path"] and out["media"]["hero"]["url"] == "https://cdn2.steamgriddb.com/h.png"
+    assert client._absolute({"id": 2}) == {"id": 2} and client._absolute({"id": 3, "cover_path": None, "media": None})["cover_path"] is None
