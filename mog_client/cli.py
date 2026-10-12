@@ -137,8 +137,7 @@ def main() -> int:
         log("cancelled")
         return 0
     if args.clear:
-        client.clear_cache(args.game_id)
-        log("cache cleared")
+        log("cache cleared" if client.clear_cache(args.game_id) else "no cache on the server")
         return 0
 
     existing = client.get_session(args.game_id)

@@ -398,11 +398,15 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
-    def clear_cache(self, game_id: int) -> dict:
+    def clear_cache(self, game_id: int) -> bool:
+        """Delete the game's install cache on the server. True when there was one, False when there was none (the server
+        says `cleared: 0`; an older one answers 404): what was asked for is the case already, so that is no error."""
         status, data = self.c.delete_json(f"/api/games/{game_id}/install")
+        if status == 404:
+            return False
         if status not in (200, 204):
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
-        return data
+        return not isinstance(data, dict) or bool(data.get("cleared", 1))
 
     def list_files(self, game_id: int, session_id: int | None = None) -> dict:
         endpoint = f"/api/games/{game_id}/install/files"
