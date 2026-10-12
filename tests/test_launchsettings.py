@@ -244,6 +244,25 @@ def test_winecfg_run_here_notes_what_it_changed(monkeypatch, game, prefix):
     assert '"dxgi"=-' in undo and "msvcp140" not in undo
 
 
+def test_nothing_is_noted_for_a_prefix_that_did_not_exist_yet(monkeypatch, game, prefix):
+    """Regression test: the engine makes a prefix the first time anything runs in it, with its own defaults in the winecfg
+    keys. With no earlier registry to compare with, all of them looked like changes, and putting them back would have deleted
+    the launcher's defaults."""
+    (prefix.folder / "user.reg").unlink()
+
+    launchsettings.apply_reg(game, "auto", APPLIED)
+    assert not launchsettings.undo_path(game).exists()
+
+    monkeypatch.setattr(launchsettings.launcher, "start_tool", lambda rec, pref, program, args=(): SimpleNamespace(poll=lambda: None))
+
+    def wait(*a, **k):
+        (prefix.folder / "user.reg").write_text(WINE_USER_REG)  # winecfg made the prefix
+        return True
+
+    text = launchsettings.run_winecfg(game, "auto", sleep=lambda s: None, wait=wait)
+    assert "msvcp140" in text and not launchsettings.undo_path(game).exists()
+
+
 def test_settings_from_the_server_are_filtered_before_they_reach_regedit(monkeypatch, game):
     started = []
     monkeypatch.setattr(

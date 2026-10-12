@@ -250,9 +250,12 @@ def undo_path(rec: InstalledGame) -> Path:
     return _winecfg_dir() / f"{rec.game_id}.undo.reg"
 
 
-def _prefix_settings(rec: InstalledGame) -> str:
+def _prefix_settings(rec: InstalledGame) -> str | None:
+    """The winecfg settings the prefix holds now, or None when it has no registry yet: the engine makes the prefix the first time
+    anything runs in it, with its own defaults in these same keys, and with no earlier state to compare with, a default cannot
+    be told from a setting."""
     reg_file = winecfg.find_user_reg(prefix_of(rec))
-    return winecfg.export_settings(reg_file.read_text(errors="replace")) if reg_file else ""
+    return winecfg.export_settings(reg_file.read_text(errors="replace")) if reg_file else None
 
 
 def remember_undo(rec: InstalledGame, undo: str) -> None:
@@ -280,7 +283,9 @@ def apply_reg(rec: InstalledGame, preference: str, reg_text: str) -> None:
     reg = winecfg.clean_import(reg_text)
     if not reg:
         return
-    remember_undo(rec, winecfg.undo_text(_prefix_settings(rec), reg))
+    before = _prefix_settings(rec)
+    if before is not None:
+        remember_undo(rec, winecfg.undo_text(before, reg))
     path = _winecfg_dir() / f"{rec.game_id}.reg"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(reg)
@@ -336,5 +341,6 @@ def run_winecfg(
     if reg_file is None:
         return ""
     settings = winecfg.export_settings(reg_file.read_text(errors="replace"))
-    remember_undo(rec, winecfg.undo_text(settings_before, settings))
+    if settings_before is not None:
+        remember_undo(rec, winecfg.undo_text(settings_before, settings))
     return settings
