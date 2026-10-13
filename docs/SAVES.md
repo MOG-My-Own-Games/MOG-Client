@@ -55,6 +55,12 @@ The shortcut finds the client through a file MOG writes in its config folder (`c
 renamed client is found again after one start from its new place. Without a client the game starts as usual. On Windows the
 shortcut runs a `.cmd` next to the game that starts it, waits for it and then backs the saves up.
 
+## Mods, patches and DLC are not saves
+
+Files a mod, a patch or a DLC adds are written into the game's install manifest when MOG installs or applies them (the same
+record an install makes), so save sync tells them from what the game writes and never backs them up as saves. Mods you copy
+in by hand are in no manifest; they are told apart by where they are, as above.
+
 ## Command line
 
 `mog --save-sync GAME_ID` backs a game up (add `--window` to show the small "Syncing saves" window). `--save-pre` and

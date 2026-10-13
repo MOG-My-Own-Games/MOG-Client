@@ -56,6 +56,49 @@ A game installed from a native Linux installer is not run through Faugus, umu, P
 - The script is made executable and started as it is, by the launch script, the desktop entry and the Steam shortcut.
 - Save sync finds saves through the Wine prefix, so it leaves such a game alone.
 
+## Installers inside discs and archives
+
+A game's installer is often inside a disc image or an archive (`DISK1.ISO` with a `setup.exe` in it). The installer picker
+lists what the server finds inside each disc image and archive (a few at most), indented under it, and the one you pick
+there is run from inside that disc. A `.mds` file next to an image only describes it and is not looked into.
+
+## Several installers, in order
+
+A game can come with patches next to its installer. In the installer picker every installer that can run is a big label with
+a flag on the left:
+
+- Tick the ones to run. They go to the top and are numbered in the order they will be installed (1 is the game, the others
+  are patches, shown as a `game` or `patch` label like the server's), each with Up and Down arrows. The row you are on is
+  filled, so it is clear which one it is. With the keyboard or the pad, Right walks from a ticked row onto its arrows,
+  Left walks back, and Enter (or A) moves the row. The ones not ticked stay below. Installers found inside a disc or archive are listed as `DISK1.ISO > setup.exe`
+  and can be ticked like the others.
+- **Install** runs what is ticked (the selected row when nothing is ticked). Two or more run one after another in one install
+  on the server, in one installer display; the files are streamed once, at the end. If one fails, the install stops there and
+  the message names the step ("Step 2/3: ..."). The server remembers the order for the game.
+- **Install** on a new game opens this picker by itself when there is more than one choice (patches next to the installer,
+  installers inside a disc); with a single installer it just installs. If the server already remembers an order for the
+  game, those installers are ticked and numbered when the picker opens. **Let the server choose** (the installer the
+  server would run by itself; not offered when it already could not choose) and **Just copy the files, run nothing** are
+  buttons on a row of their own above Install; **Cancel** closes the picker. The arrows walk between the buttons as they
+  are laid out (Right from Install is Cancel).
+- A patch may ask where the game is installed. MOG does not answer that for you: open the installer display from the game's
+  page and answer by hand.
+- All of them must be Windows installers, or all native Linux ones.
+
+## Addons: mods, patches and DLC
+
+MOG keeps the files a mod, a patch or a DLC adds as an *addon* on the server, apart from the install cache. This client can
+send one and take one; it is **not a mod manager** (no load order, no conflict handling, no enabling or disabling), for that
+use dedicated software such as Amethyst Mod Manager.
+
+- On an installed game's page, **Addon** lists what the server keeps for it, with Apply and Delete (Delete removes it from
+  the server, so no machine can get it any more), and **Install addon** / **Finish and send...** for one you install yourself.
+- A mod, patch or DLC you run yourself on the installed game is recorded when it ends: its files go in the game's install
+  manifest, so they are never taken for saves. You can then send what changed to the server as a mod, patch or DLC.
+- An addon the server kept (made by an install on the server, or sent from another machine) is downloaded and extracted over
+  the game, again recorded in the manifest. Nothing is run: it already is the files.
+- The files of an addon use the same paths as the install's own files; one that points outside the game's folder is refused.
+
 ## Installing from the web UI
 
 The Install button on a game's page in MOG-Server's web UI opens `mog://install/<game id>?server=<the page's address>`.
