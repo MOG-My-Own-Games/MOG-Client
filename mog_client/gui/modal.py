@@ -66,6 +66,10 @@ class ModalHost(QWidget):
             self.close_button.setVisible(getattr(page, "show_close", True))
             page.show()
         self.close_button.setText(getattr(page, "close_text", None) or ("Back" if back else "Close"))
+        danger = bool(getattr(page, "close_danger", False))  # a card whose way out abandons something reads in red
+        self.close_button.setProperty("danger", danger)
+        self.close_button.style().unpolish(self.close_button)
+        self.close_button.style().polish(self.close_button)
         self.title.setText(title)
         self.fit_to_parent()
         self.show()

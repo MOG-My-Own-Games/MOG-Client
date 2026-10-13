@@ -102,6 +102,44 @@ class Toggle(QCheckBox):
             painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
 
 
+class CheckBox(QCheckBox):
+    """A tick box: an empty rounded square, and when ticked the accent gradient with a white tick in it."""
+
+    SIZE = 28
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setCursor(Qt.PointingHandCursor)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.SIZE + 6, self.SIZE + 6)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        size = self.SIZE
+        box = QRectF((self.width() - size) / 2, (self.height() - size) / 2, size, size)
+        outline = box.adjusted(1, 1, -1, -1)
+        if self.isChecked():
+            painter.setBrush(accent_gradient(box.left(), box.top(), box.right(), box.bottom()))
+            painter.setPen(QPen(QColor("white"), 2) if self.hasFocus() else Qt.NoPen)
+        else:
+            painter.setBrush(QColor("#1e232b"))
+            painter.setPen(QPen(QColor("white") if self.hasFocus() else QColor("#4a5260"), 2))
+        painter.drawRoundedRect(outline, 7, 7)
+        if self.isChecked():
+            tick = QPainterPath()
+            tick.moveTo(box.left() + 0.24 * size, box.top() + 0.52 * size)
+            tick.lineTo(box.left() + 0.43 * size, box.top() + 0.70 * size)
+            tick.lineTo(box.left() + 0.77 * size, box.top() + 0.32 * size)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor("white"), 3.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawPath(tick)
+
+
 ROLE_KIND, ROLE_ON, ROLE_DIVIDER = Qt.UserRole + 20, Qt.UserRole + 21, Qt.UserRole + 22
 
 

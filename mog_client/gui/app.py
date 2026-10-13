@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -78,6 +80,7 @@ from PySide6.QtWidgets import (
 
 from mog_client import (
     activity,
+    addons,
     crashlog,
     gameplay,
     identity,
@@ -128,6 +131,7 @@ from mog_client.gui.widgets import (
     ROLE_KIND,
     ROLE_ON,
     BadgeButton,
+    CheckBox,
     CoverLabel,
     ElidedLabel,
     FocusTabs,
@@ -238,6 +242,7 @@ class Bridge(QObject):
     notifications = Signal(object)  # {"notifications": [...], "unread": n}
     libraries = Signal(list)
     installers = Signal(int, object, str, bool)  # game id, candidates (None on error), error, the server found no installer
+    inside = Signal(int, str, object)  # game id, a disc or archive of it, the installers found inside it (None: unreadable)
     game_size = Signal(int, object)  # game id, bytes on the server (not a 32-bit int)
     activity = Signal()  # something started, moved on or ended in the background: the sidebar's rows follow
     mods_loaded = Signal(int, object)  # game id, its mods ({name, kind, size_bytes, file_count})
@@ -625,8 +630,25 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def load_inside(self, game_id: int, source: str) -> None:
+        """The installers inside one disc image or archive of a game, found by the server from its listing."""
+
+        def work():
+            try:
+                data = self.client().candidates(game_id, source)
+                self.bridge.inside.emit(game_id, source, data.get("candidates", []))
+            except Exception:  # noqa: BLE001 - a disc that cannot be read just shows nothing inside
+                self.bridge.inside.emit(game_id, source, None)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def start_install(
-        self, game: dict, installer: dict | None = None, root: Path | None = None, extract_only: bool | None = None
+        self,
+        game: dict,
+        installer: dict | None = None,
+        root: Path | None = None,
+        extract_only: bool | None = None,
+        steps: list[dict] | None = None,
     ) -> None:
         gid = game["id"]
         if gid in self.installs:
@@ -693,7 +715,7 @@ class App:
                 manager.run_install(
                     self.client(), game, self.settings, stop,
                     lambda m: bridge.log.emit(gid, m), on_session,
-                    report, installer, root, extract_only,
+                    report, installer, root, extract_only, steps,
                 )
             except Exception as e:  # noqa: BLE001
                 err = manager.describe_error(e)
@@ -782,6 +804,7 @@ class Page(QWidget):
     compact = False  # a modal card sized to what the page holds (a question), not the full-size card
     show_close = True  # a modal card's own Close button; off where the page has its own way out
     close_text: str | None = None  # what that button says; by default Close, or Back on a card opened from another card
+    close_danger = False  # that button in red: closing the card abandons what it was for (Cancel)
     button_row: QHBoxLayout | None = None  # the page's own row of buttons (OK, Done): the Close button joins it, in line
 
     def focus_default(self) -> None:
@@ -1715,32 +1738,146 @@ def version_label(game: dict, libraries: list[dict]) -> str:
 EXTRACT_AS_IS = {"extract_only": True}
 
 
+class InstallerRow(QFrame):
+    """One installer as a big label: a flag on the left, its place in the install order and Up and Down when it is
+    ticked. A row that cannot run in a chain (the server's own choice, a disc or an archive) has no flag."""
+
+    toggled = Signal(bool)
+    moved = Signal(int)
+
+    def __init__(
+        self, text: str, flag: bool, place: int | None = None, first: bool = False, last: bool = False, tag: str | None = None
+    ):
+        super().__init__()
+        self.setObjectName("installerRow")
+        self.setProperty("ticked", place is not None)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 10, 8)
+        row.setSpacing(12)
+        self.check = None
+        if flag:
+            self.check = CheckBox()
+            self.check.setFocusPolicy(Qt.NoFocus)  # the list keeps the focus; a click or Enter/Space ticks the row
+            self.check.setChecked(place is not None)
+            self.check.clicked.connect(lambda _=False: self.toggled.emit(self.check.isChecked()))
+            row.addWidget(self.check)
+        if place is not None:
+            number = QLabel(str(place))
+            number.setObjectName("rowNumber")
+            number.setFixedSize(34, 34)
+            number.setAlignment(Qt.AlignCenter)
+            row.addWidget(number)
+        self.tag = None
+        if tag:  # the same pill the server's pages use: "game" is outlined, any other kind dashed
+            self.tag = QLabel(tag)
+            self.tag.setObjectName("rowTag")
+            self.tag.setProperty("kind", "game" if tag == "game" else "other")
+            self.tag.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+            self.tag.setFixedHeight(26)
+            row.addWidget(self.tag, 0, Qt.AlignVCenter)
+        # A file name has no spaces to wrap at: an invisible break after its separators lets a long one wrap, not be cut.
+        self.label = QLabel(re.sub(r"([_./\-()\[\]])", "\\1\u200b", text))
+        self.label.setWordWrap(True)
+        row.addWidget(self.label, 1)
+        self.arrows: list[QPushButton] = []
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        if place is not None:
+            for glyph, step, off in (("\u25B2", -1, first), ("\u25BC", 1, last)):
+                button = QPushButton(glyph)
+                button.setObjectName("rowArrow")
+                button.setFocusPolicy(Qt.NoFocus)
+                button.setEnabled(not off)
+                button.clicked.connect(lambda _=False, st=step: self.moved.emit(st))
+                row.addWidget(button)
+                self.arrows.append(button)
+
+    def set_current(self, on: bool) -> None:
+        """Fill the row when it is the one the keyboard or pad is on."""
+        self.setProperty("current", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def select_arrow(self, which: int | None) -> None:
+        """Mark the arrow the keyboard or pad is on (0 up, 1 down), or none."""
+        for i, button in enumerate(self.arrows):
+            button.setProperty("picked", which == i)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def height_for(self, width: int) -> int:
+        """How tall the row is when it is `width` wide: its label's lines beside the flag, the number and the arrows."""
+        self.ensurePolished()
+        self.label.ensurePolished()
+        row = self.layout()
+        others = [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget() is not self.label]
+        fixed = sum(w.sizeHint().width() for w in others) + row.spacing() * len(others) + 12 + 10
+        return max(56, self.label.heightForWidth(max(120, width - fixed)) + 24)
+
+
 class InstallerPickerPage(Page):
-    """The installers of every version of a title, each under its version, to pick which one to run. `needed` is when
-    the server has already tried and could not tell which one: then "let the server choose" is not offered."""
+    """The installers of every version of a title, each under its version, to pick which one to run. Tick the ones to
+    run (the flag on the left): they come to the top, numbered in the order they will be installed, and the arrows on
+    the row change it (Right and Left walk onto them, Enter moves the row). With two or more ticked, Install runs them
+    one after another in one install; the first is the game, the others are patches. "Just copy" is a button of its own
+    above Install.
+    `needed` is when the server has already tried and could not tell which one: then "let the server choose" is not
+    offered (the button is hidden). `saved` is the order the server remembers for the game: ticked from the start."""
 
     modal = True
 
     title = "Choose an installer"
+    close_text = "Cancel"
+    close_danger = True
+    ROW_BORDER = 2  # a row's own frame in the list, with its 1px padding: ROW_FRAME is what it takes in height
+    ROW_FRAME = 6
 
-    def __init__(self, win: "MainWindow", page: "GamePage", group: Group, needed: bool = False):
+    def __init__(
+        self, win: "MainWindow", page: "GamePage", group: Group, needed: bool = False, saved: list[dict] | None = None
+    ):
         super().__init__()
         self.win, self.page, self.group, self.needed = win, page, group, needed
+        gid = page.game["id"]
+        self.order: list[tuple[int, str, str | None]] = [(gid, step["path"], step.get("source_path")) for step in saved or []]
         self.found: dict[int, list[dict] | str] = {}
         self.portable: set[int] = set()  # versions the server found no installer in: probably the game itself
-        self.list = QListWidget()
-        self.list.itemActivated.connect(lambda _: self.focusNextChild())  # picking is not confirming: OK is
-        self.list.currentItemChanged.connect(lambda *_: self._sync_ok())
-        self.ok = QPushButton("OK")
+        self.inside: dict[tuple[int, str], list[dict] | None] = {}  # what is inside each disc or archive; None while unread
+        self.rows: dict[tuple[int, str, str | None], tuple[dict, dict | None]] = {}  # key -> (version, installer), as drawn
+        self.arrow: int | None = None  # the arrow of the current row the keyboard is on: 0 up, 1 down
+        self.list = EdgeList()  # hands focus on past its last row, so the buttons below can be reached
+        self.list.setSpacing(2)
+        self.list.setMinimumHeight(260)
+        # Rows are big labels that sit close together: the item's own border and padding are thin (ROW_FRAME in all).
+        self.list.setStyleSheet(
+            f"QListWidget::item {{ padding: 1px; border: {self.ROW_BORDER}px solid transparent; border-radius: 10px; }}"
+            "QListWidget::item:selected { border-color: transparent; background: transparent; }"  # the row fills itself
+        )
+        self.list.itemActivated.connect(self._activated)  # Enter, or the pad's A: ticks the row
+        self.list.currentItemChanged.connect(lambda *_: self._row_changed())
+        self.list.installEventFilter(self)  # Right and Left walk onto the arrows of a ticked row
+        QShortcut(QKeySequence(Qt.Key_Space), self.list, activated=self._toggle_current, context=Qt.WidgetShortcut)
+        self.server_button = QPushButton("Let the server choose")
+        self.server_button.setToolTip("The installer the server would run by itself")
+        self.server_button.setVisible(not needed)  # asked for because it could not choose: not offered again
+        self.server_button.clicked.connect(self.let_server_choose)
+        self.copy_button = QPushButton("Just copy the files, run nothing")
+        self.copy_button.setToolTip("Use the files as they are; an archive is unpacked")
+        self.copy_button.clicked.connect(self.copy)
+        self.ok = QPushButton("Install")
         self.ok.setDefault(True)
         self.ok.clicked.connect(self.accept)
+        for button in (self.server_button, self.copy_button, self.ok):
+            button.installEventFilter(self)  # the arrows walk between the buttons, as they are laid out
         self.status = QLabel("Looking for installers...")
         lay = QVBoxLayout(self)
         lay.addWidget(self.status)
         lay.addWidget(self.list, 1)
+        # The row above Install and Cancel, which is not where buttons usually go: the two ways that pick no installer
+        # here, "Let the server choose" and "Just copy".
+        lay.addLayout(_centered_row(self.server_button, self.copy_button))
         self.button_row = _centered_row(self.ok)
         lay.addLayout(self.button_row)
         win.app.bridge.installers.connect(self.on_installers)
+        win.app.bridge.inside.connect(self.on_inside)
         for version in group.versions:
             win.app.load_installers(version["id"])
         self.render()
@@ -1753,10 +1890,74 @@ class InstallerPickerPage(Page):
             self.found[game_id] = candidates if candidates is not None else error
             if portable:
                 self.portable.add(game_id)
+            for source in addons.sources(candidates or []):  # the installers of a disc are in it, not beside it
+                self.inside.setdefault((game_id, source["path"]), None)
+                self.win.app.load_inside(game_id, source["path"])
             self.render()
 
+    def on_inside(self, game_id: int, source: str, found) -> None:
+        if game_id in {v["id"] for v in self.group.versions}:
+            self.inside[(game_id, source)] = found or []  # unreadable counts as empty: nothing is shown inside it
+            self.render()
+
+    def flat(self, version: dict) -> list[dict]:
+        """The version's candidates with the installers found inside its discs and archives right after each."""
+        found = self.found.get(version["id"])
+        if not isinstance(found, list):
+            return []
+        known = {src: raw for (gid, src), raw in self.inside.items() if gid == version["id"] and raw}
+        return addons.with_inside(found, known)
+
+    @staticmethod
+    def _key_of(pick: tuple[dict, dict | None]) -> tuple[int, str, str | None]:
+        version, cand = pick
+        return (version["id"], "" if cand is None else cand["path"], None if cand is None else cand.get("source_path"))
+
+    @classmethod
+    def _key(cls, item: QListWidgetItem | None) -> tuple[int, str, str | None] | None:
+        picked = item.data(Qt.UserRole) if item is not None else None
+        return cls._key_of(picked) if picked else None
+
+    @staticmethod
+    def text_of(item: QListWidgetItem) -> str:
+        """What a row says (it is drawn by a widget, so the item's own text is empty)."""
+        return item.data(Qt.UserRole + 1) or item.text()
+
+    _drawn_width = 0
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        """A wrapped label is as tall as the width gives it, so the rows are drawn again when the list changes width."""
+        super().resizeEvent(e)
+        width = self.list.viewport().width()
+        if width != self._drawn_width and self.isVisible():
+            QTimer.singleShot(0, self.render)
+
+    def _add(self, version: dict, cand: dict | None, text: str, place: int | None = None, count: int = 0) -> None:
+        flag = cand is not None and bool(addons.chainable([cand]))
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, (version, cand))
+        item.setData(Qt.UserRole + 1, text)
+        self.rows[self._key_of((version, cand))] = (version, cand)
+        tag = None
+        if place is not None:  # ticked: its part in the install, the first being the game and the others patches
+            tag = "game" if place == 1 else "patch"
+        elif cand is not None and flag and cand.get("category", "game") != "game":
+            tag = cand["category"].lower()  # what the server calls it (patch, dlc, mod, update ...)
+        widget = InstallerRow(text, flag, place, first=place == 1, last=place == count, tag=tag)
+        key = self._key_of((version, cand))
+        widget.toggled.connect(lambda on, k=key: self._set_ticked(k, on))
+        widget.moved.connect(lambda step, k=key: self._move(k, step))
+        width = self.list.viewport().width() or 640
+        self._drawn_width = width
+        item.setSizeHint(QSize(0, widget.height_for(width - self.ROW_FRAME) + self.ROW_FRAME))
+        self.list.addItem(item)
+        self.list.setItemWidget(item, widget)
+
     def render(self) -> None:
+        current = self._key(self.list.currentItem())
+        self.list.blockSignals(True)
         self.list.clear()
+        self.rows = {}
         for version in self.group.versions:
             header = QListWidgetItem(version_label(version, self.win.library.libraries))
             header.setFlags(Qt.NoItemFlags)
@@ -1764,39 +1965,44 @@ class InstallerPickerPage(Page):
             font.setBold(True)
             header.setFont(font)
             self.list.addItem(header)
-            copy = QListWidgetItem("    Just copy: use the files as they are, run nothing (an archive is unpacked)")
-            copy.setData(Qt.UserRole, (version, EXTRACT_AS_IS))
-            if version["id"] in self.portable:  # probably the game itself: the likely choice comes first
-                self.list.addItem(copy)
-            if not self.needed:
-                entry = QListWidgetItem("    Let the server choose")
-                entry.setData(Qt.UserRole, (version, None))
-                self.list.addItem(entry)
             found = self.found.get(version["id"])
+            flat = self.flat(version)
+            keys = {self._key_of((version, c)): c for c in flat if addons.chainable([c])}
+            # The ticked ones first, numbered in the order they will run.
+            ticked = [(k, keys[k]) for k in self.order if k in keys and k[0] == version["id"]]
+            for place, (_key, cand) in enumerate(ticked, start=1):
+                self._add(version, cand, self._label(cand), place, len(ticked))
             if found is None:
                 self.list.addItem(self._note("    Looking..."))
             elif isinstance(found, str):
                 self.list.addItem(self._note(f"    Could not list installers: {found}"))
-            for cand in found if isinstance(found, list) else []:
-                tag = "" if cand.get("category", "game") == "game" else f"[{cand['category'].upper()}] "
-                row = QListWidgetItem(f"    {tag}{cand['path']}  ({fmt_bytes(cand['file_size_bytes'])}, {cand['kind']})")
-                row.setData(Qt.UserRole, (version, cand))
-                self.list.addItem(row)
-            if version["id"] not in self.portable:  # always on offer, last: the choice that was already the default stays so
-                self.list.addItem(copy)
+            shown = {k for k, _ in ticked}
+            for cand in flat:
+                if self._key_of((version, cand)) in shown:
+                    continue
+                self._add(version, cand, self._label(cand))
+                if cand["kind"] in addons.SOURCE_KINDS and self.inside.get((version["id"], cand["path"]), 0) is None:
+                    self.list.addItem(self._note("    Looking inside..."))
         done = len(self.found) == len(self.group.versions)
         if self.needed and self.portable:
-            pick = "No installer was found, so this is probably the game itself. Pick an executable to run, or extract it as it is:"
+            pick = "No installer was found, so this is probably the game itself. Pick an executable to run, or copy it:"
         elif self.needed:
             pick = "The server could not tell which installer to run. Pick it:"
         else:
-            pick = "Pick the installer to run:"
+            pick = "Pick the installer to run, or tick several to run them in order:"
         self.status.setText(pick if done else "Looking for installers...")
-        for i in range(self.list.count()):
-            if self.list.item(i).data(Qt.UserRole):
-                self.list.setCurrentRow(i)
-                break
+        wanted = next((i for i in range(self.list.count()) if self._key(self.list.item(i)) == current), None) if current else None
+        if wanted is None:
+            wanted = next((i for i in range(self.list.count()) if self.list.item(i).data(Qt.UserRole)), None)
+        if wanted is not None:
+            self.list.setCurrentRow(wanted)
+        self.list.blockSignals(False)
+        self._mark_arrow()
         self._sync_ok()
+
+    @staticmethod
+    def _label(cand: dict) -> str:
+        return f"{addons.label_of(cand)}  ({fmt_bytes(cand.get('file_size_bytes') or 0)})"
 
     @staticmethod
     def _note(text: str) -> QListWidgetItem:
@@ -1804,13 +2010,170 @@ class InstallerPickerPage(Page):
         item.setFlags(Qt.NoItemFlags)
         return item
 
+    def _show(self, key: tuple[int, str, str | None]) -> None:
+        """Draw again with the row of `key` the current one."""
+        self.render()
+        for i in range(self.list.count()):
+            if self._key(self.list.item(i)) == key:
+                self.list.setCurrentRow(i)
+                break
+        self._mark_arrow()
+
+    def _set_ticked(self, key: tuple[int, str, str | None], on: bool) -> None:
+        self.arrow = None
+        if on and key not in self.order:
+            # One version's installers run together: ticking one of another version clears the rest.
+            self.order = [k for k in self.order if k[0] == key[0]] + [key]
+        elif not on and key in self.order:
+            self.order.remove(key)
+        self._show(key)
+
+    def _move(self, key: tuple[int, str, str | None], step: int) -> None:
+        if key not in self.order:
+            return
+        i = self.order.index(key)
+        j = i + step
+        if 0 <= j < len(self.order):
+            self.order[i], self.order[j] = self.order[j], self.order[i]
+            self._show(key)
+
+    def _flaggable_current(self) -> tuple[int, str, str | None] | None:
+        key = self._key(self.list.currentItem())
+        pick = self.rows.get(key) if key else None
+        return key if pick and pick[1] is not None and addons.chainable([pick[1]]) else None
+
+    def _toggle_current(self) -> None:
+        key = self._flaggable_current()
+        if key is not None:
+            self._set_ticked(key, key not in self.order)
+
+    def _buttons(self, visible_only: bool = True) -> list[QPushButton]:
+        """The buttons below the list, Cancel (the card's own) included."""
+        buttons = [self.server_button, self.copy_button, self.ok, self.win.modal.close_button]
+        return [b for b in buttons if b.isVisible() or not visible_only]
+
+    def _walk_buttons(self, button: QPushButton, key: int) -> bool:
+        """Move the focus from `button` to the nearest button in the direction of the arrow, by where they are on the
+        screen: Right from Install is Cancel. Up from the top row of buttons goes back to the list."""
+        here = button.mapTo(self, button.rect().center())
+        found = []
+        for other in self._buttons():
+            if other is button:
+                continue
+            there = other.mapTo(self, other.rect().center())
+            dx, dy = there.x() - here.x(), there.y() - here.y()
+            same_row = abs(dy) < button.height() // 2
+            if key in (Qt.Key_Left, Qt.Key_Right) and same_row and (dx > 0) == (key == Qt.Key_Right) and dx != 0:
+                found.append((abs(dx), 0, other))
+            elif key in (Qt.Key_Up, Qt.Key_Down) and not same_row and (dy > 0) == (key == Qt.Key_Down):
+                found.append((abs(dy), abs(dx), other))
+        if found:
+            min(found, key=lambda f: f[:2])[2].setFocus()
+        elif key == Qt.Key_Up:
+            self.list.setFocus()
+        return True  # the arrows are never left to move the focus somewhere unexpected
+
+    def showEvent(self, e) -> None:  # noqa: N802
+        super().showEvent(e)
+        self.win.modal.close_button.installEventFilter(self)  # Cancel is the card's, so its arrows are ours while shown
+
+    def hideEvent(self, e) -> None:  # noqa: N802
+        super().hideEvent(e)
+        self.win.modal.close_button.removeEventFilter(self)
+
+    def _row_widget(self) -> "InstallerRow | None":
+        item = self.list.currentItem()
+        return self.list.itemWidget(item) if item is not None else None
+
+    def _rows(self) -> list["InstallerRow"]:
+        return [w for w in (self.list.itemWidget(self.list.item(i)) for i in range(self.list.count())) if w is not None]
+
+    def _mark_arrow(self) -> None:
+        """Show which arrow the keyboard is on, on the current row only. An arrow that cannot be pressed (the first
+        row's Up) is not kept."""
+        current = self._row_widget()
+        if current is not None and self.arrow is not None:
+            enabled = [i for i, b in enumerate(current.arrows) if b.isEnabled()]
+            if self.arrow not in enabled:
+                self.arrow = enabled[0] if enabled else None
+        for row in self._rows():
+            row.select_arrow(self.arrow if row is current else None)
+            row.set_current(row is current)
+
+    def _row_changed(self) -> None:
+        self.arrow = None  # another row: back to the row itself, and no arrow of the row left is marked
+        self._mark_arrow()
+        self._sync_ok()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        """Right walks from a ticked row onto its arrows (Up, then Down) and Left walks back; Enter or Space on an arrow
+        moves the row. Everything else is the list's own."""
+        arrows = (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
+        if event.type() == QEvent.KeyPress and event.key() in arrows and obj in self._buttons(visible_only=False):
+            return self._walk_buttons(obj, event.key())
+        if obj is self.list and event.type() == QEvent.KeyPress:
+            key = event.key()
+            row = self._row_widget()
+            on_row = row is not None and bool(row.arrows)
+            if key in (Qt.Key_Right, Qt.Key_Left) and on_row:
+                step = 1 if key == Qt.Key_Right else -1
+                enabled = [i for i, b in enumerate(row.arrows) if b.isEnabled()]
+                options = [None, *enabled]
+                here = options.index(self.arrow) if self.arrow in options else 0
+                self.arrow = options[max(0, min(len(options) - 1, here + step))]
+                self._mark_arrow()
+                return True
+            if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space) and on_row and self.arrow is not None:
+                current = self._key(self.list.currentItem())
+                if current is not None:
+                    self._move(current, -1 if self.arrow == 0 else 1)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _activated(self, item: QListWidgetItem) -> None:
+        if self._flaggable_current() is not None:
+            self._toggle_current()  # Enter or A ticks a row; the buttons below are one arrow down
+        else:
+            self.focusNextChild()
+
+    def _picks(self) -> list[tuple[dict, dict]]:
+        """The ticked installers as (version, installer), in the order they will run."""
+        return [self.rows[k] for k in self.order if k in self.rows]
+
     def _sync_ok(self) -> None:
         item = self.list.currentItem()
-        self.ok.setEnabled(item is not None and bool(item.data(Qt.UserRole)))
+        self.ok.setEnabled(bool(self._picks()) or (item is not None and bool(item.data(Qt.UserRole))))
 
     def accept(self) -> None:
-        if self.list.currentItem() is not None:
+        picks = self._picks()
+        if len(picks) > 1:  # several: one install of them in this order, which the server remembers for next time
+            version = picks[0][0]
+            steps = addons.steps_of([c for _, c in picks])
+            gid = version["id"]
+            self.win.app.run_bg(lambda: self.win.app.client().put_install_order(gid, steps), on_error=lambda _m: None)
+            self.win.back()
+            self.page.start_with(version, None, steps=steps)
+        elif picks:
+            self.win.back()
+            self.page.start_with(*picks[0])
+        elif self.list.currentItem() is not None:
             self.choose(self.list.currentItem())
+
+    def _version(self) -> dict:
+        """The version of the current row, else the first one."""
+        item = self.list.currentItem()
+        picked = item.data(Qt.UserRole) if item is not None else None
+        return picked[0] if picked else self.group.versions[0]
+
+    def copy(self) -> None:
+        version = self._version()
+        self.win.back()
+        self.page.start_with(version, None, extract=True)
+
+    def let_server_choose(self) -> None:
+        version = self._version()
+        self.win.back()
+        self.page.start_with(version, None)
 
     def choose(self, item: QListWidgetItem) -> None:
         picked = item.data(Qt.UserRole)
@@ -1818,10 +2181,195 @@ class InstallerPickerPage(Page):
             return
         version, installer = picked
         self.win.back()
-        if installer is EXTRACT_AS_IS:
-            self.page.start_with(version, None, extract=True)
-        else:
-            self.page.start_with(version, installer)
+        self.page.start_with(version, installer)
+
+
+class SendLayerPage(Page):
+    """What a mod, patch or DLC run on the game changed, to send to the server as one of the three or to keep here only.
+    The files are already recorded as the game's own, so they are never taken for saves either way."""
+
+    title = "Send to the server"
+    modal = True
+
+    def __init__(self, win: "MainWindow", game: dict, install_dir: Path, changed: list[tuple[str, Path]]):
+        super().__init__()
+        self.win, self.game, self.install_dir, self.changed = win, game, install_dir, changed
+        total = 0
+        for _rel, source in changed:
+            try:
+                total += source.stat().st_size
+            except OSError:
+                pass
+        note = QLabel(
+            f"{len(changed)} file{'s' if len(changed) != 1 else ''} changed ({fmt_bytes(total)}). Send them to the server so "
+            "your other machines can get them? Name it after what you installed."
+        )
+        note.setWordWrap(True)
+        self.name = MenuLineEdit(changed[0][0].rsplit("/", 1)[-1] if len(changed) == 1 else "")
+        self.name.setPlaceholderText("Name")
+        self.buttons = [QPushButton(text) for text in ("Send as a mod", "Send as a patch", "Send as DLC")]
+        for button, category in zip(self.buttons, addons.ADDON_CATEGORIES):
+            button.clicked.connect(lambda _=False, c=category: self.send(c))
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.name)
+        lay.addLayout(_centered_row(*self.buttons))
+        self.button_row = None
+
+    def focus_default(self) -> None:
+        self.name.setFocus()
+
+    def send(self, category: str) -> None:
+        name = self.name.text().strip()
+        if not name:
+            self.win.message("Give it a name first.", "warning")
+            return
+        app, game, install_dir, changed = self.win.app, self.game, self.install_dir, self.changed
+
+        def work() -> None:
+            with tempfile.TemporaryDirectory() as scratch:
+                addons.upload_layer(app.client(), game["id"], install_dir, changed, category, name, Path(scratch))
+            app.bridge.call.emit(lambda: self.win.message(f"Sent {name} to the server as a {category}.", "info"))
+
+        self.win.back()
+        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not send {name}: {m}", "error")))
+
+
+class AddonsPage(Page):
+    """The addons (mods, patches and DLC) the server keeps for a game: apply one to this computer's copy, delete one from
+    the server, or install one yourself and send what it changed. Applied files are recorded as the game's own (the
+    install ledger), so save sync leaves them alone. MOG is not a mod manager: no load order, no conflict handling."""
+
+    title = "Addons"
+    modal = True
+
+    def __init__(self, win: "MainWindow", game: dict, rec: InstalledGame):
+        super().__init__()
+        self.win, self.game, self.rec = win, game, rec
+        self.install_dir = Path(rec.files_dir or rec.install_dir)
+        self.addons: list[dict] = []
+        note = QLabel(
+            "Mods, patches and DLC kept on the server for this game. Apply puts one over the game. To add your own, "
+            "choose Install addon, install it on the game, then come back and finish. This is not a mod manager."
+        )
+        note.setWordWrap(True)
+        self.list = QListWidget()
+        self.status = QLabel("Looking...")
+        self.apply_button = QPushButton("Apply")
+        self.apply_button.clicked.connect(self.apply)
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.setProperty("danger", True)
+        self.delete_button.clicked.connect(self.delete)
+        self.record_button = QPushButton()
+        self.record_button.clicked.connect(self.record)
+        self.list.currentRowChanged.connect(lambda _row: self._sync())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(note)
+        lay.addWidget(self.status)
+        lay.addWidget(self.list, 1)
+        self.button_row = _centered_row(self.apply_button, self.delete_button, self.record_button)
+        lay.addLayout(self.button_row)  # one row; the card's Close button joins it
+        self._sync()
+        win.app.run_bg(self.load, on_error=lambda m: win.app.bridge.call.emit(lambda: self.status.setText(f"Could not list them: {m}")))
+
+    def load(self) -> None:
+        found = self.win.app.client().list_addons(self.game["id"])
+        self.win.app.bridge.call.emit(lambda: self.fill(found))
+
+    def fill(self, found: list[dict]) -> None:
+        self.addons = found
+        self.list.clear()
+        for addon in found:
+            item = QListWidgetItem(
+                f"[{addon['category'].upper()}] {addon['name']}\n{fmt_bytes(addon['size_bytes'])}, {addon['file_count']} file{'s' if addon['file_count'] != 1 else ''}"
+            )
+            item.setData(Qt.UserRole, addon)
+            self.list.addItem(item)
+        self.status.setText("" if found else "The server keeps none for this game yet.")
+        if found:
+            self.list.setCurrentRow(0)
+        self._sync()
+
+    def _current(self) -> dict | None:
+        item = self.list.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _sync(self) -> None:
+        has = self._current() is not None
+        self.apply_button.setEnabled(has)
+        self.delete_button.setEnabled(has)
+        self.record_button.setText(
+            "Finish and send..." if addons.layer_is_open(self.game["id"]) else "Install addon"
+        )
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def apply(self) -> None:
+        addon = self._current()
+        if addon is None:
+            return
+        self.win.ask(
+            f"Apply {addon['name']} to {self.game['name']}? Files with the same names are replaced.",
+            lambda: self._apply(addon),
+            game=self.game["id"],
+        )
+
+    def _apply(self, addon: dict) -> None:
+        app = self.win.app
+
+        def work() -> None:
+            with tempfile.TemporaryDirectory() as scratch:
+                count = addons.apply_addon(app.client(), self.game["id"], self.install_dir, addon, Path(scratch))
+            app.bridge.call.emit(lambda: self.win.message(f"{addon['name']}: {count} file{'s' if count != 1 else ''} put over the game.", "info"))
+
+        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not apply {addon['name']}: {m}", "error")))
+
+    def delete(self) -> None:
+        addon = self._current()
+        if addon is not None:
+            self.win.ask(
+                f"Delete {addon['name']} from the server? Other machines can no longer get it.",
+                lambda: self._delete(addon),
+                danger=True,
+                game=self.game["id"],
+            )
+
+    def _delete(self, addon: dict) -> None:
+        app = self.win.app
+
+        def work() -> None:
+            app.client().delete_addon(self.game["id"], addon["id"])
+            self.load()
+
+        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not delete {addon['name']}: {m}", "error")))
+
+    def record(self) -> None:
+        app, gid = self.win.app, self.game["id"]
+        if not addons.layer_is_open(gid):
+            addons.open_layer(gid, self.install_dir)
+            self._sync()
+            self.win.message(
+                "Install the addon on this game now (run its installer yourself), then come back here and choose "
+                "Finish and send.",
+                "info",
+            )
+            return
+        before = addons.open_layer(gid, self.install_dir)  # the kept starting picture of the layer
+
+        def work() -> None:
+            changed = addons.close_layer(gid, self.install_dir, before)
+            app.bridge.call.emit(lambda: self._recorded(changed))
+
+        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not read the changes: {m}", "error")))
+
+    def _recorded(self, changed: list[tuple[str, Path]]) -> None:
+        self._sync()
+        if not changed:
+            self.win.message("Nothing changed in the game's folder, so there is nothing to send.", "info")
+            return
+        self.win.push(SendLayerPage(self.win, self.game, self.install_dir, changed))
 
 
 class AboutPage(Page):
@@ -3112,9 +3660,13 @@ class GamePage(Page):
         self._show_play_rows()
         self.rebuild()
 
-    def start_with(self, version: dict, installer: dict | None, extract: bool = False) -> None:
+    def start_with(
+        self, version: dict, installer: dict | None, extract: bool = False, steps: list[dict] | None = None
+    ) -> None:
         self.switch_version(version)
-        if extract:
+        if steps:
+            self.win.install_game(version, installer, self._installing, steps=steps)
+        elif extract:
             self.win.install_game(version, installer, self._installing, extract=True)
         else:
             self.win.install_game(version, installer, self._installing)
@@ -3307,6 +3859,7 @@ class GamePage(Page):
             self.first = self._button("Play", self.play, True)
             self.play_ring = SpinRing(self.first)
             self._button("Options", lambda: self.show_options(rec))
+            self._button("Addons", lambda: self.win.push(AddonsPage(self.win, self.game, rec)))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
@@ -3327,6 +3880,39 @@ class GamePage(Page):
         if group is not None and len(group.versions) > 1 and fresh:
             self.win.push(InstallerPickerPage(self.win, self, group))
             return
+        if self.game["id"] not in local:
+            self._install_or_order()
+            return
+        self.win.install_game(self.game, None, self._installing)
+
+    def _install_or_order(self) -> None:
+        """A new game with more than one installer to choose from (patches next to the installer, installers inside a
+        disc) opens the installer picker by itself, with the server's remembered order ticked. A game with one installer
+        starts at once, and a lookup that fails never gets in the way: the install starts as usual."""
+        gid = self.game["id"]
+        app = self.win.app
+        group = self._group()
+
+        def work() -> None:
+            client = app.client()
+            data = client.candidates(gid)
+            found = data.get("candidates", [])
+            # The installers of a disc are in it: look inside, so they count as choices too.
+            inside = {}
+            for source in addons.sources(found):
+                try:
+                    inside[source["path"]] = client.candidates(gid, source["path"]).get("candidates", [])
+                except Exception:  # noqa: BLE001 - a disc that cannot be read is left as it is
+                    continue
+            if group is None or len(addons.chainable(addons.with_inside(found, inside))) < 2:
+                app.bridge.call.emit(self._start_plain)
+            else:
+                saved = data.get("order") or []
+                app.bridge.call.emit(lambda: self.win.push(InstallerPickerPage(self.win, self, group, saved=saved)))
+
+        app.run_bg(work, on_error=lambda _m: app.bridge.call.emit(self._start_plain))
+
+    def _start_plain(self) -> None:
         self.win.install_game(self.game, None, self._installing)
 
     def _installing(self) -> None:
@@ -4840,7 +5426,9 @@ class MainWindow(QMainWindow):
         page.no.clicked.connect(no)
         self.push(page)
 
-    def install_game(self, game: dict, installer: dict | None = None, then=None, extract: bool = False) -> None:
+    def install_game(
+        self, game: dict, installer: dict | None = None, then=None, extract: bool = False, steps: list[dict] | None = None
+    ) -> None:
         """Start installing `game`. One that was begun carries on where it is (its drive has to be back); a new
         one goes into the first install folder that is connected and has room, and when an earlier folder is
         full the user is asked, folder by folder, before it goes into a later one. `then` runs once started."""
@@ -4853,7 +5441,10 @@ class MainWindow(QMainWindow):
             return
 
         def go(root: Path | None = None, extract: bool | None = None) -> None:
-            self.app.start_install(game, installer, root, extract)
+            if steps:
+                self.app.start_install(game, installer, root, extract, steps)
+            else:
+                self.app.start_install(game, installer, root, extract)
             if then:
                 then()
 
@@ -4879,6 +5470,9 @@ class MainWindow(QMainWindow):
 
         if extract:  # asked for in the picker: nothing left to ask
             go(None, True) if rec else size_then_place(True)
+            return
+        if steps:  # a chain of installers chosen in the picker: nothing to extract, nothing left to ask
+            go(None, False) if rec else size_then_place(False)
             return
         # A game that was begun is asked too when its session is not running (an attempt that failed
         # leaves its record behind, and starting it again would only fail the same way).
