@@ -15,6 +15,9 @@ ready) needs the `gui` extra.
 - Makes a desktop entry and a Steam shortcut for each game, with the server's artwork. They run the game straight through
   Faugus Launcher, umu, Proton or Wine (or directly on Windows) and keep working without the client.
 - Backs your saves up to the server and brings them to your other machines.
+- Runs a game's installers and patches in a chosen order, and sends or takes the mods, patches and DLC of a game as addons kept
+  on the server, never mistaken for saves. It is not a mod manager: for load order and conflicts use dedicated software such
+  as Amethyst Mod Manager.
 - Fully usable with a controller, on a Steam Deck included.
 
 ## Install

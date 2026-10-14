@@ -805,9 +805,11 @@ def test_the_notifications_of_the_last_run_show_at_once_and_the_first_answer_rep
 
 def _link_win(win, monkeypatch, games=(("Epsilon", 31),)):
     started = []
-    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None: started.append(game["id"]))
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append(game["id"]))
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    # Install first asks the server which installers there are (tested on its own); here a link just starts it.
+    monkeypatch.setattr(gui.GamePage, "_install_or_order", gui.GamePage._start_plain)
     win.app.set_games([{"id": gid, "name": name, "library_id": None} for name, gid in games])
     return started
 
@@ -906,7 +908,8 @@ def test_an_empty_hand_over_only_brings_the_window_forward(win, qapp, monkeypatc
 
 def test_a_link_waits_for_the_games_to_be_loaded(win, qapp, monkeypatch):
     started = []
-    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None: started.append(game["id"]))
+    monkeypatch.setattr(gui.GamePage, "_install_or_order", gui.GamePage._start_plain)
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append(game["id"]))
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
     monkeypatch.setattr(win.saves, "check_all", lambda: None)
@@ -1795,8 +1798,8 @@ def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_h
     assert not win.overlay.showing  # no message sending the user to the server
     picker.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
     assert "could not tell which installer" in picker.status.text()
-    rows = [picker.list.item(i).text() for i in range(picker.list.count())]
-    assert not any("Let the server choose" in r for r in rows) and any("gothic2.exe" in r for r in rows)
+    rows = _rows(picker)
+    assert picker.server_button.isHidden() and any("gothic2.exe" in r for r in rows)  # it could not choose: not offered
 
     picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole)))
     assert started == [(41, {"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
@@ -2037,23 +2040,23 @@ def _picker_for(win, qapp, monkeypatch, needed=True):
 
 
 def _rows(picker):
-    return [picker.list.item(i).text() for i in range(picker.list.count())]
+    return [picker.text_of(picker.list.item(i)) for i in range(picker.list.count())]
 
 
 EXE = {"path": "Metroid.exe", "file_size_bytes": 1000, "kind": "executable (top level)", "category": "game"}
 
 
-def test_a_folder_with_no_installer_offers_its_executables_and_just_extract(win, qapp, monkeypatch):
+def test_a_folder_with_no_installer_offers_its_executables_and_a_just_copy_button(win, qapp, monkeypatch):
     page, picker = _picker_for(win, qapp, monkeypatch)
     started = []
-    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, extract)))
 
     picker.on_installers(41, [EXE], "", True)
     rows = _rows(picker)
-    assert any("Just copy" in r for r in rows) and any("Metroid.exe" in r for r in rows)
-    assert not any("Let the server choose" in r for r in rows) and "probably the game itself" in picker.status.text()
+    assert any("Metroid.exe" in r for r in rows) and not any("Just copy" in r for r in rows)  # copy is a button, not a row
+    assert picker.server_button.isHidden() and "probably the game itself" in picker.status.text()
 
-    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Just copy" in picker.list.item(i).text()))
+    picker.copy_button.click()
     assert started == [(None, True)]
 
 
@@ -2063,26 +2066,28 @@ def test_an_executable_can_still_be_picked_from_that_folder(win, qapp, monkeypat
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
 
     picker.on_installers(41, [EXE], "", True)
-    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Metroid.exe" in picker.list.item(i).text()))
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "Metroid.exe" in picker.text_of(picker.list.item(i))))
     assert started == [(EXE, False)]
 
 
-def test_just_copy_is_always_on_offer_and_comes_first_only_when_there_is_no_installer(win, qapp, monkeypatch):
+def test_just_copy_is_a_button_above_install_and_always_on_offer(win, qapp, monkeypatch):
     _page, picker = _picker_for(win, qapp, monkeypatch)
     started = []
-    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False: started.append((installer, extract)))
-    setup = {"path": "setup.exe", "file_size_bytes": 1000, "kind": "known installer", "category": "game"}
-    picker.on_installers(41, [setup], "", False)
-    rows = _rows(picker)
-    copy = next(i for i, r in enumerate(rows) if "Just copy" in r)
-    assert copy == len(rows) - 1 and copy > next(i for i, r in enumerate(rows) if "setup.exe" in r)  # last: an installer was found
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, extract)))
+    picker.on_installers(41, [SETUP], "", False)
 
-    picker.choose(picker.list.item(copy))
+    assert picker.copy_button.isEnabled() and picker.copy_button.text().startswith("Just copy")
+    assert picker.copy_button.geometry().bottom() < picker.ok.mapTo(picker, picker.ok.rect().topLeft()).y() + picker.ok.height()
+    picker.copy_button.click()
     assert started == [(None, True)]
 
-    picker.on_installers(41, [EXE], "", True)
-    rows = _rows(picker)
-    assert "Just copy" in rows[1]  # right under the version's name
+
+def test_the_picker_says_install_and_cancel_in_red(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch)
+    pump(qapp)
+
+    assert picker.ok.text() == "Install"
+    assert win.modal.close_button.text() == "Cancel" and win.modal.close_button.property("danger") is True
 
 
 def test_the_picker_learns_from_the_server_that_there_is_no_installer(win, qapp, monkeypatch):
@@ -3695,7 +3700,7 @@ def test_the_installer_picker_is_answered_by_ok_not_by_picking_the_entry(win, qa
     monkeypatch.setattr(game_page, "start_with", lambda *a, **k: started.append(a))
     page.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
     rows = [page.list.item(i) for i in range(page.list.count())]
-    row = next(r for r in rows if "gothic2.exe" in r.text())
+    row = next(r for r in rows if "gothic2.exe" in page.text_of(r))
     page.list.setCurrentItem(row)
     page.list.itemActivated.emit(row)
     assert win.current_page() is page and page.ok.isEnabled() and started == []  # only selected
@@ -3758,3 +3763,626 @@ def test_a_change_while_the_buttons_are_made_does_not_double_them(win, qapp, tmp
     pump(qapp)
     texts = [page.buttons.itemAt(i).widget().text() for i in range(page.buttons.count()) if page.buttons.itemAt(i).widget()]
     assert texts == ["Pause", "Cancel local install", "Cancel server install"]
+
+
+# --- several installers in order ------------------------------------------------------------------------
+
+SETUP = {"path": "setup.exe", "file_size_bytes": 1000, "kind": "known installer", "category": "game"}
+PATCH1 = {"path": "patch1.exe", "file_size_bytes": 10, "kind": "executable (top level)", "category": "patch"}
+PATCH2 = {"path": "patch2.exe", "file_size_bytes": 20, "kind": "executable (top level)", "category": "patch"}
+
+
+class OrderServer:
+    def __init__(self, saved=()):
+        self.saved, self.put = list(saved), []
+
+    def get_install_order(self, game_id):
+        return self.saved
+
+    def put_install_order(self, game_id, steps):
+        self.put.append((game_id, steps))
+        return steps
+
+
+def _order_page(win, qapp, monkeypatch, found, saved=()):
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    server = OrderServer(saved)
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    picker.on_installers(41, found, "", False)
+    picker.list.setCurrentRow(next(i for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole)))
+    pump(qapp)
+    return page, picker, server
+
+
+def _index_of(picker, path, source=None):
+    for i in range(picker.list.count()):
+        key = picker._key(picker.list.item(i))
+        if key and key[1] == path and key[2] == source:
+            return i
+    raise AssertionError(f"no row for {path}")
+
+
+def _widget(picker, path, source=None):
+    return picker.list.itemWidget(picker.list.item(_index_of(picker, path, source)))
+
+
+def _tick(picker, qapp, path, source=None):
+    _widget(picker, path, source).check.click()
+    pump(qapp)
+
+
+def _installer_rows(picker):
+    """The paths of the rows that are installers, top to bottom, with their number when ticked."""
+    out = []
+    for i in range(picker.list.count()):
+        widget = picker.list.itemWidget(picker.list.item(i))
+        key = picker._key(picker.list.item(i))
+        if widget is not None and widget.check is not None:
+            number = [lbl.text() for lbl in widget.findChildren(QLabel) if lbl.objectName() == "rowNumber"]
+            out.append((key[1], number[0] if number else None))
+    return out
+
+
+def test_ticking_an_installer_moves_it_to_the_top_numbered_in_the_order_it_will_run(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    assert _installer_rows(picker) == [("setup.exe", None), ("patch1.exe", None), ("patch2.exe", None)]
+
+    _tick(picker, qapp, "patch2.exe")
+    _tick(picker, qapp, "setup.exe")
+
+    assert _installer_rows(picker) == [("patch2.exe", "1"), ("setup.exe", "2"), ("patch1.exe", None)]
+
+
+def test_unticking_sends_the_row_back_below_and_renumbers_the_rest(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    for path in ("setup.exe", "patch1.exe", "patch2.exe"):
+        _tick(picker, qapp, path)
+
+    _tick(picker, qapp, "patch1.exe")
+
+    assert _installer_rows(picker) == [("setup.exe", "1"), ("patch2.exe", "2"), ("patch1.exe", None)]
+
+
+def test_the_arrows_on_a_row_move_it_and_the_edges_cannot_go_further(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    for path in ("setup.exe", "patch1.exe", "patch2.exe"):
+        _tick(picker, qapp, path)
+    first, last = _widget(picker, "setup.exe"), _widget(picker, "patch2.exe")
+    assert not first.arrows[0].isEnabled() and first.arrows[1].isEnabled()  # the first cannot go up
+    assert last.arrows[0].isEnabled() and not last.arrows[1].isEnabled()  # the last cannot go down
+
+    _widget(picker, "patch2.exe").arrows[0].click()  # patch2 up
+    pump(qapp)
+
+    assert [p for p, _ in _installer_rows(picker)] == ["setup.exe", "patch2.exe", "patch1.exe"]
+
+
+def test_right_and_left_walk_onto_the_arrows_of_a_ticked_row_and_enter_moves_it(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    _tick(picker, qapp, "setup.exe")
+    _tick(picker, qapp, "patch1.exe")
+    picker.list.setFocus()
+    picker.list.setCurrentRow(_index_of(picker, "patch1.exe"))
+    pump(qapp)
+    assert picker.arrow is None and not hasattr(picker, "up_button")  # no Up and Down buttons below the list
+
+    QTest.keyClick(picker.list, Qt.Key_Right)
+    pump(qapp)
+    assert picker.arrow == 0 and _widget(picker, "patch1.exe").arrows[0].property("picked") is True  # Up
+
+    QTest.keyClick(picker.list, Qt.Key_Right)
+    pump(qapp)
+    assert picker.arrow == 0  # Down is out for the last row: Right has nowhere further to go
+
+    QTest.keyClick(picker.list, Qt.Key_Return)  # Enter on Up moves the row up and does not untick it
+    pump(qapp)
+    assert [p for p, _ in _installer_rows(picker)] == ["patch1.exe", "setup.exe"]
+    assert picker.arrow == 1  # it is first now: Up is out, the arrow stays on what can be pressed
+
+    QTest.keyClick(picker.list, Qt.Key_Left)
+    pump(qapp)
+    assert picker.arrow is None and _widget(picker, "patch1.exe").arrows[1].property("picked") is False
+
+
+def test_right_does_nothing_on_a_row_that_is_not_ticked(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    picker.list.setFocus()
+    picker.list.setCurrentRow(_index_of(picker, "setup.exe"))
+    pump(qapp)
+
+    QTest.keyClick(picker.list, Qt.Key_Right)
+
+    assert picker.arrow is None
+
+
+def test_another_row_takes_the_keyboard_off_the_arrows(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    _tick(picker, qapp, "setup.exe")
+    _tick(picker, qapp, "patch1.exe")
+    picker.list.setFocus()
+    picker.list.setCurrentRow(_index_of(picker, "setup.exe"))
+    QTest.keyClick(picker.list, Qt.Key_Right)
+    assert picker.arrow is not None
+
+    QTest.keyClick(picker.list, Qt.Key_Down)
+    pump(qapp)
+
+    assert picker.arrow is None
+
+
+def test_enter_ticks_the_selected_installer(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    picker.list.setCurrentRow(_index_of(picker, "patch1.exe"))
+
+    picker.list.itemActivated.emit(picker.list.currentItem())
+    pump(qapp)
+
+    assert _installer_rows(picker) == [("patch1.exe", "1"), ("setup.exe", None)]
+
+
+def test_install_with_several_ticked_runs_them_in_that_order_and_the_server_remembers_it(win, qapp, monkeypatch):
+    page, picker, server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, steps)))
+    _tick(picker, qapp, "setup.exe")
+    _tick(picker, qapp, "patch2.exe")
+    _tick(picker, qapp, "patch1.exe")
+    _widget(picker, "patch1.exe").arrows[0].click()  # patch1 above patch2
+    pump(qapp)
+
+    picker.accept()
+
+    steps = [{"path": "setup.exe", "source_path": None}, {"path": "patch1.exe", "source_path": None}, {"path": "patch2.exe", "source_path": None}]
+    assert started == [(None, steps)] and server.put[-1][1] == steps
+
+
+def test_install_with_one_ticked_installer_runs_just_that_one(win, qapp, monkeypatch):
+    page, picker, server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, steps)))
+    _tick(picker, qapp, "patch1.exe")
+
+    picker.accept()
+
+    assert started == [(PATCH1, None)] and server.put == []
+
+
+def test_with_nothing_ticked_install_runs_the_selected_row(win, qapp, monkeypatch):
+    page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, steps)))
+    picker.list.setCurrentRow(_index_of(picker, "setup.exe"))
+
+    picker.accept()
+
+    assert started == [(SETUP, None)]
+
+
+def test_a_tick_survives_the_list_being_drawn_again(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1])
+    _tick(picker, qapp, "patch1.exe")
+
+    picker.on_inside(41, "nothing", [])  # another redraw
+
+    assert _installer_rows(picker) == [("patch1.exe", "1"), ("setup.exe", None)]
+
+
+def test_installers_are_big_labels_with_a_flag_and_a_disc_or_the_servers_choice_has_none(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, DISC])
+    flags = {
+        picker._key(picker.list.item(i))[1]: picker.list.itemWidget(picker.list.item(i)).check is not None
+        for i in range(picker.list.count())
+        if picker.list.itemWidget(picker.list.item(i)) is not None
+    }
+
+    assert flags == {"setup.exe": True, "2 - Setup/DISK1.ISO": False}
+    assert picker.list.itemWidget(picker.list.item(_index_of(picker, "setup.exe"))).objectName() == "installerRow"
+
+
+# --- mods, patches and DLC kept on the server ---------------------------------------------------------------
+
+
+class AddonServer:
+    def __init__(self, addons=(), zips=None):
+        self.addons, self.zips, self.uploads, self.deleted = list(addons), zips or {}, [], []
+
+    def list_addons(self, game_id):
+        return self.addons
+
+    def download_addon(self, game_id, addon_id, dest, on_progress=None):
+        dest.write_bytes(self.zips[addon_id])
+
+    def delete_addon(self, game_id, addon_id):
+        self.deleted.append(addon_id)
+        self.addons = [a for a in self.addons if a["id"] != addon_id]
+
+    def upload_addon(self, game_id, category, name, archive):
+        import zipfile as _zip
+
+        with _zip.ZipFile(archive) as zf:
+            self.uploads.append((category, name, sorted(zf.namelist())))
+        return {"id": 1}
+
+
+def _addons_page(win, qapp, monkeypatch, tmp_path, server):
+    from mog_client.config import InstalledGame
+
+    folder = tmp_path / "Metroid"
+    folder.mkdir()
+    (folder / "Metroid.exe").write_bytes(b"exe")
+    rec = InstalledGame(game_id=41, name="Metroid", install_dir=str(folder), state="installed")
+    monkeypatch.setattr(win.app, "client", lambda: server)
+
+    def run_now(fn, on_error=None):  # as App.run_bg, on this thread: a failure goes to on_error
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            (on_error or win.app.bridge.error.emit)(str(e))
+
+    monkeypatch.setattr(win.app, "run_bg", run_now)
+    said = []
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: said.append((level, text)))
+    monkeypatch.setattr(win, "ask", lambda text, on_yes, *a, **k: on_yes())
+    page = gui.AddonsPage(win, {"id": 41, "name": "Metroid"}, rec)
+    pump(qapp)
+    return page, folder, said
+
+
+def _zip_of(members):
+    import io
+    import zipfile as _zip
+
+    buf = io.BytesIO()
+    with _zip.ZipFile(buf, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+ADDON = {"id": 3, "category": "patch", "name": "Patch 2.0", "size_bytes": 10, "file_count": 1}
+
+
+def test_the_addons_of_the_server_are_listed_and_one_is_applied_over_the_game(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer([ADDON], {3: _zip_of({"data/new.pak": b"new"})})
+    page, folder, said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+    assert page.list.count() == 1 and page.list.item(0).text().startswith("[PATCH] Patch 2.0")
+
+    page.apply()
+    pump(qapp)
+
+    assert (folder / "data" / "new.pak").read_bytes() == b"new"
+    assert said and said[-1][0] == "info" and "1 file put over the game" in said[-1][1]
+
+
+def test_a_failed_apply_is_told_not_swallowed(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer([ADDON], {3: _zip_of({"../escape": b"x"})})
+    page, _folder, said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+
+    page.apply()
+    pump(qapp)
+
+    assert said[-1][0] == "error" and "Unsafe" in said[-1][1]
+
+
+def test_an_addon_can_be_deleted_from_the_server_and_leaves_the_list(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer([ADDON])
+    page, _folder, _said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+
+    page.delete()
+    pump(qapp)
+
+    assert server.deleted == [3] and page.list.count() == 0
+
+
+def test_a_patch_run_by_hand_is_recorded_then_sent_with_a_name(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer()
+    page, folder, said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+    assert page.record_button.text() == "Install addon"
+
+    page.record()  # the layer begins
+    assert page.record_button.text().startswith("Finish and send")
+    (folder / "Metroid.exe").write_bytes(b"patched exe, longer")
+    (folder / "extra.dat").write_bytes(b"x")
+
+    page.record()  # and ends: what changed is offered for sending
+    pump(qapp)
+    send = win.current_page()
+    assert isinstance(send, gui.SendLayerPage) and len(send.changed) == 2
+
+    send.name.setText("Patch 1.1")
+    send.send("patch")
+    pump(qapp)
+    assert server.uploads == [("patch", "Patch 1.1", ["Metroid.exe", "extra.dat"])]
+    assert said[-1] == ("info", "Sent Patch 1.1 to the server as a patch.")
+
+
+def test_a_layer_that_changed_nothing_says_so_and_sends_nothing(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer()
+    page, _folder, said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+
+    page.record()
+    page.record()
+    pump(qapp)
+
+    assert "Nothing changed" in said[-1][1] and not isinstance(win.current_page(), gui.SendLayerPage)
+
+
+def test_a_game_not_installed_has_only_the_install_button_for_installers(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": None}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+
+    labels = [b.text() for b in page.findChildren(QPushButton)]
+    assert "Install" in labels and not any("installers" in label.lower() for label in labels)
+
+
+class CandidatesServer:
+    def __init__(self, candidates, order=()):
+        self.data = {"candidates": candidates, "order": list(order)}
+
+    def candidates(self, game_id, source=None):
+        return self.data
+
+
+def _install_click(win, qapp, monkeypatch, server):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    monkeypatch.setattr(win.app, "client", lambda: server)
+
+    def run_now(fn, on_error=None):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            (on_error or win.app.bridge.error.emit)(str(e))
+
+    monkeypatch.setattr(win.app, "run_bg", run_now)
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, steps)))
+    win.app.set_games([{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    page.install()
+    pump(qapp)
+    return page, started
+
+
+def test_installing_a_game_with_patches_opens_the_picker_by_itself(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP, PATCH1, PATCH2]))
+
+    assert isinstance(win.current_page(), gui.InstallerPickerPage) and started == []
+
+
+def test_installing_a_game_with_one_installer_starts_at_once(win, qapp, monkeypatch):
+    _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP]))
+
+    assert not isinstance(win.current_page(), gui.InstallerPickerPage) and started == [(None, None)]
+
+
+def test_a_game_whose_order_the_server_remembers_opens_the_picker_with_it_ticked_and_numbered(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, started = _install_click(
+        win, qapp, monkeypatch, CandidatesServer([SETUP, PATCH1, PATCH2], order=[{"path": "patch2.exe"}, {"path": "setup.exe"}])
+    )
+    picker = win.current_page()
+    picker.on_installers(41, [SETUP, PATCH1, PATCH2], "", False)
+    pump(qapp)
+
+    assert isinstance(picker, gui.InstallerPickerPage) and started == []
+    assert _installer_rows(picker) == [("patch2.exe", "1"), ("setup.exe", "2"), ("patch1.exe", None)]
+
+
+def test_a_failed_lookup_never_stops_the_install(win, qapp, monkeypatch):
+    class Broken:
+        def candidates(self, game_id, source=None):
+            raise RuntimeError("no answer")
+
+    _page, started = _install_click(win, qapp, monkeypatch, Broken())
+
+    assert started == [(None, None)]
+
+
+# --- installers inside a disc ---------------------------------------------------------------------------
+
+DISC = {"path": "2 - Setup/DISK1.ISO", "file_size_bytes": 4000, "kind": "disc image", "category": "game"}
+INNER_SETUP = {"path": "setup.exe", "file_size_bytes": 250, "kind": "known installer", "category": "game"}
+INNER_EDIT = {"path": "edit/setup.exe", "file_size_bytes": 250, "kind": "known installer", "category": "game"}
+
+
+def test_the_installers_inside_a_disc_are_listed_under_it_and_can_be_picked(win, qapp, monkeypatch):
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    asked = []
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: asked.append((gid, source)))
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append(installer))
+
+    picker.on_installers(41, [DISC], "", False)
+    assert asked == [(41, "2 - Setup/DISK1.ISO")]
+    assert any("Looking inside" in r for r in _rows(picker))
+
+    picker.on_inside(41, "2 - Setup/DISK1.ISO", [INNER_SETUP, INNER_EDIT])
+    rows = _rows(picker)
+    assert any("DISK1.ISO > setup.exe" in r for r in rows) and any("DISK1.ISO > edit/setup.exe" in r for r in rows)
+
+    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if "DISK1.ISO > setup.exe" in picker.text_of(picker.list.item(i))))
+    assert started[0]["path"] == "setup.exe" and started[0]["source_path"] == "2 - Setup/DISK1.ISO"
+
+
+def test_a_disc_descriptor_is_not_looked_inside(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch)
+    asked = []
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: asked.append(source))
+
+    picker.on_installers(41, [DISC, {"path": "2 - Setup/DISK1.MDS", "kind": "disc image", "category": "game", "file_size_bytes": 4}], "", False)
+
+    assert asked == ["2 - Setup/DISK1.ISO"]
+
+
+def test_installers_inside_discs_can_be_ticked_and_ordered_with_the_others(win, qapp, monkeypatch):
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, steps)))
+    monkeypatch.setattr(win.app, "client", lambda: OrderServer())
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    picker.on_installers(41, [SETUP, DISC], "", False)
+    picker.on_inside(41, "2 - Setup/DISK1.ISO", [INNER_SETUP])
+    _tick(picker, qapp, "setup.exe", "2 - Setup/DISK1.ISO")
+    _tick(picker, qapp, "setup.exe")
+
+    assert [(p, n) for p, n in _installer_rows(picker)] == [("setup.exe", "1"), ("setup.exe", "2")]
+    assert "DISK1.ISO > setup.exe" in _rows(picker)[1]  # the first is the one inside the disc
+
+    picker.accept()
+    assert started == [(None, [{"path": "setup.exe", "source_path": "2 - Setup/DISK1.ISO"}, {"path": "setup.exe", "source_path": None}])]
+
+
+def test_install_reads_inside_the_discs_before_deciding_to_open_the_picker(win, qapp, monkeypatch):
+    class WithDisc:
+        def candidates(self, game_id, source=None):
+            if source:
+                return {"candidates": [INNER_SETUP, INNER_EDIT]}
+            return {"candidates": [DISC], "order": []}
+
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, started = _install_click(win, qapp, monkeypatch, WithDisc())
+
+    assert isinstance(win.current_page(), gui.InstallerPickerPage) and started == []
+
+
+def test_the_down_arrow_leaves_the_last_row_for_the_buttons(win, qapp, monkeypatch):
+    """The list used to keep the arrow at its last row, so the buttons below could not be reached from the keyboard."""
+    _page, picker = _picker_for(win, qapp, monkeypatch)
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+    pump(qapp)
+    picker.list.setFocus()
+    picker.list.setCurrentRow(picker.list.count() - 1)
+    pump(qapp)
+    assert picker.list.hasFocus()
+
+    QTest.keyClick(picker.list, Qt.Key_Down)
+    pump(qapp)
+
+    assert not picker.list.hasFocus() and picker.focusWidget() in (picker.copy_button, picker.ok, win.modal.close_button)
+
+
+def test_only_the_current_row_is_filled_and_an_arrow_marked_on_it_is_cleared_when_another_row_is_reached(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    for path in ("setup.exe", "patch1.exe", "patch2.exe"):
+        _tick(picker, qapp, path)
+    picker.list.setFocus()
+    picker.list.setCurrentRow(_index_of(picker, "patch1.exe"))
+    pump(qapp)
+    assert [_widget(picker, p).property("current") for p in ("setup.exe", "patch1.exe", "patch2.exe")] == [False, True, False]
+
+    QTest.keyClick(picker.list, Qt.Key_Right)  # onto the Up arrow of patch1
+    assert _widget(picker, "patch1.exe").arrows[0].property("picked") is True
+
+    QTest.keyClick(picker.list, Qt.Key_Down)  # another row: no arrow stays marked anywhere
+    pump(qapp)
+    assert [_widget(picker, p).property("current") for p in ("setup.exe", "patch1.exe", "patch2.exe")] == [False, False, True]
+    assert not any(b.property("picked") for row in picker._rows() for b in row.arrows)
+    assert picker.arrow is None
+
+
+def test_let_the_server_choose_is_a_button_before_just_copy_on_the_same_row_and_not_a_list_row(win, qapp, monkeypatch):
+    page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, extract, steps)))
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+    pump(qapp)
+
+    assert not any("Let the server choose" in r for r in _rows(picker))
+    assert picker.server_button.isVisible() and picker.server_button.text() == "Let the server choose"
+    same_row = picker.server_button.geometry().center().y() == picker.copy_button.geometry().center().y()
+    assert same_row and picker.server_button.geometry().right() < picker.copy_button.geometry().left()  # before it
+    assert picker.server_button.geometry().bottom() < picker.ok.geometry().top() + picker.ok.mapTo(picker, picker.ok.rect().topLeft()).y()
+
+    picker.server_button.click()
+    assert started == [(None, False, None)]
+
+
+def _tags(picker):
+    out = {}
+    for i in range(picker.list.count()):
+        widget = picker.list.itemWidget(picker.list.item(i))
+        key = picker._key(picker.list.item(i))
+        if widget is not None and key:
+            out[key[1]] = widget.tag.text() if widget.tag is not None else None
+    return out
+
+
+def test_a_ticked_row_is_tagged_game_or_patch_like_the_server_and_the_kind_text_is_gone(win, qapp, monkeypatch):
+    _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    assert all("known installer" not in r and "executable" not in r for r in _rows(picker))
+    assert _tags(picker) == {"setup.exe": None, "patch1.exe": "patch", "patch2.exe": "patch"}  # the server's own category, for patches
+
+    _tick(picker, qapp, "patch1.exe")
+    _tick(picker, qapp, "setup.exe")
+
+    assert _tags(picker) == {"patch1.exe": "game", "setup.exe": "patch", "patch2.exe": "patch"}  # parts in the install, by place
+    assert _widget(picker, "patch1.exe").tag.property("kind") == "game" and _widget(picker, "setup.exe").tag.property("kind") == "other"
+
+
+def _focus_after(picker, qapp, start, key):
+    start.setFocus()
+    pump(qapp)
+    QTest.keyClick(start, key)
+    pump(qapp)
+    return picker.focusWidget() or QApplication.focusWidget()
+
+
+def test_right_from_install_goes_to_cancel_and_left_comes_back(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+    pump(qapp)
+
+    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Right) is win.modal.close_button
+    assert _focus_after(picker, qapp, win.modal.close_button, Qt.Key_Left) is picker.ok
+
+
+def test_the_two_buttons_above_are_reached_sideways_too_and_up_and_down_change_row(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+    pump(qapp)
+
+    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Right) is picker.copy_button
+    assert _focus_after(picker, qapp, picker.copy_button, Qt.Key_Left) is picker.server_button
+    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Down) in (picker.ok, win.modal.close_button)
+    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Up) in (picker.server_button, picker.copy_button)
+
+
+def test_up_from_the_top_row_of_buttons_goes_back_to_the_list(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+    pump(qapp)
+
+    assert _focus_after(picker, qapp, picker.copy_button, Qt.Key_Up) is picker.list
+
+
+def test_cancel_stops_taking_this_pages_arrows_once_the_page_is_gone(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
+    picker.on_installers(41, [SETUP], "", False)
+    pump(qapp)
+    walked = []
+    monkeypatch.setattr(picker, "_walk_buttons", lambda button, key: walked.append(key) or True)
+    close = win.modal.close_button
+    QTest.keyClick(close, Qt.Key_Right)
+    assert walked == [Qt.Key_Right]  # while the picker is up, its arrows
+
+    win.back()
+    pump(qapp)
+    QTest.keyClick(close, Qt.Key_Right)
+
+    assert walked == [Qt.Key_Right]  # gone: the card's button is left to whatever page comes next

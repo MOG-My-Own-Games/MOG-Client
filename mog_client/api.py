@@ -120,11 +120,18 @@ class Client:
         except json.JSONDecodeError:
             return status, {"_raw": content.decode(errors="replace")}
 
-    def post_file(self, path: str, file_path: Path, timeout: float = 600.0) -> tuple[int, dict]:
-        """POST a file as multipart form data under the field name `file`. Never retried."""
+    def post_file(
+        self, path: str, file_path: Path, timeout: float = 600.0, fields: dict[str, str] | None = None
+    ) -> tuple[int, dict]:
+        """POST a file as multipart form data under the field name `file`, after the text `fields` if any. Never retried."""
         boundary = uuid.uuid4().hex
+        text_parts = "".join(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+            for key, value in (fields or {}).items()
+        )
         head = (
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
+            text_parts
+            + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'
             "Content-Type: application/zip\r\n\r\n"
         ).encode()
         tail = f"\r\n--{boundary}--\r\n".encode()
@@ -362,10 +369,14 @@ class MogClient:
         manual_mode: bool | None = None,
         source_path: str | None = None,
         extract_only: bool | None = None,
+        steps: list[dict] | None = None,
     ) -> dict:
         """`extract_only` True unpacks the game's archive as it is, False runs the installer inside it even when it
-        has none, and None leaves it to the server (which extracts an archive that holds no installer)."""
+        has none, and None leaves it to the server (which extracts an archive that holds no installer). `steps` is the
+        ordered chain of installers ({"path", "source_path"}), the game's own first and the patches after it."""
         body = {"installer_path": installer_path, "proton_build": proton_build}
+        if steps is not None:
+            body["steps"] = steps
         if source_path is not None:
             body["source_path"] = source_path
         if extract_only is not None:
@@ -547,6 +558,47 @@ class MogClient:
             return None
         size = data.get("size_bytes") if status == 200 and isinstance(data, dict) else None
         return size if isinstance(size, int) else None
+
+    def get_install_order(self, game_id: int) -> list[dict]:
+        """The game's saved installer order: [{"position", "path", "source_path"}, ...], first one the game's own."""
+        status, data = self.c.get_json(f"/api/games/{game_id}/install/order")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data.get("steps", [])
+
+    def put_install_order(self, game_id: int, steps: list[dict]) -> list[dict]:
+        """Replace the saved order. Each step is {"path", "source_path"} (source_path may be None)."""
+        status, content, _ = self.c.request("PUT", f"/api/games/{game_id}/install/order", body={"steps": steps})
+        data = json.loads(content.decode() or "null")
+        if status != 200:
+            raise RuntimeError(extract_error(content, status))
+        return data.get("steps", [])
+
+    def list_addons(self, game_id: int) -> list[dict]:
+        """The mods, patches and DLC kept on the server for a game."""
+        status, data = self.c.get_json(f"/api/games/{game_id}/addons")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def upload_addon(self, game_id: int, category: str, name: str, archive: Path) -> dict:
+        """Keep a zip of the files an install added as a mod, patch or DLC of the game (the server answers 201)."""
+        status, data = self.c.post_file(
+            f"/api/games/{game_id}/addons", archive, fields={"category": category, "name": name}
+        )
+        if status != 201:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def download_addon(self, game_id: int, addon_id: int, dest: Path, on_progress: Callable[[int, int], None] | None = None) -> None:
+        status = self.c.download_to(f"/api/games/{game_id}/addons/{addon_id}/download", dest, on_progress=on_progress)
+        if status != 200:
+            raise RuntimeError(f"could not download addon {addon_id}: HTTP {status}")
+
+    def delete_addon(self, game_id: int, addon_id: int) -> None:
+        status, data = self.c.delete_json(f"/api/games/{game_id}/addons/{addon_id}")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
 
     def mods(self, game_id: int) -> list[dict]:
         """The game's mods ({name, kind, size_bytes, file_count}), none when it has none or the server is older."""

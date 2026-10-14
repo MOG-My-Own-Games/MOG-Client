@@ -59,4 +59,15 @@ QMenu::separator { height: 1px; background: #343c49; margin: 6px 10px; }
 #hltbTime { color: #ffffff; font-size: 19px; font-weight: bold; }
 QProgressBar { background: #1e232b; border: none; border-radius: 6px; height: 18px; text-align: center; color: white; }
 QProgressBar::chunk { background: {accent}; border-radius: 6px; }
+#installerRow { background: #1b2028; border: 2px solid #2c333d; border-radius: 10px; }
+#installerRow[ticked="true"] { background: #1d232d; border-color: #3a4a66; }
+#installerRow[current="true"] { background: #2c4f8e; border-color: #8bb4ff; }
+#rowTag { background: #242834; border: 1px solid #343c49; border-radius: 12px; padding: 1px 12px; font-size: 14px; color: #c3c8d2; }
+#rowTag[kind="game"] { border-color: #4c8dff; color: white; }
+#rowTag[kind="other"] { border-style: dashed; }
+#rowNumber { background: {accent}; color: white; border-radius: 17px; font-weight: bold; }
+QPushButton#rowArrow { padding: 0; min-width: 40px; max-width: 40px; min-height: 36px; border: 2px solid transparent; border-radius: 8px; background: {accent}; color: white; }
+QPushButton#rowArrow:hover { background: {accent_hover}; }
+QPushButton#rowArrow[picked="true"] { border-color: white; }
+QPushButton#rowArrow:disabled { background: #2c333d; color: #5b6472; }
 """.replace("{custom_hover}", accent_qss(CUSTOM_HOVER_STOPS)).replace("{custom}", accent_qss(CUSTOM_STOPS)).replace("{accent_hover}", accent_qss(ACCENT_HOVER_STOPS)).replace("{accent}", accent_qss()) + scrollbar_qss()

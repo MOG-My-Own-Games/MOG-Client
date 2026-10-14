@@ -123,6 +123,7 @@ def run_install(
     installer: dict | None = None,
     root: Path | None = None,
     extract_only: bool | None = None,
+    steps: list[dict] | None = None,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
 
@@ -130,7 +131,7 @@ def run_install(
     the one it would pick itself. `root` is the install folder a new game goes into (the first one
     with room when not given); a game already begun stays where it is. `extract_only` unpacks the game's
     archive as it is into the install cache instead of running an installer from it, and is remembered
-    for the game.
+    for the game. `steps` is an ordered chain of installers ({"path", "source_path"}) to run in one session instead.
 
     Blocks until done, failed, stopped or the server needs a manual pick
     (raises RuntimeError with a message in the last two cases)."""
@@ -157,8 +158,11 @@ def run_install(
                     None if archive or installer is None else installer["path"],
                     None,
                     None,
-                    source_path=installer["path"] if archive else None,
+                    # A disc or archive named as the installer is the source to unpack; an installer picked inside one
+                    # carries that source itself, with its own path inside it.
+                    source_path=installer["path"] if archive else (installer or {}).get("source_path"),
                     extract_only=True if rec.extract_only else extract_only,  # None leaves it to the server
+                    steps=steps,
                 )
                 break
             except RuntimeError as e:
