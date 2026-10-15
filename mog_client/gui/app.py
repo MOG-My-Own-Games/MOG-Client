@@ -3247,12 +3247,8 @@ class ExecutablePage(Page):
         self.win, self.on_done, self.rec = win, on_done, rec
         self.root = Path(rec.install_dir)
         self.list = EdgeList()
-        for exe in list_executables(self.root):
-            item = QListWidgetItem(f"{exe.relative_to(self.root)}   ({fmt_bytes(exe.stat().st_size)})")
-            item.setData(Qt.UserRole, str(exe))
-            self.list.addItem(item)
-        if self.list.count():
-            self.list.setCurrentRow(0)
+        self.list.addItem("Looking for the executables...")  # no Qt.UserRole data: accept() ignores it until the scan replaces it
+        win.app.run_bg(self._scan, on_error=lambda m: win.app.bridge.call.emit(lambda: self._scanned([], m)))
         self.list.itemActivated.connect(lambda _: self.focusNextChild())  # picking is not confirming
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._browse)
@@ -3295,6 +3291,22 @@ class ExecutablePage(Page):
         row.addWidget(later)
         row.addWidget(ok)
         lay.addLayout(row)
+
+    def _scan(self) -> None:
+        """The walk of a big install folder (a modded game, written to by its own install) takes a while: not on the GUI thread."""
+        found = [(exe, exe.stat().st_size) for exe in list_executables(self.root)]
+        self.win.app.bridge.call.emit(lambda: self._scanned(found))
+
+    def _scanned(self, found: list[tuple[Path, int]], error: str = "") -> None:
+        self.list.clear()
+        for exe, size in found:
+            item = QListWidgetItem(f"{exe.relative_to(self.root)}   ({fmt_bytes(size)})")
+            item.setData(Qt.UserRole, str(exe))
+            self.list.addItem(item)
+        if error:
+            self.list.addItem(f"Could not look: {error}")
+        if found:
+            self.list.setCurrentRow(0)
 
     def focus_default(self) -> None:
         self.list.setFocus()
@@ -3348,7 +3360,7 @@ class ExecutablePage(Page):
 
     def accept(self) -> None:
         item = self.list.currentItem()
-        if item is None:
+        if item is None or item.data(Qt.UserRole) is None:  # nothing yet, or the "looking" / "could not look" row
             return
         users = self.steam_users()
         self.win.back()

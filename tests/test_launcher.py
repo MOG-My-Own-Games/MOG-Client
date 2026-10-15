@@ -149,6 +149,20 @@ def test_the_executable_picker_does_not_look_inside_the_prefix(tmp_path):
     assert [p.name for p in launcher.list_executables(game)] == ["game.exe", "other.exe"]
 
 
+def test_the_executable_picker_only_looks_at_files_that_could_be_executables(tmp_path, monkeypatch):
+    game = tmp_path / "Game"
+    (game / "mods").mkdir(parents=True)
+    for i in range(50):
+        (game / "mods" / f"mod{i}.zipmod").write_bytes(b"x")
+    (game / "game.exe").write_bytes(b"x" * 10)
+    statted = []
+    real = launcher.Path.is_file
+    monkeypatch.setattr(launcher.Path, "is_file", lambda self: statted.append(self.name) or real(self))
+
+    assert [p.name for p in launcher.list_executables(game)] == ["game.exe"]
+    assert statted == ["game.exe"]  # the mods were not stat-ed one by one
+
+
 def test_native_faugus_2x_has_no_faugus_run_so_launcher_run_is_used(monkeypatch):
     found = {"faugus-launcher": "/usr/bin/faugus-launcher"}
     monkeypatch.setattr(launcher.shutil, "which", lambda name: found.get(name))

@@ -68,6 +68,9 @@ def list_executables(install_dir: Path) -> list[Path]:
             dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]  # the prefix is full of Windows executables
         dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
+            suffix = os.path.splitext(name)[1].lower()
+            if suffix != ".exe" and (suffix != ".sh" or sys.platform == "win32"):
+                continue  # most of a big install is neither: no stat for those (a modded game has tens of thousands of files)
             path = here / name
             if not path.is_file():
                 continue
