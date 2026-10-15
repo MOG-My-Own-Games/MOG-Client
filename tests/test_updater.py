@@ -36,6 +36,7 @@ class _Resp:
         self.data, self.headers = data, {"Content-Length": str(len(data))}
 
     def read(self, n=-1):
+        n = len(self.data) if n is None or n < 0 else n  # like a real response: no size means all of it
         out, self.data = self.data[:n], self.data[n:]
         return out
 
@@ -84,3 +85,45 @@ def test_appimage_update_replaces_the_file(monkeypatch, tmp_path: Path):
     assert updater.apply_update(info) == target
     assert target.read_bytes() == b"new"
     assert target.stat().st_mode & 0o111
+
+
+SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+
+
+def _signed_release(monkeypatch, sums: str, payload: bytes, signature: bytes):
+    from mog_client import ed25519
+
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEY", ed25519.public_key(SEED).hex())
+    files = {"sums": sums.encode(), "sig": signature.hex().encode(), "asset": payload}
+    monkeypatch.setattr(updater, "_open", lambda url: _Resp(files[url.rsplit("/", 1)[-1]]))
+
+
+def test_a_release_signed_by_the_built_in_key_is_installed(monkeypatch, tmp_path: Path):
+    from mog_client import ed25519
+
+    payload = b"new build"
+    sums = f"{hashlib.sha256(payload).hexdigest()}  MOG-Client.exe\n"
+    _signed_release(monkeypatch, sums, payload, ed25519.sign(SEED, sums.encode()))
+    dest = tmp_path / "x"
+    updater.download(UpdateInfo("1.0.0", "MOG-Client.exe", "u/asset", "u/sums", "", "u/sig"), dest)
+    assert dest.read_bytes() == payload
+
+
+def test_replaced_binary_and_checksums_with_the_old_signature_are_refused(monkeypatch, tmp_path: Path):
+    """Whoever can replace a release on GitHub replaces its checksums too: only the signature tells them apart."""
+    from mog_client import ed25519
+
+    honest = f"{hashlib.sha256(b'good').hexdigest()}  MOG-Client.exe\n"
+    forged = f"{hashlib.sha256(b'evil').hexdigest()}  MOG-Client.exe\n"
+    _signed_release(monkeypatch, forged, b"evil", ed25519.sign(SEED, honest.encode()))
+    dest = tmp_path / "x"
+    with pytest.raises(UpdateError, match="does not match"):
+        updater.download(UpdateInfo("1.0.0", "MOG-Client.exe", "u/asset", "u/sums", "", "u/sig"), dest)
+    assert not dest.exists()
+
+
+def test_with_a_key_built_in_an_unsigned_release_is_refused(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(updater, "RELEASE_PUBLIC_KEY", "ab" * 32)
+    monkeypatch.setattr(updater, "_open", lambda url: _Resp(b"x  a\n"))
+    with pytest.raises(UpdateError, match="unsigned"):
+        updater.download(UpdateInfo("1.0.0", "a", "u/asset", "u/sums", ""), tmp_path / "x")

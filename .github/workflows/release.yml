@@ -73,6 +73,16 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: cd artifacts && sha256sum * > SHA256SUMS.txt
+      # The updater checks this signature against the key built into the app (docs/RELEASING.md). Without the secret the
+      # release is left unsigned, which an app with a key built in refuses to install.
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - name: Sign the checksums
+        env:
+          MOG_RELEASE_SIGNING_KEY: ${{ secrets.MOG_RELEASE_SIGNING_KEY }}
+          MOG_SIGNING_OPTIONAL: "1"
+        run: python3 source/scripts/sign-release.py artifacts/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.semver }}

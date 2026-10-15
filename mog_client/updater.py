@@ -14,13 +14,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import net
+from mog_client import ed25519, net
 from mog_client.launcher import host_environ
 from mog_client.version import UPDATE_METHOD, __version__
 
 REPO = "MOG-My-Own-Games/MOG-Client"
 LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 SUMS_NAME = "SHA256SUMS.txt"
+SIG_NAME = SUMS_NAME + ".sig"
+# The public key (64 hex characters) whose signature of SHA256SUMS.txt a release must carry, made by scripts/sign-release.py
+# and signed in the release workflow (see docs/RELEASING.md). With one set, an update that is not signed by it is refused,
+# so a release replaced on GitHub (the binary and its checksums together) is not installed. Empty: the checksums alone are
+# checked, which only catches a damaged download.
+RELEASE_PUBLIC_KEY = ""
 ASSET_SUFFIX = {"appimage": ".appimage", "exe": ".exe"}
 DISABLE_ENV = "MOG_NO_UPDATE_CHECK"
 CHUNK = 1 << 20
@@ -37,6 +43,7 @@ class UpdateInfo:
     asset_url: str
     sums_url: str | None
     page_url: str
+    sig_url: str | None = None
 
 
 def supported() -> bool:
@@ -85,17 +92,38 @@ def check_for_update(
     name = next((n for n in assets if n.lower().endswith(suffix)), None)
     if name is None:
         return None
-    return UpdateInfo(tag.lstrip("v"), name, assets[name], assets.get(SUMS_NAME), release.get("html_url", ""))
+    return UpdateInfo(
+        tag.lstrip("v"), name, assets[name], assets.get(SUMS_NAME), release.get("html_url", ""), assets.get(SIG_NAME)
+    )
 
 
-def _expected_sha256(info: UpdateInfo) -> str:
+def _check_signature(info: UpdateInfo, sums: bytes, key: str) -> None:
+    """Refuse `sums` unless the release's signature of it is from the key built into this client."""
+    if not info.sig_url:
+        raise UpdateError(f"The release has no {SIG_NAME}, refusing to install unsigned code")
+    with _open(info.sig_url) as resp:
+        signature = resp.read()
+    try:
+        public = bytes.fromhex(key)
+        raw = bytes.fromhex(signature.decode().strip())
+    except ValueError as e:
+        raise UpdateError(f"{SIG_NAME} is not a signature") from e
+    if not ed25519.verify(public, sums, raw):
+        raise UpdateError(f"{SIG_NAME} does not match {SUMS_NAME}: refusing to install it")
+
+
+def _expected_sha256(info: UpdateInfo, key: str | None = None) -> str:
     if not info.sums_url:
         raise UpdateError(f"The release has no {SUMS_NAME}, refusing to install unverified code")
     with _open(info.sums_url) as resp:
-        for line in resp.read().decode().splitlines():
-            digest, _, name = line.strip().partition("  ")
-            if name.strip().lstrip("*") == info.asset_name:
-                return digest.lower()
+        sums = resp.read()
+    key = RELEASE_PUBLIC_KEY if key is None else key
+    if key:
+        _check_signature(info, sums, key)
+    for line in sums.decode().splitlines():
+        digest, _, name = line.strip().partition("  ")
+        if name.strip().lstrip("*") == info.asset_name:
+            return digest.lower()
     raise UpdateError(f"{info.asset_name} is not listed in {SUMS_NAME}")
 
 
