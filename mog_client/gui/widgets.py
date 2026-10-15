@@ -441,6 +441,23 @@ class CoverLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.setFixedWidth(full.width())
 
+    def focusInEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e) -> None:  # noqa: N802
+        super().focusOutEvent(e)
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        super().paintEvent(e)
+        if self.hasFocus():  # a cover the Tab rotation stopped on is outlined, as a button with the focus is
+            painter = QPainter(self)
+            painter.setPen(QPen(self.palette().highlight().color(), 3))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+            painter.end()
+
     def _width_for(self, height: int) -> int:
         return min(self._full.width(), round(height * self._full.width() / self._full.height()))
 
