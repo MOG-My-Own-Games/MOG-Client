@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedLayout,
     QStackedWidget,
@@ -163,7 +164,7 @@ from mog_client.progress import RateMeter, format_eta
 from mog_client.saves import devices, runner, sync
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client import launchsettings, protonge, videos, winetricks
+from mog_client import launchargs, launchsettings, protonge, videos, winetricks
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
@@ -315,9 +316,44 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    ARGS_SYNC_EVERY = 60.0  # seconds between two looks at the launch arguments the server keeps for the installed games
+    _args_synced_at = 0.0
+
+    def send_launch_args(self, rec: InstalledGame) -> None:
+        """The arguments of a game were edited here: merge them with the server's and send it what it lacks, at once."""
+        if not self.settings.configured:
+            return
+
+        def work() -> None:
+            current = load_library().get(rec.game_id) or rec
+            launchsettings.pull_args(self.client(), current, self.settings.launcher)
+
+        self.run_bg(work, on_error=lambda _m: None)
+
+    def sync_launch_args(self, every: float = ARGS_SYNC_EVERY) -> None:
+        """Take the launch arguments the server holds for each installed game (edited on the web page, or on another device),
+        so a change reaches the launch script a shortcut runs, not only a start from here."""
+        now = time.monotonic()
+        if not self.settings.configured or now - self._args_synced_at < every:
+            return
+        self._args_synced_at = now
+
+        def work() -> None:
+            client = self.client()
+            for rec in list(load_library().values()):
+                if rec.state == "installed" and rec.executable and installdirs.present(rec):
+                    try:
+                        launchsettings.pull_args(client, rec, self.settings.launcher)
+                    except Exception as e:  # noqa: BLE001 - best effort: an unreachable server just tries again later
+                        logstore.info(f"Could not look at the launch arguments of {rec.name}: {e}")
+                        return
+
+        self.run_bg(work, on_error=lambda _m: None)
+
     def poll_notifications(self) -> None:
         if not self.settings.configured:
             return
+        self.sync_launch_args()
 
         def work():
             try:
@@ -1411,13 +1447,15 @@ class ChoicePage(Page):
 
 
 class ChecklistPage(Page):
-    """A list to tick any number of entries from, then Done."""
+    """A list to tick any number of entries from, then Done. With `exclusive` (a function from an entry's value to its key),
+    only one entry of a key stays ticked: ticking another takes the tick off the one before. `extra` is a button, (text,
+    function of this page), that sits before Done."""
 
     modal = True
 
-    def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done):
+    def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done, exclusive=None, extra=None):
         super().__init__()
-        self.title, self.win, self.on_done = title, win, on_done
+        self.title, self.win, self.on_done, self.exclusive = title, win, on_done, exclusive
         note = QLabel(text)
         note.setWordWrap(True)
         self.list = EdgeList()
@@ -1432,17 +1470,46 @@ class ChecklistPage(Page):
         self.list.itemActivated.connect(self.toggle)
         done = QPushButton("Done")
         done.clicked.connect(self.finish)
+        buttons = [done]
+        if extra is not None:
+            more = QPushButton(extra[0])
+            more.clicked.connect(lambda: extra[1](self))
+            buttons.insert(0, more)
         lay = QVBoxLayout(self)
         lay.addWidget(note)
         lay.addWidget(self.list, 1)
-        self.button_row = _row(done)
+        self.button_row = _row(*buttons)
         lay.addLayout(self.button_row)
 
     def focus_default(self) -> None:
         self.list.setFocus()
 
     def toggle(self, item: QListWidgetItem) -> None:
-        item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+        ticked = item.checkState() != Qt.Checked
+        item.setCheckState(Qt.Checked if ticked else Qt.Unchecked)
+        if ticked:
+            self._one_for_the_key(item)
+
+    def _one_for_the_key(self, ticked: QListWidgetItem) -> None:
+        if self.exclusive is None:
+            return
+        key = self.exclusive(ticked.data(Qt.UserRole))
+        for i in range(self.list.count()):
+            other = self.list.item(i)
+            if other is not ticked and self.exclusive(other.data(Qt.UserRole)) == key:
+                other.setCheckState(Qt.Unchecked)
+
+    def add_entry(self, label: str, value: str) -> None:
+        """An entry made by hand, ticked (or the one already listed for that value), and the list is on it."""
+        item = next((self.list.item(i) for i in range(self.list.count()) if self.list.item(i).data(Qt.UserRole) == value), None)
+        if item is None:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, value)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            self.list.addItem(item)
+        item.setCheckState(Qt.Checked)
+        self._one_for_the_key(item)
+        self.list.setCurrentItem(item)
 
     def finish(self) -> None:
         picked = [
@@ -1452,6 +1519,127 @@ class ChecklistPage(Page):
         ]
         self.win.back()
         self.on_done(picked)
+
+
+class EntriesPage(Page):
+    """A list of entries to add to and take from, the same for the launch arguments and the winetricks settings. Type in the
+    field and press + (or Enter): what is typed is split into entries, each of which shows in the list with a - that takes
+    it out (Enter or A on an entry does the same). OK hands the list over; Back, in red beside OK, leaves without."""
+
+    modal = True
+    compact = True
+    close_text = "Back"
+    close_danger = True  # leaving drops what was added
+
+    def __init__(self, win, title, note, placeholder, entries, split, check, on_done, limit, key=None):
+        super().__init__()
+        self.title, self.win, self.on_done = title, win, on_done
+        self.split, self.check, self.limit, self.key = split, check, limit, key
+        self.list = EdgeList()
+        for entry in entries:
+            self._append(entry)
+        self.list.itemActivated.connect(self._take_out)
+        self.field = QLineEdit()
+        self.field.setPlaceholderText(placeholder)
+        self.field.returnPressed.connect(self.add)
+        plus = QPushButton("+")
+        plus.setToolTip("Add what is typed")
+        plus.clicked.connect(self.add)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        text = QLabel(note)
+        text.setWordWrap(True)
+        lay = QVBoxLayout(self)
+        lay.addWidget(text)
+        lay.addWidget(self.list, 1)
+        typing = QHBoxLayout()
+        typing.addWidget(self.field, 1)
+        typing.addWidget(plus)
+        lay.addLayout(typing)
+        self.button_row = _row(ok)  # the card's Back joins this row, after OK
+        lay.addLayout(self.button_row)
+
+    def focus_default(self) -> None:
+        self.field.setFocus()
+
+    def listed(self) -> list[str]:
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+
+    def _append(self, entry: str) -> None:
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, entry)
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(6, 2, 6, 2)
+        line.addWidget(QLabel(entry), 1)
+        minus = QPushButton("\u2212")  # the minus sign: it takes this entry out
+        minus.setFixedWidth(32)
+        minus.setFocusPolicy(Qt.NoFocus)  # the pad takes an entry out with A on it; this is for a click
+        minus.setToolTip("Take it out")
+        minus.clicked.connect(lambda: self._take_out(item))
+        line.addWidget(minus)
+        item.setSizeHint(row.sizeHint())
+        self.list.addItem(item)
+        self.list.setItemWidget(item, row)
+
+    def _take_out(self, item: QListWidgetItem) -> None:
+        row = self.list.row(item)
+        if row >= 0:
+            self.list.takeItem(row)
+
+    def add(self) -> bool:
+        """What is typed, as entries after the ones listed (one that is there is not added again; with a key, a new entry
+        replaces the one with the same key), and the field is empty. False, with a message, when something typed is not valid."""
+        typed = self.split(self.field.text())
+        for entry in typed:
+            problem = self.check(entry)
+            if problem:
+                self.win.notify(problem, "warning")
+                return False
+        for entry in typed:
+            if self.key is not None:
+                for i in reversed(range(self.list.count())):
+                    if self.key(self.list.item(i).data(Qt.UserRole)) == self.key(entry):
+                        self.list.takeItem(i)
+            if entry not in self.listed() and self.list.count() < self.limit:
+                self._append(entry)
+        self.field.clear()
+        self.field.setFocus()
+        return True
+
+    def accept(self) -> None:
+        if self.add():  # what is typed and not added is taken too
+            self.win.back()
+            self.on_done(self.listed())
+
+
+class SettingPage(EntriesPage):
+    """Winetricks settings made by hand: `vd=1280x1024 renderer=gdi`, as many as needed. A name has one value, so a later
+    entry for a name replaces the earlier. OK ticks them in the winetricks list."""
+
+    def __init__(self, win: "MainWindow", on_done):
+        super().__init__(
+            win,
+            "Add settings",
+            "Each setting is name=value, e.g. vd=1280x1024. A name has one value: the one added last for it is kept.",
+            "e.g. vd=1280x1024 renderer=gdi",
+            [],
+            str.split,
+            self._problem,
+            on_done,
+            winetricks.MAX_VERBS,
+            key=winetricks.key_of,
+        )
+
+    @staticmethod
+    def _problem(entry: str) -> str | None:
+        if "=" not in entry or not winetricks.is_verb(entry):
+            return (
+                f"{entry}: a setting is name=value, the name lowercase letters, digits and _ . - and the value letters, "
+                "digits and _ . , : + - (no spaces)"
+            )
+        return None
 
 
 class SteamAccountsPage(Page):
@@ -3009,6 +3197,33 @@ class BrowsePage(Page):
         self.on_pick(str(picked))
 
 
+class LaunchArgsPage(EntriesPage):
+    """The arguments the game's executable is started with, as tags: each is one option with what goes with it. Typed text is
+    split into tags at each word that starts with - or --. OK keeps the list, and every launch and shortcut uses it from then
+    on; the server gets it merged tag by tag with its own."""
+
+    def __init__(self, win: "MainWindow", page: "ExecutablePage", rec: InstalledGame):
+        self.page, self.rec = page, rec
+        current = load_library().get(rec.game_id)  # what is kept now: the page's own copy of the record can be older
+        super().__init__(
+            win,
+            "Launch arguments",
+            "Each tag is an option with what goes with it. Type arguments and press + to add them: they split at each - or "
+            "--. Press Enter on a tag, or its minus, to take it out.",
+            "e.g. -windowed -res 1280 720",
+            list((current or rec).launch_args),
+            launchargs.split_tags,
+            lambda tag: None if launchargs.is_tag(tag) else "A launch argument can be 200 characters at most, on one line",
+            self.save,
+            launchargs.MAX_TAGS,
+        )
+
+    def save(self, tags: list[str]) -> None:
+        manager.set_launch_args(self.rec, tags, self.win.app.settings.launcher)  # the launch script too
+        self.page.refresh_args()
+        self.win.app.send_launch_args(self.rec)  # merged with the server's, which gets what it lacks
+
+
 class ExecutablePage(Page):
     """The "awaiting executable info" step: pick what to run, then create the entries."""
 
@@ -3018,7 +3233,7 @@ class ExecutablePage(Page):
     def __init__(self, win: "MainWindow", rec: InstalledGame, on_done):
         super().__init__()
         self.title = f"Choose the executable for {rec.name}"
-        self.win, self.on_done = win, on_done
+        self.win, self.on_done, self.rec = win, on_done, rec
         self.root = Path(rec.install_dir)
         self.list = EdgeList()
         for exe in list_executables(self.root):
@@ -3042,7 +3257,9 @@ class ExecutablePage(Page):
         ok = QPushButton("Use this executable")
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
-        later = QPushButton("Later")
+        # The way out: Later while the install asks for the executable, Back when it is opened from the game's Options.
+        later = QPushButton("Later" if rec.state == "awaiting_executable" else "Back")
+        later.setProperty("danger", True)  # leaving it abandons the choice, so it reads in red
         later.clicked.connect(win.back)
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Which file starts the game?"))
@@ -3053,6 +3270,14 @@ class ExecutablePage(Page):
         self.accounts_box = QVBoxLayout()
         lay.addLayout(self.accounts_box)
         self._fill_accounts()
+        self.args_label = QLabel()
+        edit_args = QPushButton("Edit")
+        edit_args.clicked.connect(lambda: win.push(LaunchArgsPage(win, self, rec)))
+        self.refresh_args()
+        args_row = QHBoxLayout()
+        args_row.addWidget(self.args_label, 1)
+        args_row.addWidget(edit_args)
+        lay.addLayout(args_row)
         row = QHBoxLayout()
         row.addWidget(browse)
         row.addStretch()
@@ -3095,6 +3320,11 @@ class ExecutablePage(Page):
         if not self.account_toggles:
             return list(self.steam_wanted)
         return [user for user, toggle in self.account_toggles.items() if toggle.isChecked() and user in self.steam_wanted]
+
+    def refresh_args(self) -> None:
+        tags = (load_library().get(self.rec.game_id) or self.rec).launch_args
+        self.args_label.setText("Launch arguments: " + ("  ".join(tags) if tags else "none"))
+        self.args_label.setWordWrap(True)
 
     def _browse(self) -> None:
         def picked(path: str) -> None:
@@ -3433,6 +3663,7 @@ class GamePage(Page):
         self.win, self.app, self.game = win, win.app, game
         self.title = game["name"]
         self.cover = CoverLabel(COVER_SIZE)
+        self.cover.setFocusPolicy(Qt.TabFocus)  # the Tab rotation stops on the game's cover, back to it from the buttons
         self.has_hltb = False
         self._built = False  # the page is complete (see _fit_to_room)
         self._full_min = QSize(0, 0)  # what the page needs with everything showing, as last seen
@@ -3768,6 +3999,13 @@ class GamePage(Page):
         if self.first:
             self.first.setFocus()
 
+    def focus_default(self) -> None:
+        # Entering a game lands on its first button (Play, Install, Resume...), as the pad expects.
+        if self.first:
+            self.first.setFocus()
+        else:
+            self.setFocus()
+
     def _button(self, text: str, fn, default: bool = False, danger: bool = False) -> QPushButton:
         btn = QPushButton(text)
         btn.setProperty("danger", danger)
@@ -3985,7 +4223,7 @@ class GamePage(Page):
     def pull_launch_settings(self, rec: InstalledGame, then) -> None:
         """Take the Proton build and winecfg settings the server keeps for the game before it starts; the game starts
         whatever happens to that."""
-        if sys.platform == "win32" or rec.native:
+        if sys.platform == "win32" or rec.native:  # no Proton build or prefix to bring along; the arguments are kept by `App.sync_launch_args`
             then()
             return
 
@@ -4165,14 +4403,58 @@ class GamePage(Page):
         self.app.run_bg(show, on_error=lambda m: self.app.bridge.error.emit(m))
 
     def open_winetricks(self, rec: InstalledGame) -> None:
-        """A list of the usual winetricks verbs, the ones already in the prefix ticked; the newly ticked are installed into it,
-        and the verbs of the prefix are kept on the server, so a reinstall or another device gets them too."""
-        items = [(f"{verb}: {text}", verb, verb in rec.winetricks) for verb, text in winetricks.CATALOG]
+        """The winetricks page, with what the server keeps for the game on it: that is read first, so what was set on the
+        server's web page or on another device shows here before it has been applied (it is applied when the game starts, or
+        when Done is pressed). When the server cannot be reached the page shows what the prefix has."""
+
+        def show(wanted: list[str]) -> None:
+            self._show_winetricks(rec, wanted)
+
+        def look() -> None:
+            wanted: list[str] = []
+            try:
+                client = self.app.client()
+                answer = client.launch_settings(rec.game_id, launchsettings.device_id(client))
+                wanted = launchsettings.effective(answer)["winetricks"] if answer else []
+            except Exception as e:  # noqa: BLE001 - no server: the page shows the prefix's own
+                logstore.info(f"Could not read the winetricks the server keeps for {rec.name}: {e}")
+            self.app.bridge.call.emit(lambda: show(wanted))
+
+        self.app.run_bg(look, on_error=lambda _m: self.app.bridge.call.emit(lambda: show([])))
+
+    def _show_winetricks(self, rec: InstalledGame, wanted: list[str]) -> None:
+        """A list of the usual winetricks verbs and settings (`vd=1280x1024`). Ticked are the ones the game should have: those
+        in the prefix and those the server keeps for it (marked, until they are applied); the newly ticked are applied to the
+        prefix, and what the prefix has is kept on the server, so a reinstall or another device gets it too. A setting has one
+        value: ticking another value of it takes the tick off the first, and a value of your own is added with Add settings."""
+        applied = list(rec.winetricks)
+        should = winetricks.normalize([*applied, *wanted])  # one value for a name: the server's replaces the prefix's
+        later = " (on the server, not applied yet)"
+
+        def entry(label: str, value: str) -> tuple[str, str, bool]:
+            return (label + (later if value in should and value not in applied else ""), value, value in should)
+
+        items = [entry(f"{verb}: {text}", verb) for verb, text in winetricks.CATALOG]
         known = {verb for verb, _text in winetricks.CATALOG}
-        items += [(f"{verb} (set elsewhere)", verb, True) for verb in rec.winetricks if verb not in known]
+        for name, text, values in winetricks.SETTINGS:
+            for value in values:
+                items.append(entry(f"{name}={value}: {text}", f"{name}={value}"))
+                known.add(f"{name}={value}")
+        items += [
+            (f"{verb} ({'set elsewhere' if verb in applied else 'from the server, not applied yet'})", verb, True)
+            for verb in should
+            if verb not in known
+        ]
+
+        def add_settings(page: ChecklistPage) -> None:
+            def added(entries: list[str]) -> None:
+                for entry in entries:
+                    page.add_entry(f"{entry} (added)", entry)
+
+            self.win.push(SettingPage(self.win, added))
 
         def done(picked: list[str]) -> None:
-            todo = winetricks.missing(picked, rec.winetricks)
+            todo = winetricks.missing(winetricks.resolve(picked, applied), applied)
             if not todo:
                 self.win.message("Nothing new to install: what is ticked is already in the prefix", "info")
                 return
@@ -4201,10 +4483,13 @@ class GamePage(Page):
 
         self.win.checklist(
             "Winetricks",
-            "Tick what the game needs. Ticked ones are already in this prefix; the others are installed when you press Done "
-            "(it can take a while, and some need the internet).",
+            "Tick what the game needs. Ticked ones are in this prefix or kept for the game on the server; the ones not in the "
+            "prefix yet are installed when you press Done (it can take a while, and some need the internet). A setting such "
+            "as vd=1280x1024 has one value: ticking another takes the tick off the first.",
             items,
             done,
+            exclusive=winetricks.key_of,
+            extra=("Add settings...", add_settings),
         )
 
     def open_winecfg(self, rec: InstalledGame) -> None:
@@ -4620,6 +4905,8 @@ class LibraryPage(Page):
         self.grid.installEventFilter(self)  # its width changes with the window and the sidebar: see fit_grid
         self.grid.itemActivated.connect(win.open_game)
         self.grid.itemClicked.connect(win.open_game)  # one click opens it; Enter and A go through itemActivated
+        self.grid.setContextMenuPolicy(Qt.CustomContextMenu)  # a right click on a game is its Options, from the list too
+        self.grid.customContextMenuRequested.connect(self._grid_menu)
         self.items: dict[int, QListWidgetItem] = {}
         self.library_filter: int | None = None
         self.libraries: list[dict] = []
@@ -4804,6 +5091,26 @@ class LibraryPage(Page):
         self.schedule_fit()
         if not loading and self.isVisible():
             self.grid.setFocus()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
+        """The cover the grid is on is drawn selected only while the grid has the focus: with it elsewhere (Tab went to the
+        search or the sidebar) it is only remembered, and selected again when the focus comes back to the grid."""
+        if obj is self.grid:
+            if event.type() == QEvent.FocusOut and event.reason() not in (Qt.ActiveWindowFocusReason, Qt.PopupFocusReason):
+                self.grid.clearSelection()  # the current item stays: that is what is remembered
+            elif event.type() == QEvent.FocusIn and self.grid.currentItem() is not None:
+                self.grid.currentItem().setSelected(True)
+        return super().eventFilter(obj, event)
+
+    def selected_game(self) -> int | None:
+        """The game the grid has selected while the grid has the focus: what Select opens the Options of."""
+        item = self.grid.currentItem() if self.grid.hasFocus() else None
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _grid_menu(self, pos: QPoint) -> None:
+        item = self.grid.itemAt(pos)
+        if item is not None:
+            self.win.open_game_options(item.data(Qt.UserRole))
 
     def fit_grid(self) -> None:
         """Size the cells so whole columns fill the grid, whether the sidebar is out or not."""
@@ -5207,6 +5514,7 @@ class MainWindow(QMainWindow):
         self.playing.stop_clicked.connect(self.stop_playing)
         self.busy = BusyOverlay(central, suspended=lambda: self.overlay.isVisible())
         self.busy.changed.connect(self.refresh_legend)
+        QApplication.instance().focusChanged.connect(lambda *_: self.refresh_legend())  # Options shows once the grid has a game
         self.modal = ModalHost(central)  # a modal page's card, under any message
         self.modal.dismissed.connect(self.back)
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
@@ -5222,6 +5530,7 @@ class MainWindow(QMainWindow):
         self.sounds = SoundPlayer(lambda: app.settings.sounds)
         self.nav_sounds = NavigationSounds(self.sounds)
         QApplication.instance().installEventFilter(self.nav_sounds)
+        QApplication.instance().installEventFilter(self)  # Up from the first entry of a card: see eventFilter
         QApplication.instance().aboutToQuit.connect(self.sounds.close)
         b.games.connect(self.set_games)
         b.error.connect(self._on_error)
@@ -5404,8 +5713,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip, game))
 
-    def checklist(self, title: str, text: str, items: list, on_done) -> None:
-        self.push(ChecklistPage(self, title, text, items, on_done))
+    def checklist(self, title: str, text: str, items: list, on_done, exclusive=None, extra=None) -> None:
+        self.push(ChecklistPage(self, title, text, items, on_done, exclusive, extra))
 
     def browse_folder(self, start: Path, on_pick) -> None:
         self.push(BrowsePage(self, start, on_pick, folders=True))
@@ -5622,7 +5931,10 @@ class MainWindow(QMainWindow):
         if isinstance(page, SettingsPage):
             return legend.LOGS if page.tabs.currentWidget() is page.logview else legend.SETTINGS
         if page is self.library:
-            return legend.LIBRARY if self.library.sidebar.isVisibleTo(self.library) else legend.LIBRARY_ALONE
+            game = self.library.selected_game() is not None
+            if self.library.sidebar.isVisibleTo(self.library):
+                return legend.LIBRARY_GAME if game else legend.LIBRARY
+            return legend.LIBRARY_ALONE_GAME if game else legend.LIBRARY_ALONE
         return legend.PAGE
 
     def open_keyboard(self, target: QWidget) -> None:
@@ -5722,6 +6034,9 @@ class MainWindow(QMainWindow):
                     if self.osk.enabled:
                         self.osk.request(self.search)
             return
+        if name == gamepad.ACCOUNT and page is self.library and (gid := self.library.selected_game()) is not None:
+            self.open_game_options(gid)  # Select on a game in the list is its Options; elsewhere it is the user menu
+            return
         if name in (gamepad.MENU, gamepad.ACCOUNT):  # Start, and Select as well: the user menu
             if page is self.library or isinstance(page, GamePage):
                 self.open_menu()
@@ -5743,6 +6058,54 @@ class MainWindow(QMainWindow):
                 focus.focusNextPrevChild(True)
                 return
         self._post_key(name)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
+        """Up from the first entry of a card (its list of buttons, as Linux Options is) goes to its last entry, not to the
+        card's own buttons below: the keyboard's Up and the pad's, which is posted as the same key."""
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Up
+            and not event.modifiers()
+            and self.modal.showing
+            and QApplication.activePopupWidget() is None
+        ):
+            last = self._page_last_control(QApplication.focusWidget())
+            if last is not None:
+                last.setFocus()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _page_last_control(self, focus: QWidget | None) -> QWidget | None:
+        """With the focus on a button that is the first control of the card's page, its last control; None anywhere
+        else (a list or a field keeps Up for itself). The card's own buttons below are left out: Down reaches them."""
+        page = self.modal.page
+        if focus is None or page is None or not isinstance(focus, QAbstractButton) or not page.isAncestorOf(focus):
+            return None
+
+        def control(w: QWidget) -> bool:
+            # a card's scroll area is in the chain too, but it holds the controls, it is not one of them
+            return w.isVisibleTo(self) and w.isEnabled() and w.focusPolicy() != Qt.NoFocus and not isinstance(w, QScrollArea)
+
+        before = focus.previousInFocusChain()
+        first = True
+        for _ in range(10000):
+            if before is None or before is focus:
+                break
+            if control(before):
+                first = not page.isAncestorOf(before)
+                break
+            before = before.previousInFocusChain()
+        if not first:
+            return None
+        last, cur = focus, focus
+        for _ in range(10000):
+            nxt = cur.nextInFocusChain()
+            if nxt is None or nxt is focus or not page.isAncestorOf(nxt):
+                break
+            if control(nxt):
+                last = nxt
+            cur = nxt
+        return last
 
     def _scroll(self, amount: float) -> None:
         """The right stick: scroll the log in Settings, else the list or text that has the focus."""
@@ -6085,9 +6448,21 @@ class MainWindow(QMainWindow):
         super().changeEvent(e)
         if e.type() == QEvent.ActivationChange and self.isActiveWindow():
             self.library.update_presence()  # a drive may have been connected or removed meanwhile
+            self.app.sync_launch_args(every=10.0)  # arguments edited elsewhere while the window was in the background
 
     def open_game(self, item: QListWidgetItem) -> None:
         self.show_game(item.data(Qt.UserRole))
+
+    def open_game_options(self, gid: int) -> None:
+        """The Options of a game from the library (right click, or Select on it): its page is made, not shown, so Back
+        from the menu returns to the library."""
+        game = self.app.games.get(gid)
+        if game is None:
+            return
+        page = next((p for p in self.game_pages.values() if p.game["id"] == gid), None)
+        if page is None:
+            page = self.game_pages[gid] = GamePage(self, game)
+        self.push(OptionsPage(self, page, load_library().get(gid)))
 
     def show_game(self, gid: int) -> None:
         game = self.app.games.get(gid)

@@ -85,6 +85,15 @@ LEGENDS: dict[str, tuple[Entry, ...]] = {
 # The library with the sidebar closed: the same, with nothing for Back to close.
 LEGENDS[LIBRARY_ALONE] = tuple(e for e in LEGENDS[LIBRARY] if e.label != "Close sidebar")
 
+# The library with a game selected in the list: Select (the pad's back button) opens its Options. Only the pad has it
+# (no key is given), the keyboard's guide does not change.
+OPTIONS = Entry("Options", (G.SELECT,))
+LIBRARY_GAME, LIBRARY_ALONE_GAME = "library-game", "library-alone-game"
+CONTEXTS += (LIBRARY_GAME, LIBRARY_ALONE_GAME)
+for _library, _game in ((LIBRARY, LIBRARY_GAME), (LIBRARY_ALONE, LIBRARY_ALONE_GAME)):
+    _at = LEGENDS[_library].index(SELECT) + 1
+    LEGENDS[_game] = LEGENDS[_library][:_at] + (OPTIONS,) + LEGENDS[_library][_at:]
+
 
 def pad_icon_path(family: str, glyph: str) -> Path:
     return ASSETS / "pad" / family / f"{glyph}.png"

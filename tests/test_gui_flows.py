@@ -15,7 +15,7 @@ from PySide6.QtGui import QKeyEvent, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from mog_client import config, installdirs, launcher, logstore  # noqa: E402
+from mog_client import config, installdirs, launcher, logstore, winetricks  # noqa: E402
 from mog_client.api import fmt_bytes  # noqa: E402
 from mog_client.config import Settings, load_settings  # noqa: E402
 from mog_client.gui import app as gui  # noqa: E402
@@ -1332,7 +1332,7 @@ def test_the_pad_walks_from_the_executables_to_the_options_and_the_buttons_and_p
     page.list.setFocus()
     seen = _walk_with_the_pad(win, qapp)
     assert any(isinstance(w, Toggle) for w in seen)
-    assert {w.text() for w in seen if isinstance(w, QPushButton)} >= {"Browse...", "Later", "Use this executable"}
+    assert {w.text() for w in seen if isinstance(w, QPushButton)} >= {"Browse...", "Back", "Use this executable"}  # from Options: Back
 
     ok = next(w for w in seen if isinstance(w, QPushButton) and w.text() == "Use this executable")
     ok.setFocus()
@@ -3563,6 +3563,18 @@ def test_choosing_an_engine_and_version_applies_both_keeps_the_version_on_the_se
     assert [lvl for lvl, _t in told] == ["info", "warning"] and "GE-Proton9-27" in told[0][1]
 
 
+def _server_keeps_winetricks(win, monkeypatch, wanted):
+    """The server holds these winetricks entries for every game (None: it cannot answer)."""
+    from types import SimpleNamespace
+
+    from mog_client.saves import devices
+
+    monkeypatch.setattr(devices, "known_device", lambda: SimpleNamespace(device_id=3))
+    row = None if wanted is None else {"proton": None, "winecfg_reg": None, "winetricks": wanted, "launch_args": None, "updated_at": "2026-10-15T10:00:00Z"}
+    server = SimpleNamespace(launch_settings=lambda gid, dev: None if row is None else {"shared": row, "device": None})
+    monkeypatch.setattr(win.app, "client", lambda: server)
+
+
 def test_winetricks_lists_the_verbs_with_the_prefixs_ticked_and_installs_only_the_new_ones(win, qapp, monkeypatch, tmp_path):
     from mog_client import launchsettings
 
@@ -3576,7 +3588,9 @@ def test_winetricks_lists_the_verbs_with_the_prefixs_ticked_and_installs_only_th
     monkeypatch.setattr(win, "message", lambda text, level="info", **k: told.append(text))
     win.app.bridge.message.connect(lambda level, text: told.append(text))
 
+    _server_keeps_winetricks(win, monkeypatch, None)
     page.open_winetricks(rec)
+    pump(qapp)
     checklist = pushed[0]
     assert isinstance(checklist, gui.ChecklistPage)
     labels = {checklist.list.item(i).data(Qt.UserRole): (checklist.list.item(i).text(), checklist.list.item(i).checkState() == Qt.Checked) for i in range(checklist.list.count())}
@@ -3610,7 +3624,9 @@ def test_a_failed_winetricks_says_so_keeps_nothing_and_frees_the_game(win, qapp,
     monkeypatch.setattr(launchsettings, "run_winetricks", fail)
     win.app.bridge.error.connect(errors.append)
 
+    _server_keeps_winetricks(win, monkeypatch, None)
     page.open_winetricks(rec)
+    pump(qapp)
     pushed[0].on_done(["vcrun2019"])
     pump(qapp)
 
@@ -4386,3 +4402,314 @@ def test_cancel_stops_taking_this_pages_arrows_once_the_page_is_gone(win, qapp, 
     QTest.keyClick(close, Qt.Key_Right)
 
     assert walked == [Qt.Key_Right]  # gone: the card's button is left to whatever page comes next
+
+
+def _activate(win, qapp):
+    """Focus goes to a widget only in the window that is active, and a test's window is not until it is asked to be."""
+    win.activateWindow()
+    pump(qapp)
+
+
+def _installed_game(win, qapp, tmp_path):
+    from mog_client import manager
+    from mog_client.config import InstalledGame
+
+    folder = tmp_path / "g"
+    folder.mkdir()
+    (folder / "a.exe").write_text("x")
+    manager._update(InstalledGame(game_id=41, name="Eta", install_dir=str(folder), state="installed", executable=str(folder / "a.exe")))
+    win.app.set_games([{"id": 41, "name": "Eta", "igdb_id": None, "library_id": None}, {"id": 42, "name": "Theta", "igdb_id": None, "library_id": None}])
+    win.library.populate("")
+    win.library.show_loading(False)
+    pump(qapp)
+
+
+def test_up_from_the_first_entry_of_a_card_goes_to_its_last_entry_and_down_from_there_to_the_cards_button(win, qapp, tmp_path):
+    _activate(win, qapp)
+    _installed_game(win, qapp, tmp_path)
+    win.open_game_options(41)
+    pump(qapp)
+    first = qapp.focusWidget()
+    assert isinstance(win.current_page(), gui.OptionsPage) and first.text() == "Linux Options"
+
+    win.on_pad_event(gamepad.UP)  # the pad's Up is the same key as the keyboard's
+    pump(qapp)
+    assert qapp.focusWidget().text() == "Uninstall..."
+    win.on_pad_event(gamepad.DOWN)
+    pump(qapp)
+    assert qapp.focusWidget() is win.modal.close_button
+
+    first.setFocus()
+    QTest.keyClick(first, Qt.Key_Up)
+    pump(qapp)
+    assert qapp.focusWidget().text() == "Uninstall..."
+
+
+def test_a_right_click_or_select_on_a_game_of_the_library_opens_its_options_and_the_guide_says_so(win, qapp, tmp_path):
+    _activate(win, qapp)
+    from mog_client.gui import legend
+
+    _installed_game(win, qapp, tmp_path)
+    grid = win.library.grid
+    grid.setCurrentRow(0)
+    grid.setFocus()
+    pump(qapp)
+    assert win.legend_context() in (legend.LIBRARY_GAME, legend.LIBRARY_ALONE_GAME)
+    assert "Options" in [e.label for e in legend.entries_for(win.legend_context(), gamepad.XBOX)]
+    assert "Options" not in [e.label for e in legend.entries_for(win.legend_context(), None)]  # the keyboard has no such key
+
+    win.on_pad_event(gamepad.ACCOUNT)  # Select
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.OptionsPage)
+    win.back()
+    pump(qapp)
+
+    grid.customContextMenuRequested.emit(grid.visualItemRect(grid.item(1)).center())  # a right click on the second cover
+    pump(qapp)
+    page = win.current_page()
+    assert isinstance(page, gui.OptionsPage) and win.game_pages[42].game["name"] == "Theta"
+    win.back()
+    pump(qapp)
+    assert win.current_page() is win.library  # Back returns to the library, not to the game's page
+
+
+def test_select_without_a_game_on_the_grid_is_still_the_user_menu(win, qapp, tmp_path):
+    _activate(win, qapp)
+    from mog_client.gui import legend
+
+    _installed_game(win, qapp, tmp_path)
+    win.search.setFocus()
+    pump(qapp)
+    assert win.legend_context() in (legend.LIBRARY, legend.LIBRARY_ALONE)
+    win.on_pad_event(gamepad.ACCOUNT)
+    pump(qapp)
+    assert win.current_page() is win.library  # no Options page, the menu under the user's picture instead
+
+
+def test_a_game_page_opens_on_its_first_button_and_the_tab_rotation_stops_on_the_cover(win, qapp, tmp_path, monkeypatch):
+    _activate(win, qapp)
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    _installed_game(win, qapp, tmp_path)
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    assert qapp.focusWidget() is page.first and page.first.text() == "Play"
+
+    seen = []
+    for _ in range(12):
+        QTest.keyClick(qapp.focusWidget(), Qt.Key_Tab)
+        pump(qapp)
+        seen.append(qapp.focusWidget())
+    assert page.cover in seen
+
+
+def test_the_executable_page_reads_later_during_an_install_back_from_the_options_both_in_red_and_edits_the_launch_tags(win, qapp, tmp_path, monkeypatch):
+    from mog_client import manager
+    from mog_client.config import InstalledGame
+
+    monkeypatch.setattr(manager, "write_launch_script", lambda rec, pref: None)  # no launcher is installed here to write it for
+    folder = tmp_path / "g"
+    folder.mkdir()
+    (folder / "a.exe").write_text("x")
+
+    def page_for(state):
+        rec = InstalledGame(game_id=41, name="Eta", install_dir=str(folder), state=state, executable=str(folder / "a.exe"))
+        return rec, gui.ExecutablePage(win, rec, lambda *a: None)
+
+    for state, text in (("awaiting_executable", "Later"), ("installed", "Back")):
+        _rec, page = page_for(state)
+        way_out = [b for b in page.findChildren(QPushButton) if b.text() == text]
+        assert len(way_out) == 1 and way_out[0].property("danger") is True
+
+    rec, page = page_for("installed")
+    assert page.args_label.text() == "Launch arguments: none"
+    sent = []
+    monkeypatch.setattr(win.app, "send_launch_args", sent.append)
+    win.push(page)
+    pump(qapp)
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Edit").click()
+    pump(qapp)
+    args_page = win.current_page()
+    assert isinstance(args_page, gui.LaunchArgsPage)
+
+    close = win.modal.close_button  # Back is in red, in the row of OK and to its right
+    assert close.text() == "Back" and close.property("danger") is True and args_page.isAncestorOf(close)
+    row = args_page.button_row
+    assert [row.itemAt(i).widget().text() for i in range(row.count()) if row.itemAt(i).widget()] == ["OK", "Back"]
+
+    args_page.field.setText("-windowed -res 1280 720 --nosound")  # typed text splits into tags at each - or --
+    args_page.add()
+    assert args_page.listed() == ["-windowed", "-res 1280 720", "--nosound"] and args_page.field.text() == ""
+    args_page.field.setText("-windowed -fullscreen")  # a tag that is there is not added again
+    args_page.add()
+    assert args_page.listed() == ["-windowed", "-res 1280 720", "--nosound", "-fullscreen"]
+    minus = args_page.list.itemWidget(args_page.list.item(2)).findChildren(QPushButton)[0]  # each tag has its minus
+    assert minus.text() == "\u2212"
+    minus.click()
+    assert args_page.listed() == ["-windowed", "-res 1280 720", "-fullscreen"]
+    args_page.list.itemActivated.emit(args_page.list.item(0))  # Enter or A on a tag takes it out too
+    args_page.field.setText("-windowed")
+    args_page.add()
+    assert args_page.listed() == ["-res 1280 720", "-fullscreen", "-windowed"]
+    args_page.field.setText("-nosound")  # typed and not added: OK takes it too
+    args_page.accept()
+    pump(qapp)
+
+    assert win.current_page() is page and rec.launch_args == ["-res 1280 720", "-fullscreen", "-windowed", "-nosound"]
+    assert page.args_label.text() == "Launch arguments: -res 1280 720  -fullscreen  -windowed  -nosound"
+    assert sent == [rec]  # merged with the server's, which gets what it lacks
+
+
+def test_a_cover_is_drawn_selected_only_while_the_grid_has_the_focus_and_is_remembered_when_it_goes_elsewhere(win, qapp, tmp_path):
+    _activate(win, qapp)
+    _installed_game(win, qapp, tmp_path)
+    grid = win.library.grid
+    grid.setCurrentRow(1)
+    grid.setFocus()
+    pump(qapp)
+    assert [i.text() for i in grid.selectedItems()] == ["Theta"]
+
+    win.search.setFocus()  # what Tab does: the focus leaves the grid
+    pump(qapp)
+    assert grid.selectedItems() == [] and grid.currentItem().text() == "Theta"
+
+    grid.setFocus()  # and back to the remembered cover
+    pump(qapp)
+    assert [i.text() for i in grid.selectedItems()] == ["Theta"]
+
+
+def test_the_client_takes_launch_tags_edited_on_the_server_for_its_installed_games_and_rewrites_their_script(win, qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+    from mog_client.saves import devices
+
+    _installed_game(win, qapp, tmp_path)
+    rewritten, put = [], []
+    monkeypatch.setattr(manager, "write_launch_script", lambda rec, pref: rewritten.append(list(rec.launch_args)))
+    monkeypatch.setattr(manager, "set_launcher", lambda rec, engine, pref="auto": rewritten.append(list(rec.launch_args)))
+    monkeypatch.setattr(devices, "known_device", lambda: SimpleNamespace(device_id=3))
+    row = {"proton": None, "winecfg_reg": None, "winetricks": None, "launch_args": ["-w", "-intro:off"], "updated_at": "2026-10-14T10:00:00Z"}
+    server = SimpleNamespace(
+        launch_settings=lambda gid, dev: {"shared": row, "device": None},
+        put_launch_settings=lambda game_id, device, changes: put.append(changes) or 200,
+    )
+    monkeypatch.setattr(win.app, "client", lambda: server)
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())  # not on a thread: the test looks right after
+
+    win.app.sync_launch_args(every=0)
+
+    assert manager.load_library()[41].launch_args == ["-w", "-intro:off"] and rewritten == [["-w", "-intro:off"]] and put == []
+
+    manager.set_launch_args(manager.load_library()[41], ["-w", "-intro:off", "-mine"])  # edited here meanwhile
+    rewritten.clear()
+    win.app.send_launch_args(manager.load_library()[41])
+
+    assert put == [{"launch_args_add": ["-mine"], "launch_args_remove": []}] and rewritten == []  # the script already has them
+    assert manager.load_library()[41].launch_args_synced == ["-w", "-intro:off", "-mine"]
+
+def test_winetricks_lists_settings_beside_the_flags_one_value_for_each_name_and_applies_a_changed_value(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    rec.winetricks = ["vcrun2019", "vd=1280x1024", "mine=custom"]
+    pushed, ran, told, kept = [], [], [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda r, pref, verbs: (ran.append(verbs), setattr(r, "winetricks", winetricks.merge(r.winetricks, verbs))))
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: kept.append(changes))
+    monkeypatch.setattr(win, "message", lambda text, level="info", **k: told.append(text))
+    win.app.bridge.message.connect(lambda level, text: told.append(text))
+
+    _server_keeps_winetricks(win, monkeypatch, None)
+    page.open_winetricks(rec)
+    pump(qapp)
+    checklist = pushed[0]
+    rows = {checklist.list.item(i).data(Qt.UserRole): checklist.list.item(i) for i in range(checklist.list.count())}
+    assert rows["vd=1280x1024"].checkState() == Qt.Checked and rows["vd=1920x1080"].checkState() == Qt.Unchecked
+    assert rows["renderer=gdi"].text().startswith("renderer=gdi:")  # a usual setting, listed with what it is
+    assert rows["mine=custom"].text() == "mine=custom (set elsewhere)" and rows["mine=custom"].checkState() == Qt.Checked
+
+    checklist.toggle(rows["vd=1920x1080"])  # one value for a name: the one before is unticked
+    assert rows["vd=1920x1080"].checkState() == Qt.Checked and rows["vd=1280x1024"].checkState() == Qt.Unchecked
+    checklist.toggle(rows["renderer=gdi"])
+    checklist.finish()
+    pump(qapp)
+
+    assert ran == [["vd=1920x1080", "renderer=gdi"]]  # the changed value is applied again, not a second vd
+    assert rec.winetricks == ["vcrun2019", "vd=1920x1080", "mine=custom", "renderer=gdi"]
+    assert kept == [{"winetricks": ["vcrun2019", "vd=1920x1080", "mine=custom", "renderer=gdi"]}]
+
+
+def test_add_settings_takes_as_many_as_typed_with_a_minus_on_each_and_ticks_them_in_place_of_the_other_values(win, qapp, monkeypatch, tmp_path):
+    _activate(win, qapp)
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    rec.winetricks = ["vd=1280x1024"]
+    _server_keeps_winetricks(win, monkeypatch, None)
+    page.open_winetricks(rec)
+    pump(qapp)
+    checklist = win.current_page()
+    assert isinstance(checklist, gui.ChecklistPage)
+    add = next(b for b in checklist.findChildren(QPushButton) if b.text() == "Add settings...")
+
+    add.click()
+    pump(qapp)
+    settings = win.current_page()
+    assert isinstance(settings, gui.SettingPage) and isinstance(settings, gui.EntriesPage)
+    assert settings.title == "Add settings"
+    assert win.modal.close_button.text() == "Back" and win.modal.close_button.property("danger") is True  # as on the arguments page
+    assert not win.isActiveWindow() or qapp.focusWidget() is settings.field  # the pad's keyboard types into the field
+
+    settings.field.setText("vd=1366x768 && rm")  # nothing that goes on a command line but a value: nothing is added
+    settings.add()
+    assert settings.listed() == [] and win.current_page() is settings
+    settings.field.setText("vd")  # a name with no value is not a setting
+    settings.add()
+    assert settings.listed() == []
+
+    settings.field.setText("vd=1366x768 renderer=gdi")  # as many as needed, in one go
+    settings.add()
+    settings.field.setText("mwo=force vd=1920x1080")  # and a name has one value: the later replaces the earlier
+    settings.add()
+    assert settings.listed() == ["renderer=gdi", "mwo=force", "vd=1920x1080"]
+    settings.list.itemWidget(settings.list.item(1)).findChildren(QPushButton)[0].click()  # a minus takes one out
+    assert settings.listed() == ["renderer=gdi", "vd=1920x1080"]
+    settings.field.setText("csmt=on")  # typed and not added: OK takes it too
+    settings.accept()
+    pump(qapp)
+
+    assert win.current_page() is checklist
+    rows = {checklist.list.item(i).data(Qt.UserRole): checklist.list.item(i) for i in range(checklist.list.count())}
+    assert all(rows[v].checkState() == Qt.Checked for v in ("renderer=gdi", "vd=1920x1080", "csmt=on"))
+    assert rows["vd=1280x1024"].checkState() == Qt.Unchecked and "mwo=force" in rows and rows["mwo=force"].checkState() != Qt.Checked
+    assert rows["vd=1920x1080"].text() == "vd=1920x1080 (added)" or rows["vd=1920x1080"].text().startswith("vd=1920x1080")
+
+
+def test_the_winetricks_page_shows_what_the_server_keeps_ticked_and_marked_until_it_is_applied(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    rec.winetricks = ["vcrun2019", "vd=1280x1024"]
+    _server_keeps_winetricks(win, monkeypatch, ["renderer=gdi", "vd=1920x1080", "dotnet48", "mine=custom"])  # set on the web page
+    pushed, ran = [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda r, pref, verbs: (ran.append(verbs), setattr(r, "winetricks", winetricks.merge(r.winetricks, verbs))))
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: None)
+
+    page.open_winetricks(rec)
+    pump(qapp)
+    checklist = pushed[0]
+    rows = {checklist.list.item(i).data(Qt.UserRole): checklist.list.item(i) for i in range(checklist.list.count())}
+
+    assert rows["vcrun2019"].checkState() == Qt.Checked and "not applied" not in rows["vcrun2019"].text()  # in the prefix
+    assert rows["dotnet48"].checkState() == Qt.Checked and rows["dotnet48"].text().endswith("(on the server, not applied yet)")
+    assert rows["renderer=gdi"].checkState() == Qt.Checked and "not applied yet" in rows["renderer=gdi"].text()
+    assert rows["vd=1920x1080"].checkState() == Qt.Checked and rows["vd=1280x1024"].checkState() == Qt.Unchecked  # the server's value
+    assert rows["mine=custom"].text() == "mine=custom (from the server, not applied yet)" and rows["mine=custom"].checkState() == Qt.Checked
+
+    checklist.finish()  # Done applies what the server keeps and the prefix lacks, and only that
+    pump(qapp)
+    assert ran == [["dotnet48", "vd=1920x1080", "renderer=gdi", "mine=custom"]]  # the list's order: the catalog, the settings, the rest
+    assert rec.winetricks == ["vcrun2019", "vd=1920x1080", "dotnet48", "renderer=gdi", "mine=custom"]  # one vd, the server's value
