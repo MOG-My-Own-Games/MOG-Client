@@ -88,6 +88,7 @@ from mog_client import (
     installdirs,
     logstore,
     manager,
+    net,
     ordering,
     protocol,
     selfsteam,
@@ -3005,6 +3006,9 @@ class SettingsPage(Page):
         save_settings(self.win.app.settings)
         self.win.back()
         self.win.app.refresh()
+        warning = net.plain_http_warning(self.win.app.settings.base)
+        if warning:
+            self.win.message(warning, "warning")
 
 
 class InstallDirsPage(Page):
