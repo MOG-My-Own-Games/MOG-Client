@@ -5,6 +5,7 @@ not, which fails every HTTPS request with CERTIFICATE_VERIFY_FAILED."""
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import os
 import socket
 import ssl
@@ -40,6 +41,12 @@ def ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urllib.parse.urlsplit(url)
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    return parts.scheme, (parts.hostname or "").lower(), parts.port or default
+
+
 class _NoUpgradeRedirect(urllib.request.HTTPRedirectHandler):
     """A plain-HTTP URL stays plain HTTP: a redirect to https is reported
     instead of silently starting a TLS handshake the user never asked for."""
@@ -50,7 +57,11 @@ class _NoUpgradeRedirect(urllib.request.HTTPRedirectHandler):
                 f"{req.full_url} redirects to {newurl}: use https:// in the server URL, "
                 "or serve the server over plain http"
             )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _origin(newurl) != _origin(req.full_url):
+            # urllib would send the user's name and password on to wherever a redirect points.
+            redirected.remove_header("Authorization")
+        return redirected
 
 
 @lru_cache(maxsize=1)
@@ -201,3 +212,26 @@ def reset_connections(interval: float = RESET_INTERVAL) -> threading.Thread:
     thread = threading.Thread(target=run, daemon=True, name="connection-reset")
     thread.start()
     return thread
+
+
+def _is_private_host(host: str) -> bool:
+    """Whether `host` is on this machine or a home network: a loopback or private address, a bare name or a .local/.lan one."""
+    if not host:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host or host.endswith((".local", ".lan", ".home.arpa", ".internal"))
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
+def plain_http_warning(base: str) -> str | None:
+    """What to tell the user when the server is reached over plain http through the open internet, where the password
+    (sent with every request) can be read on the way. None for https, and for a server on this machine or the home network."""
+    parts = urllib.parse.urlsplit(base if "://" in base else f"http://{base}")
+    if parts.scheme != "http" or _is_private_host(parts.hostname or ""):
+        return None
+    return (
+        f"{parts.hostname} is reached over plain http: the password travels unprotected. "
+        "Put the server behind https and use an https:// address."
+    )

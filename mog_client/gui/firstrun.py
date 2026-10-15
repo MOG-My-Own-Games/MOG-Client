@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mog_client import selfsteam
+from mog_client import net, selfsteam
 from mog_client.api import Client, MogClient
 from mog_client.config import default_install_root, save_settings
 from mog_client.gui.menu import OptionRow
@@ -284,7 +284,8 @@ class FirstRunPage(QWidget):
             settings.base, settings.user, settings.password = base, user, password
             save_settings(settings)
             self.connected = True
-            self.server_status.setText(f"Connected as {name}.")
+            warning = net.plain_http_warning(base)
+            self.server_status.setText(f"Connected as {name}." + (f" {warning}" if warning else ""))
         self._update_next()
         self.focus_default()
 
