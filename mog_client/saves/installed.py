@@ -18,7 +18,13 @@ from pathlib import Path
 from mog_client.config import _read_json, _write_json
 from mog_client.launcher import PREFIX_DIR
 from mog_client.saves.locations import MOG_FILE_PREFIX
-from mog_client.saves.state import baseline_path, load_install_manifest, save_install_manifest
+from mog_client.saves.state import (
+    baseline_path,
+    load_install_manifest,
+    load_verified,
+    save_install_manifest,
+    save_verified,
+)
 
 Snapshot = dict[str, tuple[int, int]]  # relative path -> (size, mtime_ns)
 _CHUNK = 1024 * 1024
@@ -72,6 +78,7 @@ def finish(game_id: int, install_dir: Path, before: Snapshot) -> int:
     the kept starting picture. Returns how many files were added or updated."""
     entries = []
     known = load_install_manifest(game_id) or {}
+    verified = load_verified(game_id)
     for rel, signature in snapshot(install_dir).items():
         if before.get(rel) == signature:
             continue
@@ -79,9 +86,13 @@ def finish(game_id: int, install_dir: Path, before: Snapshot) -> int:
             sha1 = _sha1(install_dir / rel)
         except OSError:
             continue
+        # Read just now, so the first backup after the install does not read the whole game again to check it.
+        verified[rel] = (signature[0], signature[1], sha1)
         if known.get(rel) != (signature[0], sha1):
             entries.append({"path": rel, "size_bytes": signature[0], "sha1": sha1})
     if entries:
         save_install_manifest(game_id, entries)
+    if verified:
+        save_verified(game_id, verified)
     baseline_path(game_id).unlink(missing_ok=True)
     return len(entries)

@@ -149,12 +149,16 @@ def _sha1(path: Path) -> str:
 
 
 def install_candidates(
-    install_dir: Path, manifest: dict[str, tuple[int, str]] | None, files_dir: Path | None = None
+    install_dir: Path,
+    manifest: dict[str, tuple[int, str]] | None,
+    files_dir: Path | None = None,
+    verified: dict[str, tuple[int, int, str]] | None = None,
 ) -> Iterator[Candidate]:
     """Files in the game's own folder that the installer did not put there. Without the install
     manifest there is no telling the game's files from its saves, so nothing is offered. `files_dir` is the game's own
     folder inside `install_dir`: a manifest written from that folder (paths without it) is read as well, so a game whose
-    manifest was kept that way does not have every file of its own taken for a save."""
+    manifest was kept that way does not have every file of its own taken for a save. `verified` remembers the files already
+    read and found to match, by size and time, so a game's files are not read again at every call; it is updated in place."""
     if manifest is None or not real_dir(install_dir):
         return
     inside = ""
@@ -176,8 +180,16 @@ def install_candidates(
             known = manifest.get(rel[len(inside) + 1 :])
         if known is not None:
             try:
-                if candidate.path.stat().st_size == known[0] and _sha1(candidate.path) == known[1]:
-                    continue
+                info = candidate.path.stat()
+                if info.st_size == known[0]:
+                    if verified is not None and verified.get(rel) == (info.st_size, info.st_mtime_ns, known[1]):
+                        continue
+                    if _sha1(candidate.path) == known[1]:
+                        if verified is not None:
+                            verified[rel] = (info.st_size, info.st_mtime_ns, known[1])
+                        continue
+                if verified is not None:
+                    verified.pop(rel, None)
             except OSError:
                 continue
         yield candidate

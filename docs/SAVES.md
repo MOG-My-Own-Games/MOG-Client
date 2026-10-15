@@ -61,6 +61,11 @@ Files a mod, a patch or a DLC adds are written into the game's install manifest 
 record an install makes), so save sync tells them from what the game writes and never backs them up as saves. Mods you copy
 in by hand are in no manifest; they are told apart by where they are, as above.
 
+- To tell the installer's files from the game's, a file is read once and compared with the manifest. Its size, time and
+  checksum are then kept (`manifests/<game id>.verified.json`), and a backup only reads a file again when its size or time
+  changed. An install fills this list as it finishes, so even the first backup does not read the whole game: that took
+  minutes for a big game on a Steam Deck's SD card.
+
 ## Command line
 
 `mog --save-sync GAME_ID` backs a game up (add `--window` to show the small "Syncing saves" window). `--save-pre` and

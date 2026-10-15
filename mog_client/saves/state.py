@@ -76,6 +76,34 @@ def baseline_path(game_id: int) -> Path:
     return data_dir() / "manifests" / f"{game_id}.baseline.json"
 
 
+def verified_path(game_id: int) -> Path:
+    return data_dir() / "manifests" / f"{game_id}.verified.json"
+
+
+# relative path -> (size, mtime_ns, sha1) of a file in the game's folder that was read and found to be what the
+# manifest says the installer wrote. Reading a whole game to check that again on every backup took minutes on a Steam
+# Deck's SD card; a file with the same size and time is not read again.
+Verified = dict[str, tuple[int, int, str]]
+
+
+def load_verified(game_id: int) -> Verified:
+    raw = _read_json(verified_path(game_id), None)
+    if not isinstance(raw, dict):
+        return {}
+    out: Verified = {}
+    for path, entry in raw.items():
+        try:
+            size, mtime_ns, sha1 = entry
+            out[path] = (int(size), int(mtime_ns), str(sha1))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def save_verified(game_id: int, verified: Verified) -> None:
+    _write_json(verified_path(game_id), {path: list(entry) for path, entry in verified.items()})
+
+
 def save_install_manifest(game_id: int, files: list[dict]) -> None:
     """Add what an installer produced ({path, size_bytes, sha1}) to what is kept of the game's own files, so
     they can later be told apart from what the game wrote. It adds to the list and never replaces it: a game's
@@ -96,5 +124,5 @@ def load_install_manifest(game_id: int) -> dict[str, tuple[int, str]] | None:
 def forget_game(game_id: int) -> None:
     """Drop what is kept about a game that is no longer installed. The backups of files a restore
     replaced stay: they are the user's, and small."""
-    for path in (state_path(game_id), manifest_path(game_id), baseline_path(game_id)):
+    for path in (state_path(game_id), manifest_path(game_id), baseline_path(game_id), verified_path(game_id)):
         path.unlink(missing_ok=True)

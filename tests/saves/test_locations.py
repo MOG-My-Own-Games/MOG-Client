@@ -245,3 +245,44 @@ def test_a_manifest_with_the_folder_in_its_paths_works_as_before(tmp_path):
     right = {"Living With Sister/Data/map.dat": _entry("", b"data")}
     keys = [c.key for c in locations.install_candidates(install, right, files_dir=folder)]
     assert keys == ["game/Living With Sister/Save/slot1.sav"]
+
+
+def test_a_game_file_already_checked_is_not_read_again_until_it_changes(tmp_path, monkeypatch):
+    """Regression test: every backup read each file of the game's folder to see it was the installer's, which on a Steam
+    Deck's SD card took minutes for a big game. A file with the same size and time as when it was checked is left alone."""
+    import hashlib
+
+    game = tmp_path / "game"
+    _touch(game / "Data/level1.dat", b"level")
+    _touch(game / "Saves/slot1.sav", b"progress")
+    manifest = {"Data/level1.dat": (5, hashlib.sha1(b"level").hexdigest())}
+    reads = []
+    real = locations._sha1
+    monkeypatch.setattr(locations, "_sha1", lambda path: reads.append(path.name) or real(path))
+    verified = {}
+
+    assert keys(install_candidates(game, manifest, verified=verified)) == ["game/Saves/slot1.sav"]
+    assert reads == ["level1.dat"] and list(verified) == ["Data/level1.dat"]
+
+    assert keys(install_candidates(game, manifest, verified=verified)) == ["game/Saves/slot1.sav"]
+    assert reads == ["level1.dat"]  # not read a second time
+
+    (game / "Data/level1.dat").write_bytes(b"LEVEL")  # same size, new time and content: now it is not the installer's
+    import os
+
+    os.utime(game / "Data/level1.dat", ns=(1, 1))
+    assert keys(install_candidates(game, manifest, verified=verified)) == ["game/Data/level1.dat", "game/Saves/slot1.sav"]
+    assert reads == ["level1.dat", "level1.dat"] and verified == {}
+
+
+def test_a_file_checked_against_an_older_manifest_entry_is_read_again(tmp_path, monkeypatch):
+    import hashlib
+
+    game = tmp_path / "game"
+    _touch(game / "a.pak", b"one")
+    first = {"a.pak": (3, hashlib.sha1(b"one").hexdigest())}
+    verified = {}
+    list(install_candidates(game, first, verified=verified))
+    second = {"a.pak": (3, hashlib.sha1(b"two").hexdigest())}  # the manifest now names other content for it
+
+    assert keys(install_candidates(game, second, verified=verified)) == ["game/a.pak"]

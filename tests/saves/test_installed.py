@@ -188,3 +188,20 @@ def test_a_save_written_before_a_reinstall_is_not_taken_for_installed_data(tmp_p
     put(Path(rec.install_dir), "profile.sav", b"played")  # the game, later
     run(tmp_path, monkeypatch, {"patch.pak": b"p"}, listing=False)
     assert set(state.load_install_manifest(7)) == {"game.exe", "patch.pak"}
+
+
+def test_finishing_an_install_leaves_its_files_checked_so_the_first_backup_does_not_read_them_again(tmp_path):
+    from mog_client.saves import installed
+
+    folder = tmp_path / "game"
+    folder.mkdir()
+    before = installed.begin(7, folder)
+    (folder / "game.exe").write_bytes(b"exe")
+    installed.finish(7, folder, before)
+
+    verified = state.load_verified(7)
+    assert set(verified) == {"game.exe"}
+    size, mtime_ns, sha1_hex = verified["game.exe"]
+    assert (size, sha1_hex) == (3, sha1(b"exe")) and mtime_ns == (folder / "game.exe").stat().st_mtime_ns
+    state.forget_game(7)
+    assert state.load_verified(7) == {}

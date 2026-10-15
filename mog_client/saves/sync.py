@@ -40,7 +40,9 @@ from mog_client.saves.state import (
     SaveState,
     load_install_manifest,
     load_state,
+    load_verified,
     save_state,
+    save_verified,
     saves_dir,
 )
 
@@ -118,11 +120,22 @@ def _files_dir(rec: InstalledGame) -> Path | None:
     return Path(rec.files_dir) if rec.files_dir else None
 
 
+def _install_folder_candidates(ctx: Context) -> list[Candidate]:
+    """What the game wrote into its own folder, without reading again the files that were already checked."""
+    game_id = ctx.rec.game_id
+    verified = load_verified(game_id)
+    before = dict(verified)
+    found = list(install_candidates(Path(ctx.rec.install_dir), load_install_manifest(game_id), _files_dir(ctx.rec), verified))
+    if verified != before:
+        save_verified(game_id, verified)
+    return found
+
+
 def _candidates(ctx: Context, drive_c: Path | None) -> list[Candidate]:
     found: list[Candidate] = []
     if drive_c is not None:
         found += list(profile_candidates(drive_c))
-    found += list(install_candidates(Path(ctx.rec.install_dir), load_install_manifest(ctx.rec.game_id), _files_dir(ctx.rec)))
+    found += _install_folder_candidates(ctx)
     return found
 
 
@@ -256,7 +269,7 @@ def _backup_native(
     known = _manifest_folders(ctx, state, upload)
     # What the manifest names counts as confirmed, along with what the user confirmed.
     confirmed = sorted({*(state.includes or []), *known})
-    candidates = list(install_candidates(install_dir, load_install_manifest(rec.game_id), _files_dir(rec)))
+    candidates = _install_folder_candidates(ctx)
     candidates += list(native.included_files(confirmed, install_dir))
 
     def accept(key: str) -> bool:
