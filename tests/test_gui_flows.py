@@ -4504,6 +4504,37 @@ def test_a_game_page_opens_on_its_first_button_and_the_tab_rotation_stops_on_the
     assert page.cover in seen
 
 
+def test_the_buttons_made_again_keep_the_focus_and_a_press_with_none_lands_on_the_first_button(win, qapp, tmp_path, monkeypatch):
+    """Regression test: a refresh while the game's page was open (an install ending, another version chosen, the mods
+    arriving) made its buttons again, and the focus went with the old ones: the pad's A then reached nothing and Play had to
+    be picked with the arrows first."""
+    from mog_client.gui import gamepad
+
+    _activate(win, qapp)
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    _installed_game(win, qapp, tmp_path)
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    played = []
+    monkeypatch.setattr(page, "play", lambda: played.append(1))
+    page.rebuild()
+    pump(qapp)
+    assert qapp.focusWidget() is page.first and page.first.text() == "Play"  # made again, still the one with the focus
+
+    page.buttons.itemAt(2).widget().setFocus()  # the pad had moved on to Options
+    page.rebuild()
+    pump(qapp)
+    assert qapp.focusWidget().text() == "Options"  # and that stays where it was
+
+    qapp.focusWidget().clearFocus()  # whatever else left it with nothing focused
+    assert qapp.focusWidget() is None
+    win.on_pad_event(gamepad.ACCEPT)
+    pump(qapp)
+    assert played == [1] and qapp.focusWidget() is page.first
+
+
 def test_the_executable_page_reads_later_during_an_install_back_from_the_options_both_in_red_and_edits_the_launch_tags(win, qapp, tmp_path, monkeypatch):
     from mog_client import manager
     from mog_client.config import InstalledGame

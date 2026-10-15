@@ -3814,10 +3814,7 @@ class GamePage(Page):
 
     def _on_mods(self, gid: int, found: list) -> None:
         if gid == self.game["id"] and found:  # the Mods button appears; a game with none changes nothing
-            had_focus = self.first is not None and self.first.hasFocus()
             self.rebuild()
-            if had_focus and self.first:
-                self.first.setFocus()
 
     def open_mods(self) -> None:
         self.win.push(ModsPage(self.win, self.game, self.app.mods.get(self.game["id"], [])))
@@ -4029,6 +4026,13 @@ class GamePage(Page):
             self._rebuild_again = True
             return
         self._rebuilding = True
+        # The window's own record of what has the focus, which holds while the window is not the active one: a button
+        # that is made again must keep it, or the pad's A afterwards reaches nothing.
+        old = [self.buttons.itemAt(i).widget() for i in range(self.buttons.count())]
+        old = [w for w in old if w is not None]
+        focused = self.window().focusWidget()
+        place = old.index(focused) if focused in old else None
+        was_first = place is not None and old[place] is self.first
         try:
             while True:
                 self._rebuild_again = False
@@ -4045,6 +4049,12 @@ class GamePage(Page):
                     break
         finally:
             self._rebuilding = False
+        if place is not None:
+            now = [self.buttons.itemAt(i).widget() for i in range(self.buttons.count())]
+            now = [w for w in now if w is not None and w.isEnabled()]
+            target = self.first if was_first or place >= len(now) else now[place]
+            if target is not None:
+                target.setFocus()
 
     def _buttons_key(self) -> tuple:
         """What the buttons depend on: when it changes, the ones shown are stale."""
@@ -4057,10 +4067,7 @@ class GamePage(Page):
         """An install started, ended or changed from elsewhere (resumed at start, a link from the web, the sidebar):
         the buttons of a page that was already built follow."""
         if self._built and self._buttons_key() != self._shown_key:
-            had_focus = self.first is not None and self.first.hasFocus()
             self.rebuild()
-            if had_focus and self.first:
-                self.first.setFocus()
 
     def _fill_buttons(self) -> None:
         gid = self.game["id"]
@@ -6128,6 +6135,8 @@ class MainWindow(QMainWindow):
         if key is None:
             return
         popup = QApplication.activePopupWidget()
+        if popup is None and name == gamepad.ACCEPT and QApplication.focusWidget() is None:
+            self.current_page().focus_default()  # nothing has the focus (a refresh took it): A presses the first control
         # A combo's popup is a frame around the list that has the focus and takes the keys.
         target = (popup.focusWidget() or popup) if popup is not None else (QApplication.focusWidget() or self.current_page())
         for kind in (QEvent.KeyPress, QEvent.KeyRelease):
