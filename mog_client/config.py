@@ -8,6 +8,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from mog_client import launchargs
+
 
 def _xdg(env: str, fallback: str, win_env: str = "APPDATA") -> Path:
     if sys.platform == "win32":
@@ -159,6 +161,11 @@ class InstalledGame:
     files_dir: str | None = None
     # This game's launch engine; "auto" follows the launcher chosen in Settings.
     launcher: str = "auto"
+    # Arguments given to the game's executable, as tags (see launchargs.py); every launch and shortcut passes them on.
+    launch_args: list[str] = field(default_factory=list)
+    # The tags as they last were the same here and on the server (None: never). What differs from them was changed here and
+    # not sent yet, and the server's list is merged with ours from them; see launchsettings._sync_args.
+    launch_args_synced: list[str] | None = None
     # None follows Settings.sync_saves; True or False overrides it for this game.
     save_sync: bool | None = None
     # The Proton build this game runs under, by name (None: the engine's own). Kept on the server too, see launchsettings.py.
@@ -167,6 +174,9 @@ class InstalledGame:
     wine: str | None = None
     # The winetricks verbs installed in this game's prefix (see winetricks.py); a reinstall starts with none.
     winetricks: list[str] = field(default_factory=list)
+    # Entries winetricks could not apply: a start does not try them again (that would show winetricks' window every time) until
+    # the list is changed or Done is pressed in the Winetricks page.
+    winetricks_failed: list[str] = field(default_factory=list)
     # A digest of the winecfg settings last put into this game's prefix from the server, so they are not applied twice.
     winecfg_applied: str | None = None
     # Whether the server has held launch settings for this game that this device sent or took: when it later holds none, they
@@ -179,6 +189,12 @@ class InstalledGame:
     steam_users: list[str] = field(default_factory=list)
     # A change to the shortcut waited for Steam to be closed: it rewrites its shortcuts file when it quits.
     steam_pending: bool = False
+
+    def __post_init__(self) -> None:
+        # An earlier version kept the arguments as one text: they become tags the first time the record is read.
+        self.launch_args = launchargs.as_tags(self.launch_args)
+        if self.launch_args_synced is not None:
+            self.launch_args_synced = launchargs.as_tags(self.launch_args_synced)
 
     @property
     def native(self) -> bool:

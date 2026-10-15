@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from mog_client import logstore, steam
+from mog_client import launchargs, logstore, steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
 from mog_client.installdirs import default_root, present, prune_empty
@@ -405,6 +405,35 @@ def set_proton(rec: InstalledGame, name: str | None, preference: str = "auto") -
         rec.proton = previous
         raise
     _update(rec, proton=name)
+
+
+def set_launch_args(rec: InstalledGame, tags: list[str], preference: str = "auto", agreed: bool = False) -> None:
+    """Start the game with other arguments (tags, see launchargs.py) after its executable. They are kept at once (a start from
+    here uses them) and the launch script is rewritten, which the desktop entry and the Steam shortcut run (on Windows the
+    entries are edited, as `refresh_launch_files` does); a script that cannot be rewritten now is left for the next start.
+    `agreed` says the server holds the same. The library is read again first: `rec` can be an older copy of the record."""
+    tags = launchargs.as_tags(tags)
+    changes: dict = {"launch_args": tags}
+    if agreed:
+        changes["launch_args_synced"] = list(tags)
+    for k, v in changes.items():
+        setattr(rec, k, v)
+    fresh = load_library().get(rec.game_id)
+    _update(fresh if fresh is not None else rec, **changes)
+    try:
+        if sys.platform == "win32":
+            set_launcher(rec, rec.launcher, preference)
+        elif rec.state == "installed" and rec.executable and present(rec):
+            write_launch_script(rec, preference)
+    except (RuntimeError, OSError) as e:
+        logstore.warning(f"Could not rewrite the launch script of {rec.name} for its new launch arguments: {e}")
+
+
+def set_launch_args_agreed(rec: InstalledGame, tags: list[str]) -> None:
+    """The server holds these tags too: the next merge starts from them."""
+    rec.launch_args_synced = list(tags)
+    fresh = load_library().get(rec.game_id)
+    _update(fresh if fresh is not None else rec, launch_args_synced=list(tags))
 
 
 def set_wine(rec: InstalledGame, name: str | None, preference: str = "auto") -> None:

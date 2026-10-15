@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import launcher, manager, protondl, winecfg, winetricks
+from mog_client import launcher, launchargs, manager, protondl, winecfg, winetricks
 from mog_client.api import MogClient
 from mog_client import config
 from mog_client.config import InstalledGame
@@ -26,9 +26,10 @@ def digest(reg_text: str) -> str:
 
 
 def effective(answer: dict | None) -> dict:
-    """{"proton", "winecfg_reg", "winetricks"} from the server's answer: the device's own value, else the shared one, else None;
-    the winetricks verbs of both entries together (a device adds to what all of them have)."""
-    out: dict = {"proton": None, "winecfg_reg": None}
+    """{"proton", "winecfg_reg", "launch_args", "winetricks"} from the server's answer: the device's own value, else the shared one, else None;
+    the winetricks entries of both rows together (a device adds to what all of them have), one for each key: for a setting both
+    set, the device's value wins."""
+    out: dict = {"proton": None, "winecfg_reg": None, "launch_args": None}
     verbs: list = []
     for row in ((answer or {}).get("shared"), (answer or {}).get("device")):  # the device's last: it wins
         for field in out:
@@ -37,6 +38,8 @@ def effective(answer: dict | None) -> dict:
         if isinstance(row, dict):
             verbs += winetricks.clean(row.get("winetricks"))
     out["winetricks"] = winetricks.clean(verbs)
+    if out["launch_args"] is not None:  # tags (an older server sent the text: it is split into tags)
+        out["launch_args"] = launchargs.as_tags(out["launch_args"])
     return out
 
 
@@ -93,19 +96,62 @@ def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[
         wanted["proton"] = None
     if "winecfg_reg" in unsent:
         wanted["winecfg_reg"] = None
+    _sync_args(client, rec, answer, preference)
     if wanted["proton"] and wanted["proton"] != rec.proton:
         manager.set_proton(rec, wanted["proton"], preference)
         say(f"{rec.name} now runs under {wanted['proton']}")
     ensure_build(rec, preference, say)
-    todo = winetricks.missing(wanted["winetricks"], rec.winetricks)
+    pending = winetricks.missing(wanted["winetricks"], rec.winetricks)
+    unknown = [v for v in pending if "=" in v and winetricks.registry_changes(v) is None]
+    if unknown:  # winetricks would be left to deal with these, and it may open a window (a wrong name always does)
+        say(f"{', '.join(unknown)}: the client cannot put that setting in the prefix by itself, so it is not applied at start; "
+            "press Done in Winetricks to try it with winetricks")
+    pending = [v for v in pending if v not in unknown]
+    todo = [v for v in pending if v not in rec.winetricks_failed]
+    if len(todo) < len(pending):
+        say(f"{', '.join(v for v in pending if v in rec.winetricks_failed)} could not be applied before and is not tried at each "
+            "start: change it, or press Done in Winetricks, to try again")
     if todo:  # before the winecfg settings, which a verb may overwrite (DLL overrides)
         say(f"Installing {', '.join(todo)} into the prefix of {rec.name} with winetricks (the game starts when it is done)")
-        run_winetricks(rec, preference, todo)
+        try:
+            run_winetricks(rec, preference, todo)
+        except RuntimeError:
+            manager._update(rec, winetricks_failed=list(dict.fromkeys([*rec.winetricks_failed, *todo])))
+            raise
     reg = winecfg.clean_import(wanted["winecfg_reg"] or "")
     if reg and digest(reg) != rec.winecfg_applied:
         say(f"Applying the Wine settings of {rec.name} kept on the server")
         apply_reg(rec, preference, reg)
         manager._update(rec, winecfg_applied=digest(reg))
+
+
+def _sync_args(client: MogClient, rec: InstalledGame, answer: dict | None, preference: str) -> None:
+    """Keep the launch arguments the same here and on the server by merging them tag by tag: the tags the server holds (edited
+    on its web page, or on another device) and the tags this side changed since they last agreed (`launch_args_synced`) both
+    stay, and neither editor's change is lost. The launch script follows when the list changed here, and the server is sent
+    what it lacks, as tags to add and to remove (so it merges them into its own list). A server that cannot be reached, or an
+    older one, changes nothing: the next look tries again, since what is not agreed yet is what differs from the last
+    agreement."""
+    if answer is None:
+        return
+    mine_on_device = (answer.get("device") or {}).get("launch_args") is not None
+    theirs = effective(answer)["launch_args"] or []
+    ours, base = list(rec.launch_args), list(rec.launch_args_synced or [])
+    merged = launchargs.merge(base, ours, theirs)
+    if merged != ours:
+        manager.set_launch_args(rec, merged, preference)  # the launch script follows: a shortcut starts the game with them
+    if merged != theirs:
+        change = {"launch_args_add": [t for t in merged if t not in theirs], "launch_args_remove": [t for t in theirs if t not in merged]}
+        if client.put_launch_settings(rec.game_id, device_id(client) if mine_on_device else None, change) != 200:
+            return
+        _mark_synced(rec.game_id)
+    manager.set_launch_args_agreed(rec, merged)
+
+
+def pull_args(client: MogClient, rec: InstalledGame, preference: str) -> None:
+    """Only the launch arguments: for a game that has no Proton build or Wine prefix to bring along (a Windows or a native
+    Linux game), for the look at every installed game's, and for the send after an edit here."""
+    _sync_args(client, rec, client.launch_settings(rec.game_id, device_id(client)), preference)
 
 
 def _align_with_empty_server(rec: InstalledGame, preference: str, unsent: set[str], say: Callable[[str], None]) -> None:
@@ -304,19 +350,48 @@ def revert_reg(rec: InstalledGame, preference: str) -> bool:
     return True
 
 
+def apply_settings(rec: InstalledGame, preference: str, entries: list[str]) -> None:
+    """Put winetricks settings the client knows (`vd=1280x1024`, see `winetricks.registry_changes`) into the game's prefix by
+    writing them into its registry with the engine's own regedit: no winetricks, so no window of it. The prefix is the game's
+    own, where it already is."""
+    changes = [change for entry in entries for change in winetricks.registry_changes(entry) or []]
+    if not changes:
+        return
+    path = _winecfg_dir() / f"{rec.game_id}.winetricks.reg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(winecfg._reg_of(changes))
+    _import_reg(rec, preference, path)
+
+
 def run_winetricks(rec: InstalledGame, preference: str, verbs: list[str]) -> None:
-    """Install `verbs` into the game's prefix with winetricks, unattended, and note them as installed. Raises RuntimeError when
-    winetricks fails; nothing is noted then, so the next try starts again."""
+    """Apply `verbs` (verbs, and settings such as `vd=1280x1024`) to the game's prefix and note them. The settings the client
+    knows are written into the registry (silent); the rest goes to winetricks, unattended. Raises RuntimeError when that
+    fails; what failed is not noted, so the next try starts again."""
     verbs = winetricks.clean(verbs)
     if not verbs:
         return
-    proc = launcher.start_tool(rec, preference, "winetricks", ("-q", *verbs))
-    code = proc.wait()
-    # A launcher such as Faugus's may hand over and return at once: wait for winetricks itself, if it is still there.
-    watcher.wait_for_tool("winetricks", prefix_of(rec), appear_timeout=15.0, linger=5.0)
-    if code != 0:
-        raise RuntimeError(launcher.launch_failure(proc) or f"winetricks exited with {code}")
-    manager._update(rec, winetricks=list(dict.fromkeys([*rec.winetricks, *verbs])))
+    direct = [v for v in verbs if winetricks.registry_changes(v) is not None]
+    rest = [v for v in verbs if v not in direct]
+    if rest:
+        proc = launcher.start_tool(rec, preference, "winetricks", ("-q", *rest))
+        code = proc.wait()
+        # A launcher such as Faugus's may hand over and return at once: wait for winetricks itself, if it is still there.
+        watcher.wait_for_tool("winetricks", prefix_of(rec), appear_timeout=15.0, linger=5.0)
+        if code != 0:
+            raise RuntimeError(launcher.launch_failure(proc) or f"winetricks exited with {code}")
+        _note_applied(rec, rest)
+    if direct:
+        apply_settings(rec, preference, direct)
+        _note_applied(rec, direct)
+
+
+def _note_applied(rec: InstalledGame, entries: list[str]) -> None:
+    """In the prefix now: a setting's new value takes the old one's place, and nothing in it has failed any more."""
+    manager._update(
+        rec,
+        winetricks=winetricks.merge(rec.winetricks, entries),
+        winetricks_failed=[v for v in rec.winetricks_failed if v not in entries],
+    )
 
 
 def run_winecfg(

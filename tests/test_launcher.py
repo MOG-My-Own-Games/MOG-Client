@@ -370,3 +370,16 @@ def test_on_windows_the_entries_run_the_launch_file(monkeypatch, tmp_path):
     assert launcher.launch_cmd_path(game).read_bytes().startswith(b"@echo off\r\n")
     launcher.remove_entry_files(game)
     assert not launcher.launch_cmd_path(game).exists()
+
+
+def test_the_games_launch_arguments_follow_the_executable_tag_after_tag_and_a_quote_left_open_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "native")
+    game = _game(tmp_path)
+    game.launch_args = ["-windowed", "-title 'a b'", "--res=1280"]
+
+    cmd, _ = launcher.launch_command(game)
+
+    assert cmd == [game.executable, "-windowed", "-title", "a b", "--res=1280"]
+    game.launch_args = ["-x 'never closed"]  # a tag typed on the server's web page, where nothing checks it
+    with pytest.raises(RuntimeError, match="quote"):
+        launcher.launch_command(game)

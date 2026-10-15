@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import protondl
+from mog_client import launchargs, protondl
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -424,13 +424,18 @@ def launch_command(
     program in the game's prefix through the same engine."""
     if program is None and not game.executable:
         raise RuntimeError("no executable chosen for this game")
+    if program is None:
+        try:
+            args = (*launchargs.words(game.launch_args), *args)  # the game's own arguments come first, tag after tag
+        except ValueError:  # a tag with a quote that is never closed (typed on the server's web page, say)
+            raise RuntimeError("a launch argument of this game has a quote that is never closed: edit it and start the game again") from None
     exe = program or game.executable
     if game.native and program is not None:
         raise RuntimeError("a Linux game runs as it is: it has no Wine prefix")
     if game.native:
         ensure_executable(game.executable)
         ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
-        return [game.executable], {}  # a Linux program: no launcher, no prefix
+        return [game.executable, *args], {}  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")

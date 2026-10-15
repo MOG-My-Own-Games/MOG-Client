@@ -45,9 +45,9 @@ def _row(proton=None, reg=None, verbs=None):
 def test_a_device_takes_its_own_value_first_and_the_shared_one_for_what_that_lacks():
     answer = {"shared": _row("GE-Proton9-1", REG), "device": _row("GE-Proton10-1", None)}
 
-    assert launchsettings.effective(answer) == {"proton": "GE-Proton10-1", "winecfg_reg": REG, "winetricks": []}
-    assert launchsettings.effective(None) == {"proton": None, "winecfg_reg": None, "winetricks": []}
-    assert launchsettings.effective({"shared": None, "device": None}) == {"proton": None, "winecfg_reg": None, "winetricks": []}
+    assert launchsettings.effective(answer) == {"proton": "GE-Proton10-1", "winecfg_reg": REG, "launch_args": None, "winetricks": []}
+    assert launchsettings.effective(None) == {"proton": None, "winecfg_reg": None, "launch_args": None, "winetricks": []}
+    assert launchsettings.effective({"shared": None, "device": None}) == {"proton": None, "winecfg_reg": None, "launch_args": None, "winetricks": []}
 
 
 def test_the_winetricks_verbs_of_all_devices_and_of_this_one_add_up_and_a_bad_verb_is_dropped():
@@ -539,3 +539,223 @@ def test_pulling_sends_what_waits_first_and_never_replaces_a_change_not_sent_yet
     launchsettings.pull(still_down, game, "auto")
 
     assert game.proton == "GE-Proton10-4" and launchsettings.waiting(7)  # kept, and still waiting
+
+
+def _with_args(tags, proton=None):
+    return {**_row(proton), "launch_args": tags}
+
+
+@pytest.fixture
+def scripts(monkeypatch):
+    """The launch script is not written for real here: what it is told is."""
+    rewritten = []
+    monkeypatch.setattr(manager, "write_launch_script", lambda rec, pref: rewritten.append(list(rec.launch_args)))
+    monkeypatch.setattr(manager, "set_launcher", lambda rec, engine, pref="auto": rewritten.append(list(rec.launch_args)))
+    return rewritten
+
+
+def _kept(game):
+    return manager.load_library()[7]
+
+
+def test_tags_the_server_holds_are_taken_and_the_launch_script_follows_once(game, scripts):
+    server = Server({"shared": _with_args(["-w", "-res 1280 720"]), "device": None})
+
+    launchsettings.pull_args(server, game, "auto")
+    launchsettings.pull_args(server, game, "auto")  # nothing new the second time
+
+    assert game.launch_args == ["-w", "-res 1280 720"] and _kept(game).launch_args == ["-w", "-res 1280 720"]
+    assert _kept(game).launch_args_synced == ["-w", "-res 1280 720"]
+    assert scripts == [["-w", "-res 1280 720"]] and server.put == []
+
+
+def test_the_devices_own_tags_win_over_the_shared_ones(game, scripts):
+    launchsettings.pull_args(Server({"shared": _with_args(["-a"]), "device": _with_args(["-b"])}), game, "auto")
+
+    assert game.launch_args == ["-b"]
+
+
+def test_tags_kept_here_before_they_were_shared_go_to_the_server_instead_of_being_cleared_by_it(game, scripts):
+    game.launch_args = ["-intro:off"]  # kept by a version that did not share them
+    manager._update(game)
+    server = Server({"shared": _row("GE-Proton10-34"), "device": None})  # launch settings, but no arguments
+
+    launchsettings.pull_args(server, game, "auto")
+
+    assert _kept(game).launch_args == ["-intro:off"] and _kept(game).launch_args_synced == ["-intro:off"]
+    assert server.put == [(7, None, {"launch_args_add": ["-intro:off"], "launch_args_remove": []})]
+    assert scripts == []  # nothing changed here: the script already has them
+
+    server.put.clear()
+    launchsettings.pull_args(Server({"shared": _with_args(["-intro:off"]), "device": None}), game, "auto")
+    assert _kept(game).launch_args == ["-intro:off"]
+
+
+def test_two_editors_are_merged_by_tag_and_neither_change_is_lost(game, scripts):
+    game.launch_args, game.launch_args_synced = ["-a", "-b", "-c"], ["-a", "-b"]  # here: "-c" was added
+    manager._update(game)
+    server = Server({"shared": _with_args(["-a", "-d"]), "device": None})  # the web page: "-b" taken out, "-d" put in
+
+    launchsettings.pull_args(server, game, "auto")
+
+    assert _kept(game).launch_args == ["-a", "-d", "-c"]
+    assert server.put == [(7, None, {"launch_args_add": ["-c"], "launch_args_remove": []})]  # the server gets what it lacks
+    assert _kept(game).launch_args_synced == ["-a", "-d", "-c"] and scripts == [["-a", "-d", "-c"]]
+
+
+def test_a_tag_taken_out_here_is_taken_out_on_the_server_and_one_taken_out_there_goes_here(game, scripts):
+    game.launch_args, game.launch_args_synced = ["-b"], ["-a", "-b"]  # here: "-a" was taken out
+    manager._update(game)
+    server = Server({"shared": _with_args(["-a", "-b", "-e"]), "device": None})
+
+    launchsettings.pull_args(server, game, "auto")
+
+    assert _kept(game).launch_args == ["-b", "-e"]
+    assert server.put == [(7, None, {"launch_args_add": [], "launch_args_remove": ["-a"]})]
+
+    game.launch_args, game.launch_args_synced = ["-b", "-e"], ["-b", "-e"]
+    manager._update(game)
+    launchsettings.pull_args(Server({"shared": _with_args(["-b"]), "device": None}), game, "auto")  # "-e" taken out on the web page
+    assert _kept(game).launch_args == ["-b"]
+
+
+def test_tags_changed_here_wait_for_a_server_that_cannot_be_reached_and_go_when_it_can(game, scripts):
+    game.launch_args = ["-mine"]
+    manager._update(game)
+    down = Server({"shared": _with_args([]), "device": None}, statuses=[None])
+
+    launchsettings.pull_args(down, game, "auto")
+
+    assert _kept(game).launch_args == ["-mine"] and not _kept(game).launch_args_synced  # not agreed yet
+
+    up = Server({"shared": _with_args([]), "device": None})
+    launchsettings.pull_args(up, game, "auto")
+    assert up.put == [(7, None, {"launch_args_add": ["-mine"], "launch_args_remove": []})]
+    assert _kept(game).launch_args_synced == ["-mine"]
+
+
+def test_a_device_that_has_its_own_tags_sends_its_changes_to_its_own_entry(game, scripts):
+    game.launch_args, game.launch_args_synced = ["-a", "-x"], ["-a"]
+    manager._update(game)
+    server = Server({"shared": _with_args(["-s"]), "device": _with_args(["-a"])})
+
+    launchsettings.pull_args(server, game, "auto")
+
+    assert server.put == [(7, 3, {"launch_args_add": ["-x"], "launch_args_remove": []})]
+
+
+def test_tags_deleted_with_the_servers_launch_settings_go_from_here_and_an_older_server_changes_nothing(game, scripts):
+    game.launch_args = game.launch_args_synced = ["-a"]
+    manager._update(game)
+
+    launchsettings.pull_args(Server(None), game, "auto")  # an older server cannot answer
+    assert _kept(game).launch_args == ["-a"]
+
+    launchsettings.pull_args(Server({"shared": None, "device": None}), game, "auto")  # deleted there, nothing changed here
+    assert _kept(game).launch_args == [] and scripts == [[]]
+
+
+def test_text_an_older_version_kept_becomes_tags_when_the_record_is_read(game):
+    from mog_client.config import InstalledGame
+
+    rec = InstalledGame(game_id=9, name="N", install_dir="/x", launch_args="-intro:off -res 1280 720 --nosound")
+
+    assert rec.launch_args == ["-intro:off", "-res 1280 720", "--nosound"] and rec.launch_args_synced is None
+
+
+def test_for_a_setting_both_rows_have_the_devices_value_wins_and_the_rest_add_up():
+    answer = {"shared": _row(verbs=["vcrun2019", "vd=1280x1024", "renderer=gdi"]), "device": _row(verbs=["vd=1920x1080", "dotnet48"])}
+
+    assert launchsettings.effective(answer)["winetricks"] == ["vcrun2019", "vd=1920x1080", "renderer=gdi", "dotnet48"]
+    assert launchsettings.effective({"shared": _row(verbs=["vd=1280x1024"]), "device": None})["winetricks"] == ["vd=1280x1024"]
+
+
+def test_pulling_applies_again_a_setting_whose_value_changed_and_only_that(monkeypatch, game):
+    ran = []
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda rec, pref, verbs: ran.append(verbs))
+    game.winetricks = ["vcrun2019", "vd=1280x1024"]
+
+    launchsettings.pull(Server({"shared": _row(verbs=["vcrun2019", "vd=1920x1080"]), "device": None}), game, "auto")
+
+    assert ran == [["vd=1920x1080"]]
+
+
+def _tools(monkeypatch, codes=None):
+    """The programs started in the prefix, as (program, args); each ends with the next code of `codes` (0 by default)."""
+    started, results = [], iter(codes or [])
+    monkeypatch.setattr(
+        launchsettings.launcher,
+        "start_tool",
+        lambda rec, pref, program, args=(): (
+            started.append((program, args)),
+            SimpleNamespace(wait=lambda timeout=None: next(results, 0), poll=lambda: 0, log_path=None),
+        )[1],
+    )
+    monkeypatch.setattr(launchsettings.watcher, "wait_for_tool", lambda *a, **k: True)
+    return started
+
+
+def test_settings_the_client_knows_go_into_the_registry_silently_and_take_the_old_values_place(monkeypatch, game, tmp_path):
+    started = _tools(monkeypatch)
+    monkeypatch.setattr(launchsettings, "_winecfg_dir", lambda: tmp_path / "winecfg")
+    game.winetricks = ["vd=1280x1024", "vcrun2019"]
+    manager._update(game)
+    written = []
+    real = launchsettings._import_reg
+    monkeypatch.setattr(launchsettings, "_import_reg", lambda rec, pref, path: (written.append(path.read_text()), real(rec, pref, path)))
+
+    launchsettings.run_winetricks(game, "auto", ["vd=1920x1080", "renderer=gdi"])
+
+    assert [program for program, _ in started] == ["regedit"]  # no winetricks, so none of its windows
+    assert started[0][1][0] == "/S"
+    assert '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer]\n"Desktop"="Default"' in written[0]
+    assert '[HKEY_CURRENT_USER\\Software\\Wine\\Explorer\\Desktops]\n"Default"="1920x1080"' in written[0]
+    assert '[HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]\n"renderer"="gdi"' in written[0]
+    assert manager.load_library()[7].winetricks == ["vd=1920x1080", "vcrun2019", "renderer=gdi"]  # one vd, not two
+
+
+def test_verbs_go_to_winetricks_and_settings_beside_them_to_the_registry(monkeypatch, game, tmp_path):
+    started = _tools(monkeypatch)
+    monkeypatch.setattr(launchsettings, "_winecfg_dir", lambda: tmp_path / "winecfg")
+
+    launchsettings.run_winetricks(game, "auto", ["vcrun2019", "vd=1280x1024", "dotnet48"])
+
+    assert [(program, args) for program, args in started if program == "winetricks"] == [("winetricks", ("-q", "vcrun2019", "dotnet48"))]
+    assert [program for program, _ in started] == ["winetricks", "regedit"]
+    assert manager.load_library()[7].winetricks == ["vcrun2019", "dotnet48", "vd=1280x1024"]
+
+
+def test_a_failed_start_up_is_not_tried_again_at_each_start_and_pressing_done_clears_it(monkeypatch, game):
+    calls = []
+
+    def fail(rec, pref, verbs):
+        calls.append(list(verbs))
+        raise RuntimeError("winetricks exited with 1")
+
+    monkeypatch.setattr(launchsettings, "run_winetricks", fail)
+    server = Server({"shared": _row(verbs=["vcrun2019"]), "device": None})
+    said = []
+
+    with pytest.raises(RuntimeError):
+        launchsettings.pull(server, game, "auto", said.append)
+    assert calls == [["vcrun2019"]] and manager.load_library()[7].winetricks_failed == ["vcrun2019"]
+
+    game = manager.load_library()[7]
+    launchsettings.pull(server, game, "auto", said.append)  # the next start: no second try, no second window
+    assert calls == [["vcrun2019"]] and any("is not tried at each start" in m for m in said)
+
+    monkeypatch.undo()
+    _tools(monkeypatch)
+    launchsettings.run_winetricks(game, "auto", ["vcrun2019"])  # Done in the Winetricks page: an explicit try
+    assert manager.load_library()[7].winetricks_failed == [] and "vcrun2019" in manager.load_library()[7].winetricks
+
+
+def test_a_setting_the_client_does_not_know_is_left_for_the_winetricks_page_not_sent_to_winetricks_at_start(monkeypatch, game):
+    ran, said = [], []
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda rec, pref, verbs: ran.append(verbs))
+    server = Server({"shared": _row(verbs=["virtualdesktop=1280x800", "vd=1280x800", "vcrun2019"]), "device": None})
+
+    launchsettings.pull(server, game, "auto", said.append)
+
+    assert ran == [["vd=1280x800", "vcrun2019"]]  # the wrong name never reaches winetricks, which would open a window for it
+    assert any("virtualdesktop=1280x800" in m and "Done in Winetricks" in m for m in said)
