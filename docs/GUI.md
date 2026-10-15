@@ -66,15 +66,48 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       own defaults in the same keys stay), from a note kept when they were applied or made in a prefix that already existed (the
       engine makes a new one with its own defaults, which cannot be told from settings). Settings applied before that was
       recorded, and what winetricks installed, stay in the prefix.
-    - **Winetricks** (Windows games): a list of the usual verbs (vcrun2019, dotnet48, d3dx9, ...); the ones already in the prefix
-      are ticked. Pressing Done installs the newly ticked ones into the game's prefix, unattended, through the game's
+    - **Winetricks** (Windows games): a list of the usual verbs (vcrun2019, dotnet48, d3dx9, ...) and of usual settings with a
+      value (`vd=1280x1024`, `renderer=gdi`, `csmt=on`...); the ones already in the prefix are ticked, and so are the ones
+      the server keeps for the game that the prefix does not have yet (read when the page opens, marked "on the server, not applied
+      yet"; Done applies them, and so does the next start of the game). A setting has one value:
+      ticking another value of it takes the tick off the first, and **Add settings...** opens a page (the same as the
+      launch arguments') where you type settings of your own, `vd=1280x1024 renderer=gdi`, as many as you need (the pad's keyboard
+      types into the field): **+** adds what is typed, each one listed has a **-** that takes it out, **OK** ticks them all in
+      place of the other values of their names, and **Back**, in red beside OK, leaves without. A setting is kept in the
+      same list as the verbs, as `name=value`; when its value changes, the new value is applied again, and the prefix then holds
+      one value for the name. Taking an entry out of the list does not undo it in a prefix. When the server's list has a setting
+      for all devices and for this one, this device's value wins.
+      **Settings are applied without winetricks, silently:** the client writes the ones it knows (`vd=WxH` or `vd=off`, `renderer`,
+      `csmt`, `mwo`, `sound`, `ddr`, `glsl`, `windowmanagerdecorated`, `windowmanagermanaged`, `usetakefocus`, `videomemorysize`) straight
+      into the registry of the game's own prefix with the engine's regedit, as winecfg's settings are, so no winetricks window opens
+      when the game starts. A `name=value` it does not know (a wrong name such as `virtualdesktop`, say) is not sent to winetricks at
+      start, where it would open a window: it is left for Done in this page, which does try it with winetricks. A verb that winetricks
+      could not apply is not tried again at each start, so its window does not open every time; changing it, or pressing Done here,
+      tries again.
+      The rest is as for verbs. Pressing Done installs the newly ticked ones into the game's prefix, unattended, through the game's
       engine (`umu-run winetricks` for umu and Faugus; winetricks itself, on the prefix, for Wine and Proton, which needs it
       installed). The button reads "winetricks is running..." meanwhile. Like winecfg, you then say whether the verbs hold
       for all of the game's devices or only this one, and they are kept on the server: when the game is reinstalled, or played on
       another device, the verbs it lacks are installed into the new prefix before the game starts (before the winecfg
       settings are applied). Verbs cannot be removed from here.
     - **Prefix location**: where the game's Wine prefix is, for the save sync (shown when save sync is on).
-  - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts.
+  - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts. Its
+    **Launch arguments** row has an **Edit** button for what is put after the game's executable. The arguments are **tags**:
+    each is one option with what goes with it (`-res 1280 720`, `--nosound`). In the page it opens, type arguments in the
+    field and press **+** (or Enter on the field): the text splits into tags at each word that starts with `-` or `--` (a
+    negative number is a value), with quotes kept (`-title 'My Game'`). Each tag in the list has a **-** that takes it out
+    (Enter or A on a tag does the same), **OK** keeps the list and **Back**, in red beside OK, leaves without changes: the launch script is rewritten at once and every launch and shortcut passes the tags on, in order.
+    - They are kept on the server with the other launch settings (for all of the game's devices, or for this one when the
+      server holds an entry of its own for it) and the server's web page edits them too. Because they are tags, the two are
+      **merged** instead of one replacing the other: the client keeps the list it last agreed on with the server, and a
+      tag either side added stays and one either side took out goes. What the client sends is the tags to add and to remove,
+      which the server merges into its own list. If the server cannot be reached, the change waits (the list here differs
+      from the last agreed one) and goes with the next look.
+    - The client looks at the server's tags for every installed game at start, when its window comes back to the front and
+      every minute, and rewrites the launch script of a game whose tags changed. Arguments an earlier version kept as text
+      become tags the first time they are read. A tag with a quote that is never closed stops the game with a message.
+    - The way out of this page reads Later while the install waits for the executable and Back when it is opened from
+      Options; both are red.
   - **Refresh metadata**: fetches the metadata and artwork from the server again and rebuilds the icons and entries,
     editing the Steam shortcut in place.
   - **Repair: check the installed files**: compares every file the server installed with the server's hash and
@@ -129,6 +162,14 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 
 - Fully usable with a gamepad: D-pad or stick, A, B, Start for the user menu, Start+Select to quit. The pad is ignored
   while another window is in front (a game, for one).
+- A right click on a game of the library, or Select with a game selected in it, opens that game's Options (Back returns
+  to the library). The guide shows Select as Options while a game is selected. Without a game selected, Select is the user
+  menu.
+- In a menu of buttons such as Linux Options, Up from the first one goes to the last one, and Down from the last goes to
+  the card's own button (Back or Close).
+- On a game's page the focus starts on its first button (Play, Install...), and Tab also stops on the cover. In the
+  library, a cover is drawn selected only while the grid has the focus: it is remembered when Tab goes to the search or the
+  sidebar, and selected again when the focus returns to the grid.
 - A legend at the bottom lists the controls that work on the page being shown. It shows the controller's button icons
   (Xbox, PlayStation, Nintendo or Steam Deck glyphs) while a controller is connected and was the last thing used, and key
   icons otherwise; pressing a key switches it to the keyboard at once. Icons: Kenney Input Prompts, CC0.
