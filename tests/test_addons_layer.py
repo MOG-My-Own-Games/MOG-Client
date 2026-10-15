@@ -215,3 +215,19 @@ def test_a_step_inside_a_disc_is_sent_with_its_source_and_found_again_in_the_sav
     assert addons.steps_of([inner]) == [{"path": "setup.exe", "source_path": "2 - Setup/DISK1.ISO"}]
     arranged = addons.arrange([outer, inner], [{"path": "setup.exe", "source_path": "2 - Setup/DISK1.ISO"}])
     assert arranged[0][0] is inner and arranged[0][1] is True and arranged[1] == (outer, False)
+
+
+def test_just_copy_is_a_step_like_an_installer_that_goes_first_and_is_sent_as_the_copy_marker():
+    copy = addons.copy_entry()
+
+    assert addons.is_copy(copy) and not addons.is_copy({"path": "setup.exe", "kind": "known installer"})
+    assert addons.chainable([copy, {"path": "setup.exe", "kind": "known installer"}, {"path": "d.iso", "kind": "disc image"}]) == [
+        copy,
+        {"path": "setup.exe", "kind": "known installer"},
+    ]
+    assert addons.label_of(copy) == "Just copy the files, run nothing"
+    assert addons.steps_of([copy, {"path": "patch.exe", "kind": "executable (top level)"}]) == [
+        {"path": "mog:copy", "source_path": None},
+        {"path": "patch.exe", "source_path": None},
+    ]
+    assert addons.role_of(0) == "Game"

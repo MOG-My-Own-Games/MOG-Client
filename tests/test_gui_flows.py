@@ -1801,7 +1801,7 @@ def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_h
     rows = _rows(picker)
     assert picker.server_button.isHidden() and any("gothic2.exe" in r for r in rows)  # it could not choose: not offered
 
-    picker.choose(next(picker.list.item(i) for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole)))
+    picker.choose(picker.list.item(_index_of(picker, "Setup/gothic2.exe")))
     assert started == [(41, {"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
 
 
@@ -2046,17 +2046,20 @@ def _rows(picker):
 EXE = {"path": "Metroid.exe", "file_size_bytes": 1000, "kind": "executable (top level)", "category": "game"}
 
 
-def test_a_folder_with_no_installer_offers_its_executables_and_a_just_copy_button(win, qapp, monkeypatch):
+def test_a_folder_with_no_installer_offers_its_executables_and_just_copy_as_its_first_row(win, qapp, monkeypatch):
     page, picker = _picker_for(win, qapp, monkeypatch)
     started = []
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, extract)))
 
     picker.on_installers(41, [EXE], "", True)
     rows = _rows(picker)
-    assert any("Metroid.exe" in r for r in rows) and not any("Just copy" in r for r in rows)  # copy is a button, not a row
+    assert any("Metroid.exe" in r for r in rows) and sum("Just copy" in r for r in rows) == 1
+    first = next(r for r in rows if r.strip() and "Metroid.exe" in r or "Just copy" in r)
+    assert first.startswith("Just copy")  # the first row under the version, before the executables
     assert picker.server_button.isHidden() and "probably the game itself" in picker.status.text()
 
-    picker.copy_button.click()
+    _tick(picker, qapp, "mog:copy")
+    picker.ok.click()
     assert started == [(None, True)]
 
 
@@ -2070,16 +2073,52 @@ def test_an_executable_can_still_be_picked_from_that_folder(win, qapp, monkeypat
     assert started == [(EXE, False)]
 
 
-def test_just_copy_is_a_button_above_install_and_always_on_offer(win, qapp, monkeypatch):
+def test_just_copy_is_a_row_like_an_installer_always_on_offer_and_there_is_no_button_for_it(win, qapp, monkeypatch):
     _page, picker = _picker_for(win, qapp, monkeypatch)
     started = []
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, extract)))
-    picker.on_installers(41, [SETUP], "", False)
+    assert not hasattr(picker, "copy_button")
+    assert not any(b.text().startswith("Just copy") for b in picker.findChildren(QPushButton))
+    assert any("Just copy" in r for r in _rows(picker))  # on offer while the installers are still being looked for
 
-    assert picker.copy_button.isEnabled() and picker.copy_button.text().startswith("Just copy")
-    assert picker.copy_button.geometry().bottom() < picker.ok.mapTo(picker, picker.ok.rect().topLeft()).y() + picker.ok.height()
-    picker.copy_button.click()
+    picker.on_installers(41, [SETUP], "", False)
+    assert _installer_rows(picker, with_copy=True)[0] == ("mog:copy", None)
+
+    picker.list.setCurrentRow(_index_of(picker, "mog:copy"))
+    picker.ok.click()  # nothing ticked: Install takes the row the arrow is on
     assert started == [(None, True)]
+
+
+def test_just_copy_ticked_is_the_game_and_always_the_first_with_the_installers_after_it_as_patches(win, qapp, monkeypatch):
+    page, picker, server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
+    started = []
+    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, extract, steps)))
+
+    _tick(picker, qapp, "patch1.exe")
+    _tick(picker, qapp, "patch2.exe")
+    _tick(picker, qapp, "mog:copy")  # ticked last, it still takes the first place
+
+    assert _installer_rows(picker, with_copy=True)[:3] == [("mog:copy", "1"), ("patch1.exe", "2"), ("patch2.exe", "3")]
+    copy_row, first_patch = _widget(picker, "mog:copy"), _widget(picker, "patch1.exe")
+    assert not any(b.isEnabled() for b in copy_row.arrows)  # nothing goes above it, and it does not move down
+    assert not first_patch.arrows[0].isEnabled() and first_patch.arrows[1].isEnabled()  # the first patch cannot pass it
+
+    picker._move(("mog:copy" and picker._key(picker.list.item(_index_of(picker, "patch1.exe")))), -1)  # tried anyway
+    assert _installer_rows(picker, with_copy=True)[:3] == [("mog:copy", "1"), ("patch1.exe", "2"), ("patch2.exe", "3")]
+
+    picker.ok.click()
+    steps = [{"path": "mog:copy", "source_path": None}, {"path": "patch1.exe", "source_path": None}, {"path": "patch2.exe", "source_path": None}]
+    assert started == [(None, False, steps)] and server.put == [(41, steps)]  # one install, the order kept for next time
+
+
+def test_the_saved_order_with_just_copy_first_comes_back_ticked(win, qapp, monkeypatch):
+    saved = [{"path": "mog:copy", "source_path": None}, {"path": "patch1.exe", "source_path": None}]
+    page, picker = _picker_for(win, qapp, monkeypatch)
+    picker.order = [(41, step["path"], step["source_path"]) for step in saved]
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    picker.on_installers(41, [SETUP, PATCH1], "", False)
+
+    assert _installer_rows(picker, with_copy=True)[:2] == [("mog:copy", "1"), ("patch1.exe", "2")]
 
 
 def test_the_picker_says_install_and_cancel_in_red(win, qapp, monkeypatch):
@@ -3806,9 +3845,16 @@ def _order_page(win, qapp, monkeypatch, found, saved=()):
     monkeypatch.setattr(win.app, "client", lambda: server)
     monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
     picker.on_installers(41, found, "", False)
-    picker.list.setCurrentRow(next(i for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole)))
+    picker.list.setCurrentRow(
+        next(i for i in range(picker.list.count()) if picker.list.item(i).data(Qt.UserRole) and not _is_copy_row(picker, i))
+    )
     pump(qapp)
     return page, picker, server
+
+
+def _is_copy_row(picker, i):
+    key = picker._key(picker.list.item(i))
+    return key is not None and key[1] == "mog:copy"
 
 
 def _index_of(picker, path, source=None):
@@ -3828,13 +3874,13 @@ def _tick(picker, qapp, path, source=None):
     pump(qapp)
 
 
-def _installer_rows(picker):
+def _installer_rows(picker, with_copy=False):
     """The paths of the rows that are installers, top to bottom, with their number when ticked."""
     out = []
     for i in range(picker.list.count()):
         widget = picker.list.itemWidget(picker.list.item(i))
         key = picker._key(picker.list.item(i))
-        if widget is not None and widget.check is not None:
+        if widget is not None and widget.check is not None and (with_copy or key[1] != "mog:copy"):
             number = [lbl.text() for lbl in widget.findChildren(QLabel) if lbl.objectName() == "rowNumber"]
             out.append((key[1], number[0] if number else None))
     return out
@@ -3993,7 +4039,7 @@ def test_installers_are_big_labels_with_a_flag_and_a_disc_or_the_servers_choice_
         if picker.list.itemWidget(picker.list.item(i)) is not None
     }
 
-    assert flags == {"setup.exe": True, "2 - Setup/DISK1.ISO": False}
+    assert flags == {"mog:copy": True, "setup.exe": True, "2 - Setup/DISK1.ISO": False}  # the copy is ticked like an installer
     assert picker.list.itemWidget(picker.list.item(_index_of(picker, "setup.exe"))).objectName() == "installerRow"
 
 
@@ -4290,7 +4336,7 @@ def test_the_down_arrow_leaves_the_last_row_for_the_buttons(win, qapp, monkeypat
     QTest.keyClick(picker.list, Qt.Key_Down)
     pump(qapp)
 
-    assert not picker.list.hasFocus() and picker.focusWidget() in (picker.copy_button, picker.ok, win.modal.close_button)
+    assert not picker.list.hasFocus() and picker.focusWidget() in (picker.server_button, picker.ok, win.modal.close_button)
 
 
 def test_only_the_current_row_is_filled_and_an_arrow_marked_on_it_is_cleared_when_another_row_is_reached(win, qapp, monkeypatch):
@@ -4312,7 +4358,7 @@ def test_only_the_current_row_is_filled_and_an_arrow_marked_on_it_is_cleared_whe
     assert picker.arrow is None
 
 
-def test_let_the_server_choose_is_a_button_before_just_copy_on_the_same_row_and_not_a_list_row(win, qapp, monkeypatch):
+def test_let_the_server_choose_is_a_button_above_install_and_not_a_list_row(win, qapp, monkeypatch):
     page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
     started = []
     monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, extract, steps)))
@@ -4321,8 +4367,6 @@ def test_let_the_server_choose_is_a_button_before_just_copy_on_the_same_row_and_
 
     assert not any("Let the server choose" in r for r in _rows(picker))
     assert picker.server_button.isVisible() and picker.server_button.text() == "Let the server choose"
-    same_row = picker.server_button.geometry().center().y() == picker.copy_button.geometry().center().y()
-    assert same_row and picker.server_button.geometry().right() < picker.copy_button.geometry().left()  # before it
     assert picker.server_button.geometry().bottom() < picker.ok.geometry().top() + picker.ok.mapTo(picker, picker.ok.rect().topLeft()).y()
 
     picker.server_button.click()
@@ -4342,12 +4386,12 @@ def _tags(picker):
 def test_a_ticked_row_is_tagged_game_or_patch_like_the_server_and_the_kind_text_is_gone(win, qapp, monkeypatch):
     _page, picker, _server = _order_page(win, qapp, monkeypatch, [SETUP, PATCH1, PATCH2])
     assert all("known installer" not in r and "executable" not in r for r in _rows(picker))
-    assert _tags(picker) == {"setup.exe": None, "patch1.exe": "patch", "patch2.exe": "patch"}  # the server's own category, for patches
+    assert _tags(picker) == {"mog:copy": None, "setup.exe": None, "patch1.exe": "patch", "patch2.exe": "patch"}  # the server's own category, for patches
 
     _tick(picker, qapp, "patch1.exe")
     _tick(picker, qapp, "setup.exe")
 
-    assert _tags(picker) == {"patch1.exe": "game", "setup.exe": "patch", "patch2.exe": "patch"}  # parts in the install, by place
+    assert _tags(picker) == {"mog:copy": None, "patch1.exe": "game", "setup.exe": "patch", "patch2.exe": "patch"}  # parts in the install, by place
     assert _widget(picker, "patch1.exe").tag.property("kind") == "game" and _widget(picker, "setup.exe").tag.property("kind") == "other"
 
 
@@ -4368,15 +4412,13 @@ def test_right_from_install_goes_to_cancel_and_left_comes_back(win, qapp, monkey
     assert _focus_after(picker, qapp, win.modal.close_button, Qt.Key_Left) is picker.ok
 
 
-def test_the_two_buttons_above_are_reached_sideways_too_and_up_and_down_change_row(win, qapp, monkeypatch):
+def test_the_button_above_is_reached_by_the_arrows_and_up_and_down_change_row(win, qapp, monkeypatch):
     _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
     picker.on_installers(41, [SETUP, PATCH1], "", False)
     pump(qapp)
 
-    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Right) is picker.copy_button
-    assert _focus_after(picker, qapp, picker.copy_button, Qt.Key_Left) is picker.server_button
     assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Down) in (picker.ok, win.modal.close_button)
-    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Up) in (picker.server_button, picker.copy_button)
+    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Up) is picker.server_button
 
 
 def test_up_from_the_top_row_of_buttons_goes_back_to_the_list(win, qapp, monkeypatch):
@@ -4384,7 +4426,7 @@ def test_up_from_the_top_row_of_buttons_goes_back_to_the_list(win, qapp, monkeyp
     picker.on_installers(41, [SETUP, PATCH1], "", False)
     pump(qapp)
 
-    assert _focus_after(picker, qapp, picker.copy_button, Qt.Key_Up) is picker.list
+    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Up) is picker.list
 
 
 def test_cancel_stops_taking_this_pages_arrows_once_the_page_is_gone(win, qapp, monkeypatch):

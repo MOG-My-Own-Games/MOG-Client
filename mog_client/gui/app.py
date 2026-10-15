@@ -2007,8 +2007,8 @@ class InstallerPickerPage(Page):
     """The installers of every version of a title, each under its version, to pick which one to run. Tick the ones to
     run (the flag on the left): they come to the top, numbered in the order they will be installed, and the arrows on
     the row change it (Right and Left walk onto them, Enter moves the row). With two or more ticked, Install runs them
-    one after another in one install; the first is the game, the others are patches. "Just copy" is a button of its own
-    above Install.
+    one after another in one install; the first is the game, the others are patches. "Just copy the files" is a row like an
+    installer, the first of each version: ticked, it is the game (always the first, the patches come after it).
     `needed` is when the server has already tried and could not tell which one: then "let the server choose" is not
     offered (the button is hidden). `saved` is the order the server remembers for the game: ticked from the start."""
 
@@ -2048,21 +2048,17 @@ class InstallerPickerPage(Page):
         self.server_button.setToolTip("The installer the server would run by itself")
         self.server_button.setVisible(not needed)  # asked for because it could not choose: not offered again
         self.server_button.clicked.connect(self.let_server_choose)
-        self.copy_button = QPushButton("Just copy the files, run nothing")
-        self.copy_button.setToolTip("Use the files as they are; an archive is unpacked")
-        self.copy_button.clicked.connect(self.copy)
         self.ok = QPushButton("Install")
         self.ok.setDefault(True)
         self.ok.clicked.connect(self.accept)
-        for button in (self.server_button, self.copy_button, self.ok):
+        for button in (self.server_button, self.ok):
             button.installEventFilter(self)  # the arrows walk between the buttons, as they are laid out
         self.status = QLabel("Looking for installers...")
         lay = QVBoxLayout(self)
         lay.addWidget(self.status)
         lay.addWidget(self.list, 1)
-        # The row above Install and Cancel, which is not where buttons usually go: the two ways that pick no installer
-        # here, "Let the server choose" and "Just copy".
-        lay.addLayout(_centered_row(self.server_button, self.copy_button))
+        # The row above Install and Cancel, which is not where buttons usually go: the way that picks no installer here.
+        lay.addLayout(_centered_row(self.server_button))
         self.button_row = _centered_row(self.ok)
         lay.addLayout(self.button_row)
         win.app.bridge.installers.connect(self.on_installers)
@@ -2090,12 +2086,13 @@ class InstallerPickerPage(Page):
             self.render()
 
     def flat(self, version: dict) -> list[dict]:
-        """The version's candidates with the installers found inside its discs and archives right after each."""
+        """The version's candidates with the installers found inside its discs and archives right after each, and the
+        copy of its files before them all."""
         found = self.found.get(version["id"])
         if not isinstance(found, list):
-            return []
+            return [addons.copy_entry()]
         known = {src: raw for (gid, src), raw in self.inside.items() if gid == version["id"] and raw}
-        return addons.with_inside(found, known)
+        return [addons.copy_entry(), *addons.with_inside(found, known)]
 
     @staticmethod
     def _key_of(pick: tuple[dict, dict | None]) -> tuple[int, str, str | None]:
@@ -2132,7 +2129,13 @@ class InstallerPickerPage(Page):
             tag = "game" if place == 1 else "patch"
         elif cand is not None and flag and cand.get("category", "game") != "game":
             tag = cand["category"].lower()  # what the server calls it (patch, dlc, mod, update ...)
-        widget = InstallerRow(text, flag, place, first=place == 1, last=place == count, tag=tag)
+        copy_leads = (version["id"], addons.COPY_STEP, None) in self.order
+        if addons.is_copy(cand):  # the game itself: it stays the first, and nothing goes above it
+            first = last = True
+        else:
+            first = place == 1 or (copy_leads and place == 2)
+            last = place == count
+        widget = InstallerRow(text, flag, place, first=first, last=last, tag=tag)
         key = self._key_of((version, cand))
         widget.toggled.connect(lambda on, k=key: self._set_ticked(k, on))
         widget.moved.connect(lambda step, k=key: self._move(k, step))
@@ -2174,7 +2177,7 @@ class InstallerPickerPage(Page):
                     self.list.addItem(self._note("    Looking inside..."))
         done = len(self.found) == len(self.group.versions)
         if self.needed and self.portable:
-            pick = "No installer was found, so this is probably the game itself. Pick an executable to run, or copy it:"
+            pick = "No installer was found, so this is probably the game itself. Tick Just copy the files, or pick an executable to run:"
         elif self.needed:
             pick = "The server could not tell which installer to run. Pick it:"
         else:
@@ -2191,6 +2194,8 @@ class InstallerPickerPage(Page):
 
     @staticmethod
     def _label(cand: dict) -> str:
+        if addons.is_copy(cand):
+            return addons.label_of(cand)
         return f"{addons.label_of(cand)}  ({fmt_bytes(cand.get('file_size_bytes') or 0)})"
 
     @staticmethod
@@ -2211,8 +2216,10 @@ class InstallerPickerPage(Page):
     def _set_ticked(self, key: tuple[int, str, str | None], on: bool) -> None:
         self.arrow = None
         if on and key not in self.order:
-            # One version's installers run together: ticking one of another version clears the rest.
-            self.order = [k for k in self.order if k[0] == key[0]] + [key]
+            # One version's installers run together: ticking one of another version clears the rest. The copy of the
+            # files is the game, so it goes first, and what is ticked after it is a patch.
+            rest = [k for k in self.order if k[0] == key[0]]
+            self.order = [key, *rest] if key[1] == addons.COPY_STEP else [*rest, key]
         elif not on and key in self.order:
             self.order.remove(key)
         self._show(key)
@@ -2222,7 +2229,7 @@ class InstallerPickerPage(Page):
             return
         i = self.order.index(key)
         j = i + step
-        if 0 <= j < len(self.order):
+        if 0 <= j < len(self.order) and addons.COPY_STEP not in (self.order[i][1], self.order[j][1]):
             self.order[i], self.order[j] = self.order[j], self.order[i]
             self._show(key)
 
@@ -2238,7 +2245,7 @@ class InstallerPickerPage(Page):
 
     def _buttons(self, visible_only: bool = True) -> list[QPushButton]:
         """The buttons below the list, Cancel (the card's own) included."""
-        buttons = [self.server_button, self.copy_button, self.ok, self.win.modal.close_button]
+        buttons = [self.server_button, self.ok, self.win.modal.close_button]
         return [b for b in buttons if b.isVisible() or not visible_only]
 
     def _walk_buttons(self, button: QPushButton, key: int) -> bool:
@@ -2343,8 +2350,7 @@ class InstallerPickerPage(Page):
             self.win.back()
             self.page.start_with(version, None, steps=steps)
         elif picks:
-            self.win.back()
-            self.page.start_with(*picks[0])
+            self._start(*picks[0])
         elif self.list.currentItem() is not None:
             self.choose(self.list.currentItem())
 
@@ -2354,10 +2360,13 @@ class InstallerPickerPage(Page):
         picked = item.data(Qt.UserRole) if item is not None else None
         return picked[0] if picked else self.group.versions[0]
 
-    def copy(self) -> None:
-        version = self._version()
+    def _start(self, version: dict, installer: dict | None) -> None:
+        """Run one pick: the copy of the files is an extraction, anything else is the installer."""
         self.win.back()
-        self.page.start_with(version, None, extract=True)
+        if addons.is_copy(installer):
+            self.page.start_with(version, None, extract=True)
+        else:
+            self.page.start_with(version, installer)
 
     def let_server_choose(self) -> None:
         version = self._version()
@@ -2368,9 +2377,7 @@ class InstallerPickerPage(Page):
         picked = item.data(Qt.UserRole)
         if not picked:
             return
-        version, installer = picked
-        self.win.back()
-        self.page.start_with(version, installer)
+        self._start(*picked)
 
 
 class SendLayerPage(Page):

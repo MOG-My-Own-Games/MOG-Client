@@ -39,9 +39,9 @@ game in folders, the client asks "Extract its contents and use them as they are?
   any install (then asks which file starts the game).
 - **No**: it still tries to install by running what is found inside.
 
-The installer picker ("Choose an installer") always has "Just copy: use the files as they are, run nothing" for each
-version, last in the list when an installer was found (first when none was), so a game that comes with an installer can
-still be taken as it is.
+The installer picker ("Choose an installer") always has the row "Just copy the files, run nothing" first under each
+version, so a game that comes with an installer can still be taken as it is. It is a row like an installer, ticked and
+numbered like the others, and see below for what it does with patches after it.
 
 A game already begun is not asked again and keeps its choice. `mog --game-id N --extract-only` does the same from the
 command line, and the web UI asks the same question from its Install tab.
@@ -78,9 +78,13 @@ a flag on the left:
 - **Install** on a new game opens this picker by itself when there is more than one choice (patches next to the installer,
   installers inside a disc); with a single installer it just installs. If the server already remembers an order for the
   game, those installers are ticked and numbered when the picker opens. **Let the server choose** (the installer the
-  server would run by itself; not offered when it already could not choose) and **Just copy the files, run nothing** are
-  buttons on a row of their own above Install; **Cancel** closes the picker. The arrows walk between the buttons as they
-  are laid out (Right from Install is Cancel).
+  server would run by itself; not offered when it already could not choose) is a button on a row of its own above
+  Install; **Cancel** closes the picker. The arrows walk between the buttons as they are laid out (Right from Install is
+  Cancel).
+- **Just copy the files, run nothing** is the first row of every version and works like an installer. Ticked alone, it
+  takes the files as they are (an archive is unpacked). Ticked with others it is always number 1, the game, and the
+  installers ticked after it are its patches: the server puts the files in the install's Wine prefix and runs those on
+  top, and what they change is kept as their patch. It cannot be moved down, and nothing can be put above it.
 - A patch may ask where the game is installed. MOG does not answer that for you: open the installer display from the game's
   page and answer by hand.
 - All of them must be Windows installers, or all native Linux ones.

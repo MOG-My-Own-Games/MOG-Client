@@ -112,14 +112,28 @@ def apply_addon(client, game_id: int, install_dir: Path, addon: dict, scratch: P
 # but an executable found inside one is (it carries the `source_path` of the disc or archive it is in).
 CHAINABLE_KINDS = ("known installer", "executable (top level)", "executable (nested)")
 SOURCE_KINDS = ("disc image", "archive")
+# "Just copy the files, run nothing" is a step like an installer, and the only one that can come before the patches: the
+# game's own files, as they are, are the game, and the installers after it are what is added to it.
+COPY_STEP = "mog:copy"
+COPY_KIND = "copy"
+COPY_LABEL = "Just copy the files, run nothing"
 INSIDE_KIND = "executable (inside)"
 # A descriptor next to a disc image (DISK1.MDS beside DISK1.ISO), not something to open.
 _NOT_A_SOURCE = (".mds",)
 MAX_SOURCES = 8  # how many discs and archives are looked inside, so a folder of parts does not keep the page waiting
 
 
+def copy_entry() -> dict:
+    """The copy as a row of the list of installers, the same for every version of a title."""
+    return {"path": COPY_STEP, "kind": COPY_KIND, "category": "game", "file_size_bytes": 0, "source_path": None}
+
+
+def is_copy(c: dict | None) -> bool:
+    return c is not None and c.get("path") == COPY_STEP and c.get("kind") == COPY_KIND
+
+
 def chainable(candidates: list[dict]) -> list[dict]:
-    return [c for c in candidates if c.get("kind") in CHAINABLE_KINDS or c.get("kind") == INSIDE_KIND]
+    return [c for c in candidates if c.get("kind") in CHAINABLE_KINDS or c.get("kind") in (INSIDE_KIND, COPY_KIND)]
 
 
 def sources(candidates: list[dict]) -> list[dict]:
@@ -158,6 +172,8 @@ def with_inside(candidates: list[dict], inside: dict[str, list[dict]]) -> list[d
 
 def label_of(c: dict) -> str:
     """How an installer is named in a list: its path, and for one inside a disc or archive, that disc's name first."""
+    if is_copy(c):
+        return COPY_LABEL
     source = c.get("source_path")
     return f"{source.rsplit('/', 1)[-1]} > {c['path']}" if source else c["path"]
 
