@@ -92,6 +92,39 @@ def test_an_addon_whose_path_points_outside_the_game_is_refused_and_nothing_is_w
     assert not (game.parent / "escape.txt").exists()
 
 
+@pytest.mark.parametrize("name", ["C:evil.dll", "C:/Windows/x.dll", "a\\b.txt", "/etc/x"])
+def test_a_drive_a_backslash_or_a_root_in_a_name_is_refused(game, tmp_path, name):
+    served = _zip_bytes({"data/ok.pak": b"ok", name: b"x"})
+
+    with pytest.raises(addons.AddonError, match="Unsafe"):
+        addons.apply_addon(FakeClient({3: served}), 4, game, {"id": 3}, tmp_path)
+
+    assert not (game / "data" / "ok.pak").exists()  # the archive is checked whole before any file is written
+
+
+def test_a_link_in_an_addon_is_refused(game, tmp_path):
+    import io
+    import stat
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        info = zipfile.ZipInfo("shortcut")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "/etc/passwd")
+
+    with pytest.raises(addons.AddonError, match="link"):
+        addons.apply_addon(FakeClient({3: buffer.getvalue()}), 4, game, {"id": 3}, tmp_path)
+
+
+def test_an_addon_declaring_more_than_the_limit_is_refused(game, tmp_path, monkeypatch):
+    monkeypatch.setattr(addons, "MAX_UNCOMPRESSED_BYTES", 10)
+    served = _zip_bytes({"big.bin": b"x" * 11})
+
+    with pytest.raises(addons.AddonError, match="too large"):
+        addons.apply_addon(FakeClient({3: served}), 4, game, {"id": 3}, tmp_path)
+
+
 def cand(path, kind="known installer", category="game"):
     return {"path": path, "kind": kind, "category": category, "file_size_bytes": 1}
 

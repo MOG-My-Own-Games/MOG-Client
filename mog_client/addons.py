@@ -7,6 +7,7 @@ never taken for save files. Qt-free."""
 from __future__ import annotations
 
 import shutil
+import stat
 import zipfile
 from pathlib import Path
 
@@ -69,21 +70,32 @@ def upload_layer(
         archive.unlink(missing_ok=True)
 
 
+MAX_MEMBERS = 100000
+MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024 * 1024
+
+
 def _member_path(name: str) -> Path:
     member = Path(name)
-    if member.is_absolute() or ".." in member.parts or "\\" in name:
+    drive = len(name) > 1 and name[1] == ":"  # `C:evil.dll` is under no folder of ours once joined on Windows
+    if not name or "\0" in name or member.is_absolute() or ".." in member.parts or "\\" in name or drive:
         raise AddonError(f"Unsafe path in the addon: {name}")
     return member
 
 
 def apply_addon(client, game_id: int, install_dir: Path, addon: dict, scratch: Path) -> int:
     """Download an addon the server kept and extract it over the game's folder, as a ledger layer. Returns how many
-    files it wrote."""
+    files it wrote. The whole archive is checked before anything is written (the server is not trusted to have)."""
     archive = scratch / f"addon-{addon['id']}.zip"
     client.download_addon(game_id, addon["id"], archive)
     try:
         with zipfile.ZipFile(archive) as zf:
-            members = [info for info in zf.infolist() if not info.is_dir()]
+            infos = zf.infolist()
+            if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > MAX_UNCOMPRESSED_BYTES:
+                raise AddonError("The addon is too large to apply")
+            for info in infos:
+                if stat.S_ISLNK(info.external_attr >> 16):
+                    raise AddonError(f"A link in the addon: {info.filename}")
+            members = [info for info in infos if not info.is_dir()]
             targets = [(info, install_dir / _member_path(info.filename)) for info in members]
             before = open_layer(game_id, install_dir)
             for info, target in targets:

@@ -30,7 +30,8 @@ def mods_dir(install_dir: Path) -> Path:
 
 def file_name(mod: dict) -> str:
     """What the mod is saved as: an archive or a file under its own name, a folder as <name>.zip."""
-    return f"{mod['name']}.zip" if mod.get("kind") == "folder" else mod["name"]
+    name = Path(str(mod["name"])).name  # a name from the server is a file name, never a path
+    return f"{name}.zip" if mod.get("kind") == "folder" else name
 
 
 def free_path(folder: Path, name: str) -> Path:
