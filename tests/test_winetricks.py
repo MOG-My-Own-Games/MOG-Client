@@ -88,3 +88,69 @@ def test_a_missing_winetricks_says_so(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="winetricks is not installed"):
         launcher.launch_command(_game(tmp_path), program="winetricks")
+
+
+@pytest.mark.parametrize("value", ["renderer=gdi", "vd=1280x1024", "vd=off", "mwo=force", "sound=alsa", "csmt=on", "a=b", "x=1,2:3+4_5.6-7"])
+def test_settings_with_a_value_are_entries(value):
+    assert winetricks.is_verb(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["vd=", "=gdi", "vd=a=b", "vd=1280 x 1024", "vd=a;b", "vd=$(id)", "vd=`id`", "vd='a'", "vd=a|b", "vd=a&b", "vd=../x", "VD=1", "-vd=1", "vd=" + "x" * 41, "v" * 41 + "=a", "vd=a\nb"],
+)
+def test_what_is_not_a_setting(value):
+    assert not winetricks.is_verb(value)
+
+
+def test_a_setting_has_one_value_a_later_one_replaces_an_earlier_in_the_place_it_had():
+    assert winetricks.clean(["vd=1280x1024", "vcrun2019", "renderer=gdi", "vd=1920x1080"]) == ["vd=1920x1080", "vcrun2019", "renderer=gdi"]
+    assert winetricks.clean(["a", "b", "a"]) == ["a", "b"]  # flags as before
+
+
+def test_a_setting_whose_value_changed_is_one_change_to_make_not_another_verb():
+    applied = ["vcrun2019", "vd=1280x1024"]
+
+    assert winetricks.missing(["vcrun2019", "vd=1920x1080"], applied) == ["vd=1920x1080"]
+    assert winetricks.missing(["vcrun2019", "vd=1280x1024"], applied) == []
+    assert winetricks.merge(applied, ["vd=1920x1080", "dotnet48"]) == ["vcrun2019", "vd=1920x1080", "dotnet48"]  # one vd, not two
+
+
+def test_of_two_values_ticked_for_a_setting_the_one_the_prefix_lacks_is_the_choice_just_made():
+    applied = ["vd=1280x1024", "vcrun2019"]
+
+    assert winetricks.resolve(["vcrun2019", "vd=1280x1024", "vd=1920x1080"], applied) == ["vcrun2019", "vd=1920x1080"]
+    assert winetricks.resolve(["vd=1920x1080", "vd=1280x1024"], applied) == ["vd=1920x1080"]  # the new one still wins when it comes first
+    assert winetricks.resolve(["vd=800x600", "vd=1024x768"], applied) == ["vd=1024x768"]  # neither is new: the last
+    assert winetricks.resolve(["a", "b"], []) == ["a", "b"]
+
+
+def test_the_settings_offered_are_entries_for_each_of_their_values_and_one_name_is_listed_once():
+    names = [name for name, _text, _values in winetricks.SETTINGS]
+
+    assert len(names) == len(set(names)) and "vd" in names and "renderer" in names
+    assert all(winetricks.is_verb(f"{name}={value}") for name, _t, values in winetricks.SETTINGS for value in values)
+
+
+@pytest.mark.parametrize(
+    ("entry", "changes"),
+    [
+        ("vd=1280x1024", [("Explorer", '"Desktop"="Default"'), ("Explorer\\Desktops", '"Default"="1280x1024"')]),
+        ("vd=off", [("Explorer", '"Desktop"=-')]),
+        ("renderer=gdi", [("Direct3D", '"renderer"="gdi"')]),
+        ("csmt=on", [("Direct3D", '"csmt"=dword:00000001')]),
+        ("csmt=off", [("Direct3D", '"csmt"=dword:00000000')]),
+        ("mwo=force", [("DirectInput", '"MouseWarpOverride"="force"')]),
+        ("sound=pulse", [("Drivers", '"Audio"="pulse"')]),
+        ("sound=disabled", [("Drivers", '"Audio"=""')]),
+        ("windowmanagerdecorated=n", [("X11 Driver", '"Decorated"="N"')]),
+        ("videomemorysize=512", [("Direct3D", '"VideoMemorySize"="512"')]),
+    ],
+)
+def test_the_settings_the_client_puts_in_the_registry_itself(entry, changes):
+    assert winetricks.registry_changes(entry) == changes
+
+
+@pytest.mark.parametrize("entry", ["vcrun2019", "virtualdesktop=1280x800", "vd=12x1", "vd=1280", "renderer=dx", "csmt=force", "sound=jack", "fontsmooth=rgb", "vd="])
+def test_what_the_client_does_not_put_in_the_registry_is_left_alone(entry):
+    assert winetricks.registry_changes(entry) is None
