@@ -142,7 +142,11 @@ def _sync_args(client: MogClient, rec: InstalledGame, answer: dict | None, prefe
         manager.set_launch_args(rec, merged, preference)  # the launch script follows: a shortcut starts the game with them
     if merged != theirs:
         change = {"launch_args_add": [t for t in merged if t not in theirs], "launch_args_remove": [t for t in theirs if t not in merged]}
-        if client.put_launch_settings(rec.game_id, device_id(client) if mine_on_device else None, change) != 200:
+        status = client.put_launch_settings(rec.game_id, device_id(client) if mine_on_device else None, change)
+        if status == 403 and not mine_on_device:  # only an admin sets what all devices share: this device's own list then
+            own = device_id(client)
+            status = client.put_launch_settings(rec.game_id, own, change) if own is not None else status
+        if status != 200:
             return
         _mark_synced(rec.game_id)
     manager.set_launch_args_agreed(rec, merged)

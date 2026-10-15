@@ -759,3 +759,15 @@ def test_a_setting_the_client_does_not_know_is_left_for_the_winetricks_page_not_
 
     assert ran == [["vd=1280x800", "vcrun2019"]]  # the wrong name never reaches winetricks, which would open a window for it
     assert any("virtualdesktop=1280x800" in m and "Done in Winetricks" in m for m in said)
+
+
+def test_a_user_who_may_not_set_the_shared_tags_sends_them_for_this_device_instead(game, scripts):
+    game.launch_args = ["-intro:off"]
+    manager._update(game)
+    server = Server({"shared": _row("GE-Proton10-34"), "device": None}, statuses=[403, 200])  # only an admin sets "all"
+
+    launchsettings.pull_args(server, game, "auto")
+
+    change = {"launch_args_add": ["-intro:off"], "launch_args_remove": []}
+    assert server.put == [(7, None, change), (7, 3, change)]
+    assert _kept(game).launch_args_synced == ["-intro:off"]
