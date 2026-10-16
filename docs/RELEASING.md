@@ -1,7 +1,7 @@
 # Releasing
 
-A push builds the AppImage and the Windows exe and attaches them, with `SHA256SUMS.txt`, to a draft release (see
-`.github/workflows/release.yml`). Nothing is published until someone reviews the draft and clicks "Publish release".
+A push builds the AppImage and the Windows exe and attaches them, with `SHA256SUMS.txt`, to a release (see
+`.github/workflows/release.yml`), published at once and marked as a pre-release on a branch other than `main`.
 
 ## The release notes
 
@@ -18,7 +18,7 @@ The body is `.github/release-header.md` (the beta and as-is notice, and that the
 header, are written as `mog_client/_changelog.py` and bundled into the build for the Changelog tab (see `changelog.py`); a build
 made by hand has none.
 
-Publishing the draft creates the tag, which is what the next release counts from.
+Publishing the release creates the tag, which is what the next release counts from.
 
 ## Signing the updates
 

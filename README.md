@@ -66,11 +66,10 @@ need to wait for the install to finish. Run `mog --help` for every option (`--au
 Every push to `main` runs `.github/workflows/release.yml`. It computes the
 version with `scripts/version.py` (from conventional commits and the branch name), builds
 a Linux AppImage and a Windows exe and attaches them (plus `SHA256SUMS.txt`)
-to a **draft** release tagged `v<version>`. The version is embedded in the
+to a release tagged `v<version>` (a pre-release on a branch other than `main`). The version is embedded in the
 build (shown in Settings) but not in the file names. The body of the release lists what changed since the previous one,
 under *Changes* and *Fixes* (see [docs/RELEASING.md](docs/RELEASING.md)); the same notes are bundled into the build, and the
-About page's *Changelog* tab shows them, once after an update. Nothing goes public until
-you open the draft on GitHub, check it and click "Publish release".
+About page's *Changelog* tab shows them, once after an update.
 
 ## Updates
 

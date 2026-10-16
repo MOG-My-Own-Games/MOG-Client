@@ -1,14 +1,12 @@
 name: Release
 
 # Every push computes the version with scripts/version.py, builds the AppImage
-# and the Windows exe and attaches them to a DRAFT release tagged v<version>.
+# and the Windows exe and attaches them to a release tagged v<version>, published at once.
 # On a branch other than main the version carries the branch name (v0.43.1-feat-save-sync)
 # and the release is marked as a pre-release, so it can never become the "latest" release
 # that the self-updater looks at.
 # The release body is written by scripts/release_notes.py from the commits since the previous release (see
 # docs/RELEASING.md); the same notes are bundled into the builds as mog_client/_changelog.py for the Changelog tab.
-# Nothing is published until someone reviews the draft on GitHub and clicks
-# "Publish release" (which is also what creates the tag).
 on:
   push:
     branches: ["**"]
@@ -86,7 +84,7 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
-  draft-release:
+  release:
     needs: [version, appimage, windows-exe]
     runs-on: ubuntu-latest
     permissions:
@@ -118,7 +116,7 @@ jobs:
           tag_name: v${{ needs.version.outputs.semver }}
           target_commitish: ${{ github.sha }}
           name: MOG Client v${{ needs.version.outputs.semver }}
-          draft: true
+          draft: false
           prerelease: ${{ github.ref_name != 'main' }}
           body_path: notes/RELEASE.md
           fail_on_unmatched_files: true

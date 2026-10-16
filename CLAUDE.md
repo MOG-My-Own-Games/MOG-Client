@@ -79,7 +79,7 @@ mog_client/
     menu.py     the settings menu: OptionRow (title, description, control), MenuView, controls the arrows do not change
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows), release_notes.py (the release body and the bundled changelog from the commits)
-.github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>
+.github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> release v<version>
 mcp/
   server.py     Dev-loop MCP wrapping the CLI's own commands
 ```
