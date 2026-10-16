@@ -256,7 +256,7 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
             f"Saves of {ctx.rec.name}: {len(candidates)} candidate files in {time.monotonic() - scan_began:.1f}s"
             f" (prefix: {found.prefix if found else 'none'})"
         )
-    if found is None and not candidates:
+    if found is None and not candidates and prefixes.has_prefixes():
         return BackupResult("needs-prefix")
 
     dedicated = found is not None and found.source in DEDICATED_SOURCES

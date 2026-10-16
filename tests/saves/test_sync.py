@@ -198,6 +198,20 @@ def test_a_game_only_save_is_restored_without_any_prefix(world):
     assert (world.install / "profile.sav").read_bytes() == b"p"
 
 
+def test_windows_takes_another_machines_save_into_a_game_that_has_none_yet(world, monkeypatch):
+    """On Windows there is no prefix, so a game just installed (nothing in its folder yet) looked like one whose prefix
+    was still to be found: the newer save from another machine was never put in, before a start or at the client's start.
+    Found by the end-to-end test."""
+    monkeypatch.setattr(prefixes, "has_prefixes", lambda: False)
+    world.ctx.engine = "native"
+    version = world.server.add_foreign_version({"game/save/slot1.sav": b"theirs"})
+
+    outcome = sync.apply_newer(world.ctx)
+
+    assert (outcome.status, outcome.version["id"]) == ("restored", version["id"])
+    assert (world.install / "save" / "slot1.sav").read_bytes() == b"theirs"
+
+
 def test_a_newer_save_from_another_machine_is_offered_until_applied_or_declined(world):
     assert sync.newer_elsewhere(world.ctx) is None
     world.server.upload_save(7, 1, _zip(world.tmp, {"game/a.sav": b"a"}), "quit")  # this machine's own

@@ -8,6 +8,7 @@ programs already record, and asks when it cannot.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +29,12 @@ FROM_ENGINE = "default"
 class Found:
     prefix: Path
     source: str
+
+
+def has_prefixes() -> bool:
+    """Whether games here run in a Wine prefix at all. On Windows they run in the real profile: there is no prefix to
+    find, and its absence is not something to ask the user about."""
+    return sys.platform != "win32"
 
 
 def drive_c_of(prefix: Path) -> Path | None:
