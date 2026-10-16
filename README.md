@@ -8,6 +8,14 @@ Part of [MOG - My Own Games](https://github.com/MOG-My-Own-Games).
 The CLI is pure stdlib Python. The GUI (Qt, controller friendly, Steam Deck
 ready) needs the `gui` extra.
 
+**Beta, provided as is.** MOG Client is in beta and may contain bugs. Back up your saves
+yourself too, apart from MOG. The development team takes no responsibility for any loss or
+damage: the software is provided as is, without warranty of any kind.
+
+**Windows is untested.** The Windows exe is built with every release, but nobody has tried it
+yet. If you run MOG Client on Windows, please [tell us how it went](https://github.com/MOG-My-Own-Games/MOG-Client/issues):
+we are looking for testers.
+
 ## What it does
 
 - Lists the games on your MOG-Server, installs them (resumable, streamed while the server installs) and keeps them up to date
@@ -59,7 +67,9 @@ Every push to `main` runs `.github/workflows/release.yml`. It computes the
 version with `scripts/version.py` (from conventional commits and the branch name), builds
 a Linux AppImage and a Windows exe and attaches them (plus `SHA256SUMS.txt`)
 to a **draft** release tagged `v<version>`. The version is embedded in the
-build (shown in Settings) but not in the file names. Nothing goes public until
+build (shown in Settings) but not in the file names. The body of the release lists what changed since the previous one,
+under *Changes* and *Fixes* (see [docs/RELEASING.md](docs/RELEASING.md)); the same notes are bundled into the build, and the
+About page's *Changelog* tab shows them, once after an update. Nothing goes public until
 you open the draft on GitHub, check it and click "Publish release".
 
 ## Updates

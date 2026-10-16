@@ -47,6 +47,7 @@ mog_client/
   cli.py        argparse entry point (console script `mog`); no action = GUI
   grouping.py   Games with the same IGDB id are versions of one title (library entry, installer picker)
   updater.py    Self-update from the latest GitHub release (AppImage/exe; UPDATE_METHOD build flag)
+  changelog.py  The notes of the running version, bundled by the release build as `_changelog.py` (scripts/release_notes.py); `Settings.changelog_seen` opens them once after an update
   version.py    __version__ + UPDATE_METHOD, written into _version.py at build time
   config.py     Settings + installed-games record (JSON under XDG dirs)
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
@@ -72,12 +73,12 @@ mog_client/
     saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`message`/`notify`)
     overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
     logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
-    about.py    the About tab; legend.py builds the guide at the bottom per page, with button and key icons
+    about.py    the About page's tabs (About, Changelog); legend.py builds the guide at the bottom per page, with button and key icons
     sounds.py   menu sounds (QSoundEffect; silent when the setting is off or there is no audio)
     playing.py  the "Playing" message over the window while a game started here runs (cover, name, Stop)
     menu.py     the settings menu: OptionRow (title, description, control), MenuView, controls the arrows do not change
 packaging/      PyInstaller entry point, .desktop file and icon
-scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows)
+scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows), release_notes.py (the release body and the bundled changelog from the commits)
 .github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> DRAFT release v<version>
 mcp/
   server.py     Dev-loop MCP wrapping the CLI's own commands

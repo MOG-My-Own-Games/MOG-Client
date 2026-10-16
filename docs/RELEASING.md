@@ -3,6 +3,23 @@
 A push builds the AppImage and the Windows exe and attaches them, with `SHA256SUMS.txt`, to a draft release (see
 `.github/workflows/release.yml`). Nothing is published until someone reviews the draft and clicks "Publish release".
 
+## The release notes
+
+`scripts/release_notes.py` writes the body of the release from the commits since the previous release (the highest `vX.Y.Z` tag
+reachable from the commit; none: the whole history). A line is the commit's scope and description, without its type, and its
+hash at the end as a link to the commit:
+
+- *Changes*: `feat` and breaking changes (`!` or a `BREAKING CHANGE` footer).
+- *Fixes*: `fix`, `perf` and a subject that is not a conventional commit (`scripts/version.py` counts that as a patch).
+- Left out: `chore`, `doc`, `docs`, `res`, `style`, `test`, `refactor` and any other type.
+
+The body is `.github/release-header.md` (the beta and as-is notice, and that the Windows build is untested), the lists and
+**See changes**, a link comparing the two releases. Edit the header file to change the notice. The same lists, without the
+header, are written as `mog_client/_changelog.py` and bundled into the build for the Changelog tab (see `changelog.py`); a build
+made by hand has none.
+
+Publishing the draft creates the tag, which is what the next release counts from.
+
 ## Signing the updates
 
 The self-updater downloads the build named in the latest release and checks it against `SHA256SUMS.txt`. That alone catches a
