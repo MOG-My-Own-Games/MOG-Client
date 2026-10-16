@@ -191,7 +191,7 @@ def test_a_launcher_that_dies_is_reported_with_the_end_of_its_log(monkeypatch, t
     monkeypatch.setattr(
         launcher,
         "launch_command",
-        lambda game, pref="auto": ([sys.executable, "-c", "import sys; print('no such runtime'); sys.exit(3)"], {}),
+        lambda game, pref="auto", **_kw: ([sys.executable, "-c", "import sys; print('no such runtime'); sys.exit(3)"], {}),
     )
     proc = launcher.launch(_game(tmp_path))
     proc.wait(timeout=10)
@@ -202,7 +202,7 @@ def test_a_launcher_that_dies_is_reported_with_the_end_of_its_log(monkeypatch, t
 
 def test_a_running_or_clean_launcher_is_not_a_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "data_dir", lambda: tmp_path / "data")
-    monkeypatch.setattr(launcher, "launch_command", lambda game, pref="auto": ([sys.executable, "-c", "pass"], {}))
+    monkeypatch.setattr(launcher, "launch_command", lambda game, pref="auto", **_kw: ([sys.executable, "-c", "pass"], {}))
     proc = launcher.launch(_game(tmp_path))
     proc.wait(timeout=10)
     assert launcher.launch_failure(proc) is None
@@ -397,3 +397,40 @@ def test_the_games_launch_arguments_follow_the_executable_tag_after_tag_and_a_qu
     game.launch_args = ["-x 'never closed"]  # a tag typed on the server's web page, where nothing checks it
     with pytest.raises(RuntimeError, match="quote"):
         launcher.launch_command(game)
+
+
+def test_offline_umu_is_told_not_to_look_for_a_newer_runtime_and_uses_a_local_proton_ge(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+    ge = tmp_path / "GE-Proton9-5"
+    ge.mkdir()
+    (ge / "proton").write_text("")
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: {"GE-Proton9-5": ge / "proton"})
+    game = _game(tmp_path)
+
+    _cmd, online = launcher.launch_command(game)
+    _cmd, offline = launcher.launch_command(game, offline=True)
+
+    assert "UMU_RUNTIME_UPDATE" not in online and online["PROTONPATH"] == "GE-Proton"
+    assert offline["UMU_RUNTIME_UPDATE"] == "0" and offline["PROTONPATH"] == str(ge)
+
+
+def test_offline_faugus_gets_the_variable_in_its_inline_environment(monkeypatch, tmp_path):
+    umu = tmp_path / "umu-run"
+    umu.write_text("")
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-run"], str(umu), False))
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
+
+    game = _game(tmp_path)
+    online = launcher.launch_command(game)[0][-1]
+    offline = launcher.launch_command(game, offline=True)[0][-1]
+
+    assert "UMU_RUNTIME_UPDATE" not in online and "UMU_RUNTIME_UPDATE=0" in offline
+
+
+def test_the_launch_script_commands_never_carry_the_offline_variable(monkeypatch, tmp_path):
+    from mog_client import connectivity
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+    connectivity.set_forced(True)
+    cmd, extra = launcher.launch_command(_game(tmp_path), require_umu=False)  # what a Steam or desktop entry runs
+    assert "UMU_RUNTIME_UPDATE" not in extra

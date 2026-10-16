@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import launchargs, protondl
+from mog_client import connectivity, launchargs, protondl
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -175,6 +175,12 @@ def find_proton() -> Path | None:
     """Newest Proton found in Steam's library or compatibilitytools.d."""
     builds = list_proton_builds()
     return builds[next(reversed(builds))] if builds else None
+
+
+def local_ge_proton() -> str | None:
+    """The folder of the newest Proton-GE on this machine, which umu can use without fetching anything."""
+    ge = [path for name, path in list_proton_builds().items() if protondl.is_ge(name)]
+    return str(ge[-1].parent) if ge else None
 
 
 def proton_install_root() -> Path:
@@ -422,9 +428,11 @@ def launch_command(
     require_umu: bool = True,
     program: str | None = None,
     args: tuple[str, ...] = (),
+    offline: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Command + extra environment that runs the game's chosen executable, or, with `program` (winecfg, regedit), that
-    program in the game's prefix through the same engine."""
+    program in the game's prefix through the same engine. `offline` keeps umu from looking for a newer Steam Linux Runtime
+    (what makes it slow to start without internet); a launch script written for Steam or the desktop never passes it."""
     if program is None and not game.executable:
         raise RuntimeError("no executable chosen for this game")
     if program is None:
@@ -447,7 +455,11 @@ def launch_command(
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
     env = {"WINEPREFIX": str(prefix), "GAMEID": f"umu-mog-{game.game_id}"}
+    if offline:
+        env["UMU_RUNTIME_UPDATE"] = "0"  # read by umu and Faugus; Wine and Proton return their own env below
     build, _problem = resolve_proton(game.proton, launcher)
+    if offline and launcher == "umu" and not (build and Path(build).is_dir()):
+        build = local_ge_proton() or build  # "GE-Proton" or a release not here would send umu looking for it online
     if program == "winetricks" and launcher in ("wine", "proton"):
         return _winetricks_command(game, launcher, prefix, build, args)
     if launcher == "wine":
@@ -573,13 +585,13 @@ def _spawn(game: InstalledGame, cmd: list[str], extra: dict[str, str], log_path:
 
 def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
     """Start the game through its launcher, detached, with the launcher's output in a log file."""
-    cmd, extra = launch_command(game, preference)
+    cmd, extra = launch_command(game, preference, offline=connectivity.is_offline())
     return _spawn(game, cmd, extra, launch_log_path(game))
 
 
 def start_tool(game: InstalledGame, preference: str, program: str, args: tuple[str, ...] = ()) -> subprocess.Popen:
     """Start a Wine program (winecfg, regedit) in the game's prefix through the game's engine, logged apart from the game."""
-    cmd, extra = launch_command(game, preference, program=program, args=args)
+    cmd, extra = launch_command(game, preference, program=program, args=args, offline=connectivity.is_offline())
     return _spawn(game, cmd, extra, data_dir() / "logs" / f"tool-{game.game_id}.log")
 
 
