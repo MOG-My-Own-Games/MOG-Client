@@ -19,8 +19,8 @@ resetting nothing.
   found, now and later) and "Continue" (the ticked ones; none ticked turns the integration off).
 - Settings > General > Application > "Steam Integration" > "Settings" opens the same list. Confirming it adds or removes MOG
   and every installed game in each account.
-- The "Add to Steam" switch on the "Choose executable" page is greyed when the integration is off, and an account left out
-  is greyed in its list.
+- The "Add to Steam" switch on the "Choose executable" page is greyed when the integration is off. It adds the game to
+  every account that is on in Settings; the accounts are not listed on that page.
 
 ## Shortcuts
 

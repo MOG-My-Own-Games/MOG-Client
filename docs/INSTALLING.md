@@ -30,6 +30,21 @@ When a game's folder is not there (the drive is unplugged) the game stays in the
 available". Its page offers "Check again" instead of Play, nothing is backed up or restored for it, and it comes back by
 itself when the drive does. Resuming a half-finished install waits for its drive too.
 
+When the games folder was moved (or the install folder changed), the games are looked for in the install folders: "Refresh
+library", "Check again" and changing the folders do it. A folder with the game's name, holding its executable, is the game
+again: the library, the save sync's prefix, the launch script, the menu and desktop entries, the Steam shortcut and the folder
+icon follow it to the new place.
+
+A game that is not found that way (it was renamed on the server, or moved to another disk or machine) is pointed to by
+hand: Options > "Find game..." is there for any game, installed here or not, and asks for the folder of the game itself, the
+one with its launch script.
+
+- A game with a record here has to find its executable in that folder where it was; the library, the entries and the Steam
+  shortcut follow it as above, and the record takes the server's name for the game (a game renamed on the server would
+  otherwise be set aside as belonging to another one). The files named after the old name are replaced.
+- A game with no record here (it came from another machine, or its record was set aside) gets one from any folder that has
+  something in it, and asks for its executable and shortcuts as after an install.
+
 ## Games that need no installer
 
 When the game the server would install is an archive (`.rar`, `.zip`, `.7z`, an ISO) with no installer inside, only the

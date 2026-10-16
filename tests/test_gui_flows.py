@@ -4927,3 +4927,17 @@ def test_the_winetricks_page_shows_what_the_server_keeps_ticked_and_marked_until
     pump(qapp)
     assert ran == [["dotnet48", "vd=1920x1080", "renderer=gdi", "mine=custom"]]  # the list's order: the catalog, the settings, the rest
     assert rec.winetricks == ["vcrun2019", "vd=1920x1080", "dotnet48", "renderer=gdi", "mine=custom"]  # one vd, the server's value
+
+
+def test_find_game_is_in_the_options_of_an_installed_game_even_when_its_folder_is_gone(win, tmp_path):
+    rec = _game_record(tmp_path / "gone", "g.exe")  # the folder is not there: no Linux or Repair rows, but this one
+    assert "Find game..." in _texts(_options(win, rec))
+    rec.state = "installing"
+    assert "Find game..." not in _texts(_options(win, rec))
+
+
+def test_find_game_is_in_the_options_of_a_game_with_no_record_too(win):
+    from types import SimpleNamespace
+
+    page = SimpleNamespace(delete_server_cache=lambda: None, game={"id": 4, "name": "G"})
+    assert "Find game..." in _texts(gui.OptionsPage(win, page, None))

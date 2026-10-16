@@ -178,7 +178,7 @@ def test_nothing_is_asked_when_steam_is_not_there(win, qapp, steam_world):
     assert not isinstance(win.current_page(), gui.SteamAccountsPage)
 
 
-def test_the_executable_page_offers_the_accounts_that_are_on_and_greys_the_others(win, qapp, steam_world, tmp_path):
+def test_the_executable_page_adds_to_the_steam_accounts_that_are_on_without_listing_them(win, qapp, steam_world, tmp_path):
     from mog_client.config import InstalledGame
 
     second_account(steam_world, tmp_path)
@@ -186,10 +186,11 @@ def test_the_executable_page_offers_the_accounts_that_are_on_and_greys_the_other
     rec = InstalledGame(game_id=5, name="G", install_dir=str(tmp_path))
     page = gui.ExecutablePage(win, rec, lambda *a: None)
 
-    first, second = page.account_toggles.values()
-    assert page.steam.isChecked() and not first.isEnabled() and not first.isChecked()
-    assert second.isEnabled() and second.isChecked()
+    assert not hasattr(page, "account_toggles")  # the accounts are chosen in Settings, the page would be too full
+    assert page.steam.isChecked()
     assert [d.name for d in page.steam_users()] == ["2002"]
+    page.steam.setChecked(False)
+    assert page.steam_users() == []
 
 
 def test_the_executable_page_cannot_add_to_steam_when_no_account_is_on(win, qapp, steam_world, tmp_path):

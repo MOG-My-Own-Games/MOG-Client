@@ -7,19 +7,23 @@ import shlex
 import shutil
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 from mog_client import launchargs, logstore, steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
-from mog_client.installdirs import default_root, present, prune_empty
+from mog_client.installdirs import default_root, find_moved, present, prune_empty, rebase
 from mog_client.launcher import (
     create_desktop_entry,
     create_desktop_shortcut,
     desktop_file_path,
     entry_command,
+    entry_stem,
     icon_path,
+    launch_cmd_path,
+    launch_script_path,
     pfx_dir,
     remove_entry_files,
     shortcut_lnk_path,
@@ -29,7 +33,7 @@ from mog_client.launcher import (
     write_launch_script,
 )
 from mog_client.saves import installed as ledger
-from mog_client.saves.state import forget_game, save_install_manifest
+from mog_client.saves.state import forget_game, load_state, save_install_manifest, save_state
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import RepairResult, download_all_files, poll_session, verify_and_repair
 
@@ -463,6 +467,70 @@ def refresh_launch_files(settings: Settings) -> None:
                 write_launch_script(rec, settings.launcher)
         except (RuntimeError, OSError) as e:
             logstore.warning(f"Could not rewrite the launch files of {rec.name}: {e}")
+
+
+def relocate_moved(settings: Settings) -> list[str]:
+    """Find again the games whose folder is not where it was recorded but is in an install folder now (the games folder was
+    moved, or the install folder changed): the record and the save sync's prefix follow it, and the launch script, the entries
+    and the folder icon are written again, as they hold the old path. Local only, so it also works offline. Returns the names."""
+    found = []
+    for rec in load_library().values():
+        if rec.state not in ("installed", "awaiting_executable") or present(rec):
+            continue
+        new = find_moved(rec, settings.install_roots)
+        if new is None:
+            continue
+        point_to(rec, new, settings.launcher)
+        found.append(rec.name)
+    return found
+
+
+def point_to(rec: InstalledGame, new: Path, preference: str = "auto") -> None:
+    """The game's files are in `new` now (found there, or the user said so): the record and the save sync's prefix follow, and
+    what was written with the old path is written again."""
+    old = rec.install_dir
+    _update(rec, **{k: rebase(getattr(rec, k), old, str(new)) for k in ("install_dir", "files_dir", "executable", "prefix")})
+    state = load_state(rec.game_id)
+    if state.prefix and rebase(state.prefix, old, str(new)) != state.prefix:
+        state.prefix = rebase(state.prefix, old, str(new))
+        save_state(rec.game_id, state)
+    logstore.info(f"{rec.name} was found again in {new} (it was in {old})")
+    _rewrite_entries(rec, preference)
+
+
+def claim_folder(game: dict, folder: Path, preference: str = "auto") -> InstalledGame:
+    """The user says the game's files are in `folder` (the game was renamed on the server, or came from another disk or
+    machine). A game with no record here gets one, waiting for its executable; one with a record is pointed to the folder,
+    and takes the server's name for the game, which is what keeps `identity.reconcile` from setting it aside."""
+    name, server_name = game["name"], game.get("fs_name") or game["name"]
+    rec = load_library().get(game["id"])
+    if rec is None:
+        rec = InstalledGame(game_id=game["id"], name=name, install_dir=str(folder), state="awaiting_executable", server_name=server_name)
+        _update(rec)
+        logstore.info(f"{name} was taken from {folder}")
+        return rec
+    old_stem = replace(rec, install_dir=str(folder))  # its files as they were named, in the new place
+    _update(rec, name=name, server_name=server_name)
+    point_to(rec, folder, preference)
+    if entry_stem(old_stem) != entry_stem(rec):  # a new name writes new files: the ones of the old name are left over
+        for stale in (launch_script_path(old_stem), launch_cmd_path(old_stem), desktop_file_path(old_stem), shortcut_lnk_path(old_stem)):
+            stale.unlink(missing_ok=True)
+    return rec
+
+
+def _rewrite_entries(rec: InstalledGame, preference: str) -> None:
+    """The launch script, desktop entry, desktop copy, Steam shortcut and folder icon of a game whose folder moved."""
+    if rec.state != "installed" or not rec.executable:
+        return
+    try:
+        set_launcher(rec, rec.launcher, preference)  # edits what exists, writes the launch script
+        write_directory_file(rec)
+        if rec.desktop_shortcut and not rec.desktop_entry and sys.platform != "win32":  # the copy on the desktop alone
+            icon = icon_path(rec)
+            write_desktop_file(desktop_file_path(rec), rec, entry_command(rec, preference), icon if icon.exists() else None)
+            create_desktop_shortcut(rec)
+    except (RuntimeError, OSError) as e:
+        logstore.warning(f"Could not write the launch files of {rec.name} again after its folder moved: {e}")
 
 
 def settle_steam_shortcuts(client: MogClient, preference: str = "auto") -> list[str]:

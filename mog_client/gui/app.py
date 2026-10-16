@@ -261,6 +261,7 @@ class Bridge(QObject):
     connectivity = Signal(str, bool)  # connectivity.ONLINE / NO_SERVER / NO_INTERNET, and whether offline was chosen by hand
     offline_shown = Signal()  # nothing is coming from the server: the loading panel must not stay
     back_online = Signal()  # the server answers again after a stretch of being out of reach
+    relinked = Signal(list)  # names of the games found again in their moved folder
 
 
 def is_deck() -> bool:
@@ -433,7 +434,18 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def relink_games(self) -> None:
+        """Look for the games whose folder moved (see manager.relocate_moved). Local, so it does not wait for the server."""
+
+        def work():
+            found = manager.relocate_moved(self.settings)
+            if found:
+                self.bridge.relinked.emit(found)
+
+        self.run_bg(work, on_error=lambda m: logstore.warning(f"Looking for moved games failed: {m}"))
+
     def refresh(self) -> None:
+        self.relink_games()
         if connectivity.is_offline():
             self.bridge.note.emit("Offline mode: the library is not refreshed")
             return
@@ -1452,6 +1464,9 @@ class OptionsPage(Page):
             button = add_option_button(win, lay, text, action, danger, pop)
             self.first = self.first or button
 
+        gid = rec.game_id if rec else (getattr(page, "game", None) or {}).get("id")
+        if (rec is None or rec.state in ("installed", "awaiting_executable")) and gid not in win.app.installs:
+            add("Find game...", lambda: page.find_game(rec))  # any game: it may be renamed, or brought from another disk or machine
         if rec and rec.state == "installed" and installdirs.present(rec):
             if sys.platform.startswith("linux"):
                 add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
@@ -3068,6 +3083,7 @@ class SettingsPage(Page):
         settings = self.win.app.settings
         settings.install_dirs = list(self.install_dirs)
         save_settings(settings)
+        self.win.app.relink_games()  # games moved into the new folder are found again
         self._update_folders_row()
 
     def _update_folders_row(self) -> None:
@@ -3364,8 +3380,6 @@ class ExecutablePage(Page):
         self.on_desktop = Toggle("Put a shortcut on the desktop")
         self.on_desktop.setChecked(rec.desktop_shortcut is not None if rec.executable else True)
         self.steam = Toggle("Add to Steam")
-        self.account_toggles: dict[Path, Toggle] = {}
-        self.steam.toggled.connect(lambda _: self._update_steam_toggles())
         self.refresh_steam()
         ok = QPushButton("Use this executable")
         ok.setDefault(True)
@@ -3380,9 +3394,6 @@ class ExecutablePage(Page):
         lay.addWidget(self.desktop)
         lay.addWidget(self.on_desktop)
         lay.addWidget(self.steam)
-        self.accounts_box = QVBoxLayout()
-        lay.addLayout(self.accounts_box)
-        self._fill_accounts()
         self.args_label = QLabel()
         edit_args = QPushButton("Edit")
         edit_args.clicked.connect(lambda: win.push(LaunchArgsPage(win, self, rec)))
@@ -3420,35 +3431,13 @@ class ExecutablePage(Page):
     def refresh_steam(self) -> None:
         """The Steam switches as the integration settings stand: off where the user left an account out (or all of them)."""
         settings = self.win.app.settings
-        self.steam_found = steam.steam_user_dirs()
         self.steam_wanted = selfsteam.accounts(settings)
         self.steam.setEnabled(bool(self.steam_wanted))
         self.steam.setChecked(bool(self.steam_wanted))
-        if hasattr(self, "accounts_box"):
-            self._fill_accounts()
-
-    def _fill_accounts(self) -> None:
-        while self.accounts_box.count():
-            self.accounts_box.takeAt(0).widget().deleteLater()
-        self.account_toggles = {}
-        if len(self.steam_found) > 1:  # one account needs no choosing
-            for user in self.steam_found:
-                toggle = Toggle(selfsteam.label(user, self.steam_found))
-                toggle.setChecked(user in self.steam_wanted)
-                self.account_toggles[user] = toggle
-                self.accounts_box.addWidget(toggle)
-        self._update_steam_toggles()
-
-    def _update_steam_toggles(self) -> None:
-        for user, toggle in self.account_toggles.items():
-            toggle.setEnabled(self.steam.isChecked() and user in self.steam_wanted)
 
     def steam_users(self) -> list[Path]:
-        if not self.steam.isChecked():
-            return []
-        if not self.account_toggles:
-            return list(self.steam_wanted)
-        return [user for user, toggle in self.account_toggles.items() if toggle.isChecked() and user in self.steam_wanted]
+        """The accounts are not picked here (the screen would be too full): they are the ones in Settings > Steam integration."""
+        return list(self.steam_wanted) if self.steam.isChecked() else []
 
     def refresh_args(self) -> None:
         tags = (load_library().get(self.rec.game_id) or self.rec).launch_args
@@ -4120,6 +4109,7 @@ class GamePage(Page):
         self.win.push(InstallerPickerPage(self.win, self, group, needed=True))
 
     def _check_again(self) -> None:
+        self.win.app.relink_games()  # the folder may have been moved: the games are looked for in the install folders
         self.rebuild()
         self.win.library.update_presence()
         if self.first:
@@ -4409,6 +4399,41 @@ class GamePage(Page):
 
     def show_options(self, rec: InstalledGame | None) -> None:
         self.win.push(OptionsPage(self.win, self, rec))
+
+    def find_game(self, rec: InstalledGame | None) -> None:
+        """Say where the game's folder is (the one with its launch script): it was renamed on the server, or moved to another
+        disk or machine, or comes from another one. A game with no record here gets one and asks for its executable; one that has
+        a record follows the folder (its saves' prefix and entries too)."""
+        start = Path(rec.install_dir) if rec else installdirs.default_root(self.app.settings)
+        while not start.is_dir() and start.parent != start:
+            start = start.parent
+        gid = self.game["id"]
+
+        def done(claimed: InstalledGame) -> None:
+            self.win.refresh_items()
+            self.rebuild()
+            if claimed.state == "awaiting_executable":  # the executable is chosen again, and the entries made, from the new folder
+                self.choose_executable(claimed)
+            else:
+                self.win.message(f"{claimed.name} found again in {claimed.install_dir}", "info", gid)
+
+        def picked(folder: str) -> None:
+            path = Path(folder)
+            problem = installdirs.misfit(rec, path)
+            if problem:
+                self.win.message(problem, "warning", gid)
+                return
+            if rec and installdirs.present(rec) and path == Path(rec.install_dir):
+                self.win.message(f"{rec.name} is already there", "info", gid)
+                return
+
+            def work() -> None:
+                claimed = manager.claim_folder(self.game, path, self.app.settings.launcher)
+                self.app.bridge.call.emit(lambda: done(claimed))
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not use that folder: {m}"))
+
+        self.win.browse_folder(start, picked)
 
     def set_save_sync(self, rec: InstalledGame, wanted: bool) -> None:
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
@@ -5726,6 +5751,7 @@ class MainWindow(QMainWindow):
         b.connectivity.connect(self.on_connectivity)
         b.offline_shown.connect(lambda: self.library.show_loading(False))
         b.back_online.connect(self.on_back_online)
+        b.relinked.connect(self.on_relinked)
         self.notif_timer = QTimer(self)
         self.notif_timer.timeout.connect(app.poll_notifications)
         self.notif_timer.start(15000)
@@ -5780,6 +5806,15 @@ class MainWindow(QMainWindow):
             else "Going online: looking for MOG Server...",
             "info",
         )
+
+    def on_relinked(self, names: list) -> None:
+        """Games found again in the folder they were moved to: their cards are no longer greyed, their entries are written."""
+        self.library.update_presence()
+        page = self.current_page()
+        if isinstance(page, GamePage):
+            page.rebuild()
+        shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        self.message(f"Found again in their new folder: {shown}", "info")
 
     def on_back_online(self) -> None:
         """MOG Server answers again: take up what waited for it."""

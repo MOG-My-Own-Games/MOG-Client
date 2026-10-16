@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mog_client.api import fmt_bytes
+from mog_client.api import fmt_bytes, safe_dirname
 from mog_client.config import InstalledGame, Settings
 
 # Room kept free on top of the game's size: the installer's own temporary files, the prefix growing.
@@ -154,6 +154,49 @@ def default_root(settings: Settings) -> Path:
 def present(rec: InstalledGame) -> bool:
     """Whether the game's folder is there now."""
     return Path(rec.install_dir).is_dir()
+
+
+def rebase(path: str | None, old: str, new: str) -> str | None:
+    """`path` with the folder `old` it lies under replaced by `new`; a path that is not under `old` is returned as it is."""
+    if not path:
+        return path
+    try:
+        return str(Path(new) / Path(path).relative_to(old))
+    except ValueError:
+        return path
+
+
+def find_moved(rec: InstalledGame, roots: Iterable[Path]) -> Path | None:
+    """Where an installed game's folder is now, when it is not where it was recorded (the games folder was moved, or the install
+    folder changed): a folder of the same name in one of the install folders. When the executable is known it has to be there too,
+    so a folder that only has the same name is not taken for the game."""
+    old = Path(rec.install_dir)
+    for root in roots:
+        for name in dict.fromkeys([old.name, safe_dirname(rec.name)]):
+            candidate = Path(root) / name
+            if candidate != old and misfit(rec, candidate) is None:
+                return candidate
+    return None
+
+
+def misfit(rec: InstalledGame | None, folder: Path) -> str | None:
+    """Why `folder` cannot be where the game's files are now, or None when it can: it has to be a folder, and hold the game's
+    executable at the place it has in the game's own folder. A game with no record here, or still waiting for its executable,
+    has none to look for: the folder only has to have something in it."""
+    if not folder.is_dir():
+        return f"{folder} is not a folder"
+    if rec is None or not rec.executable:
+        try:
+            return None if any(folder.iterdir()) else f"{folder} is empty"
+        except OSError as e:
+            return f"{folder} cannot be read: {e}"
+    try:
+        relative = Path(rec.executable).relative_to(rec.install_dir)
+    except ValueError:  # the executable is not in the game's folder: there is nothing to look for
+        return None
+    if not (folder / relative).is_file():
+        return f"{relative} is not in {folder}: choose the folder of the game itself, the one with its launch script"
+    return None
 
 
 def folder_size(folder: Path) -> int:
