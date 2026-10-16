@@ -5,6 +5,8 @@ name: Release
 # On a branch other than main the version carries the branch name (v0.43.1-feat-save-sync)
 # and the release is marked as a pre-release, so it can never become the "latest" release
 # that the self-updater looks at.
+# The release body is written by scripts/release_notes.py from the commits since the previous release (see
+# docs/RELEASING.md); the same notes are bundled into the builds as mog_client/_changelog.py for the Changelog tab.
 # Nothing is published until someone reviews the draft on GitHub and clicks
 # "Publish release" (which is also what creates the tag).
 on:
@@ -26,6 +28,21 @@ jobs:
           fetch-depth: 0 # version script needs the full history
       - id: gv
         run: python3 scripts/version.py
+      - name: Release notes
+        run: |
+          mkdir notes
+          python3 scripts/release_notes.py --repo "${{ github.repository }}" --version "${{ steps.gv.outputs.version }}" \
+            --header .github/release-header.md --body notes/RELEASE.md --module notes/_changelog.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-body
+          path: notes/RELEASE.md
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: notes/_changelog.py
+          if-no-files-found: error
 
   appimage:
     needs: version
@@ -33,6 +50,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: changelog
+          path: mog_client
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -49,6 +70,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: changelog
+          path: mog_client
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -69,8 +94,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: "{appimage,windows-exe}"
           path: artifacts
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-body
+          path: notes
       - name: Checksums
         run: cd artifacts && sha256sum * > SHA256SUMS.txt
       # The updater checks this signature against the key built into the app (docs/RELEASING.md). Without the secret the
@@ -90,6 +120,6 @@ jobs:
           name: MOG Client v${{ needs.version.outputs.semver }}
           draft: true
           prerelease: ${{ github.ref_name != 'main' }}
-          generate_release_notes: true
+          body_path: notes/RELEASE.md
           fail_on_unmatched_files: true
           files: artifacts/*
