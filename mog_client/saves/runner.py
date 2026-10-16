@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import logstore, played
+from mog_client import connectivity, logstore, played
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings, data_dir, load_library
 from mog_client.gui.saves_ui import when
@@ -222,6 +222,7 @@ STATUS_TEXT = {
     "needs-prefix": "Could not find the game's saves: open MOG",
     "needs-folder": "Tell MOG where the game keeps its saves: open it",
     "nothing": "No saves found for this game",
+    "offline": "MOG Server is out of reach: the saves are backed up once it can be reached",
 }
 
 
@@ -314,6 +315,15 @@ def confirm_ended(
         time.sleep(END_POLL / 2)
 
 
+def look_at_connection(settings: Settings, say: Callable[[str], None]) -> None:
+    """This process does not share the window's idea of whether the server is there: it takes the user's choice from the
+    settings and looks for itself (a few seconds at most), so a game does not wait on a server that is out of reach."""
+    connectivity.set_forced(settings.offline_forced)
+    connectivity.probe(settings.base)
+    if connectivity.is_offline():
+        say("offline: MOG Server is not asked for anything" + (" (by choice)" if settings.offline_forced else " (it cannot be reached)"))
+
+
 def run_command(action: str, game_id: int, settings: Settings, client: MogClient, window: bool = False) -> int:
     """`--save-pre`, `--save-watch` and `--save-sync` from the command line. A watch shows the window
     when the setting is on, a sync only when asked for with `window`. What happens is written to the client's log file
@@ -328,6 +338,7 @@ def run_command(action: str, game_id: int, settings: Settings, client: MogClient
     try:
         if action == "pre":
             client.c.timeout = PRE_TIMEOUT
+            look_at_connection(settings, say)
             played.record(game_id)  # a start from a shortcut or Steam too, which is where plays are not seen otherwise
             pre_launch(rec, settings, client)
         elif action == "watch":
@@ -337,6 +348,7 @@ def run_command(action: str, game_id: int, settings: Settings, client: MogClient
 
                 def backup(set_visible: Callable[[bool], None]) -> sync.BackupResult:
                     confirm_ended(rec, set_visible, log=say)
+                    look_at_connection(settings, say)  # the game ran for a while: the server may be gone, or back
                     return sync.backup(ctx, sync.QUIT, since_ns=since_ns)
 
                 result = with_window(rec, window or settings.sync_window, backup)

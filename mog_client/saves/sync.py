@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mog_client import logsend, logstore
+from mog_client import connectivity, logsend, logstore
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import native
@@ -71,6 +71,7 @@ class BackupResult:
     # "uploaded" | "unchanged" | "nothing" | "needs-prefix" | "needs-confirmation" | "duplicate"
     # | "restore-pending" (saves from another machine wait for the prefix: nothing was sent over them)
     # | "needs-folder" (a native game, asked for by hand, with no folder known)
+    # | "offline" (MOG Server is out of reach: nothing was sent, and `deferred` says it is to be sent once it is back)
     status: str
     version: dict | None = None
     changed: list[str] = field(default_factory=list)
@@ -173,6 +174,7 @@ def add_folder(game_id: int, path: Path) -> str | None:
 
 # Outcomes with nothing to explain: the saves did not change (or were held back), so the log is not sent.
 QUIET_STATUSES = ("unchanged", "nothing", "duplicate", "restore-pending")
+OFFLINE = "offline"  # the last_check_status of a game whose backup waits for the server
 
 
 def backup(
@@ -182,6 +184,10 @@ def backup(
     With `upload=False` nothing is sent or remembered: "changed" says only that something differs here."""
     began = time.monotonic()
     name = ctx.rec.name
+    if upload and connectivity.is_offline():
+        defer(ctx.rec.game_id, trigger)
+        logstore.info(f"Saves of {name}: not backed up, MOG Server is out of reach; they are sent once it is back")
+        return BackupResult("offline")
     if upload:
         logstore.info(f"Saves of {name}: backup started ({trigger})")
     if upload and not force and _restore_still_pending(ctx):
@@ -202,6 +208,16 @@ def backup(
         if result.status not in QUIET_STATUSES:
             _send_log(ctx)
     return result
+
+
+def defer(game_id: int, trigger: str) -> None:
+    """A backup that could not be made because the server is out of reach. The files and the baseline stay as they are, so the
+    next look (see `deferred`) finds what changed and sends it."""
+    _record_check(game_id, OFFLINE, trigger)
+
+
+def deferred(game_id: int) -> bool:
+    return load_state(game_id).last_check_status == OFFLINE
 
 
 def _restore_still_pending(ctx: Context) -> bool:

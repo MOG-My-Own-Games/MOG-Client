@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mog_client import connectivity
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import prefix as prefixes
 from mog_client.saves import sync
@@ -382,6 +383,21 @@ def test_a_backup_that_fails_is_noted_as_failed(world, monkeypatch):
     with pytest.raises(RuntimeError):
         sync.backup(world.ctx, sync.QUIT, since_ns=0)
     assert load_state(7).last_check_status == "failed"
+
+
+def test_a_backup_while_offline_waits_for_the_server_and_goes_up_once_it_is_back(world):
+    _game_with_a_save(world)
+    connectivity.set_forced(True)
+
+    result = sync.backup(world.ctx, sync.QUIT, since_ns=0)
+
+    assert result.status == "offline" and world.server.uploads == []
+    assert load_state(7).last_check_status == "offline" and sync.deferred(7)
+    assert load_state(7).last_version_id is None  # the baseline is untouched: what changed is found again
+
+    connectivity.set_forced(False)
+    assert sync.backup(world.ctx, sync.SYNC).status == "uploaded"
+    assert not sync.deferred(7)
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from mog_client import installdirs, logstore
+from mog_client import connectivity, installdirs, logstore
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import detect_launcher, effective_launcher, pfx_dir
 from mog_client.saves import devices, native, sync
@@ -64,6 +64,7 @@ _CHECK_RESULT = {
     "needs-folder": "needs the folder it saves in",
     "restore-pending": "saves from another machine are waiting, nothing was sent over them",
     "failed": "failed, the server could not be reached",
+    "offline": "waiting for the server: sent as soon as it can be reached",
 }
 _CHECK_TRIGGER = {"quit": "after the game closed", "launch": "at start", "manual": "by hand", "sync": "at start", "uninstall": "on uninstall"}
 
@@ -117,6 +118,12 @@ class SaveSync:
         cannot be (sync off, no server, a name to settle) `otherwise(reason)` runs on the GUI
         thread instead; `ask` allows asking the user to settle the machine's name."""
         app = self.app
+        if connectivity.is_offline():  # no waiting on a server known to be out of reach
+            if otherwise is not None:
+                self.gui(lambda: otherwise("MOG Server is not reachable (offline mode)" if ask else None))
+            elif ask:
+                self.say("Save sync: MOG Server is not reachable (offline mode)", "warning")
+            return
 
         def fail(reason: str | None) -> None:
             if otherwise is not None:
@@ -205,6 +212,10 @@ class SaveSync:
             self.win.message(f"Saves of {rec.name} are up to date", "info")
         elif status == "nothing" and not quiet:
             self.win.message(f"No save files found for {rec.name} yet", "info")
+        elif status == "offline":
+            self.win.message(
+                f"MOG Server cannot be reached: the saves of {rec.name} are backed up as soon as it can be", "info"
+            )
         elif status == "needs-prefix":
             if quiet:
                 self.win.message(f"Where does {rec.name} keep its saves? Open its Options > Linux Options > Prefix location", "warning")
@@ -610,22 +621,34 @@ class SaveSync:
             result = sync.backup(ctx, sync.UNINSTALL, force=True)
             if result.status in ("uploaded", "duplicate", "unchanged", "nothing"):
                 self.gui(then)
+            elif result.status == "offline":
+                self.gui(lambda: uneasy("MOG Server is not reachable"))
             else:
                 self.gui(lambda: uneasy("it is not clear which files are its saves"))
 
         self.with_context(rec, run, otherwise=uneasy)
+
+    def back_online(self) -> None:
+        """MOG Server is reachable again: look over the saves once more (the backups that waited for it go now)."""
+        self._checked = False
+        self.check_all()
 
     def check_all(self) -> None:
         """Once per session, when the setting allows: look over every game's saves. What changed here is
         sent; a newer version from another machine is taken when nothing changed here (the files it
         replaces are backed up first); when both changed, the user is told and nothing is overwritten."""
         settings = self.app.settings
-        if self._checked or not settings.sync_saves or not settings.sync_on_start or not settings.configured:
+        if self._checked or not settings.sync_saves or not settings.configured or connectivity.is_offline():
             return
-        self._checked = True
+        waiting = settings.sync_on_start  # without it, only the backups that waited for the server are sent
         games = [
-            r for r in load_library().values() if r.state == "installed" and r.executable and installdirs.present(r) and self.enabled(r)
+            r
+            for r in load_library().values()
+            if r.state == "installed" and r.executable and installdirs.present(r) and self.enabled(r)
+            and (waiting or sync.deferred(r.game_id))
         ]
+        if waiting or games:
+            self._checked = True  # a switched-off check does not use up its one go
         if not games:
             return
 
