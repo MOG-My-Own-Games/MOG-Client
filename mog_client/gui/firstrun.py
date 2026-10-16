@@ -266,7 +266,7 @@ class FirstRunPage(QWidget):
         app = self.win.app
 
         def work() -> None:
-            me = MogClient(Client(base, user, password)).me()
+            me = MogClient(Client(base, user, password, offline_aware=False)).me()  # a test of the server, offline or not
             app.bridge.call.emit(lambda: self._tested(base, user, password, me.get("username") or user, None))
 
         def failed(error: str) -> None:

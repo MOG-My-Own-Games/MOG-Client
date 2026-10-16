@@ -18,13 +18,14 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import logstore, net, trace, videos
+from mog_client import connectivity, logstore, net, trace, videos
 
 POLL_INTERVAL = 3
 STREAM_TIMEOUT = 30.0  # per socket read, not for the whole transfer
 STREAM_CHUNK = 1024 * 1024
 REQUEST_RETRIES = 3
 MANIFEST_INTERVAL = 3
+OFFLINE = "offline: MOG Server is not reachable"
 
 ACTIVE_STATES = {"detecting", "awaiting_installer", "queued", "installing", "streaming"}
 
@@ -56,11 +57,13 @@ def normalize_base(base: str) -> str:
 
 
 class Client:
-    def __init__(self, base: str, user: str, pw: str, timeout: float = 30.0):
+    def __init__(self, base: str, user: str, pw: str, timeout: float = 30.0, offline_aware: bool = True):
         self.base = normalize_base(base)
         self.user = user
         self.pw = pw
         self.timeout = timeout
+        # False for a call that is itself the test of whether the server is there (the first-start guide's).
+        self.offline_aware = offline_aware
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {"Accept": "application/json", "User-Agent": "mog-client/0.2"}
@@ -80,6 +83,8 @@ class Client:
         data: bytes | None = None,
     ) -> tuple[int, bytes, dict]:
         """`body` is sent as JSON; `data` is sent as it is (the caller says its type in `headers`)."""
+        if self.offline_aware and connectivity.is_offline():
+            raise RuntimeError(OFFLINE)  # no waiting for a server known to be out of reach
         url = self.base + path
         if body is not None:
             data = json.dumps(body).encode()
@@ -102,6 +107,8 @@ class Client:
                         "plain http, set the Server URL to http://host:port"
                     ) from e
                 if attempt == attempts:
+                    if self.offline_aware:
+                        connectivity.mark_failure()
                     raise RuntimeError(f"connection error ({self.base}): {reason}") from e
                 time.sleep(0.5 * 3 ** (attempt - 1))
         raise AssertionError("unreachable")
@@ -124,6 +131,8 @@ class Client:
         self, path: str, file_path: Path, timeout: float = 600.0, fields: dict[str, str] | None = None
     ) -> tuple[int, dict]:
         """POST a file as multipart form data under the field name `file`, after the text `fields` if any. Never retried."""
+        if self.offline_aware and connectivity.is_offline():
+            raise RuntimeError(OFFLINE)
         boundary = uuid.uuid4().hex
         text_parts = "".join(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
