@@ -1,0 +1,8 @@
+# Read after `--file <a save>` has loaded it: play on to turn 5 and save under another name, so the new saves tell
+# which machine wrote them.
+set endturn 5
+set compresstype PLAIN
+set savename e2e-windows
+set autosaves TURN
+set saveturns 1
+start

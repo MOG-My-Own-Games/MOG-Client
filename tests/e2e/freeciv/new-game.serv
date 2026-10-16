@@ -1,0 +1,11 @@
+# A new game played by AI players only, three turns, saved at the start of every turn into the `--saves` folder (inside
+# the game's own folder, where MOG's save sync on Windows looks). PLAIN keeps the save readable text.
+set aifill 3
+set minplayers 0
+set timeout -1
+set endturn 3
+set compresstype PLAIN
+set savename e2e-linux
+set autosaves TURN
+set saveturns 1
+start
