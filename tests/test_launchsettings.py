@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mog_client import launchsettings, manager
+from mog_client import connectivity, launchsettings, manager
 from mog_client.config import InstalledGame
 from mog_client.saves import devices
 
@@ -771,3 +771,29 @@ def test_a_user_who_may_not_set_the_shared_tags_sends_them_for_this_device_inste
     change = {"launch_args_add": ["-intro:off"], "launch_args_remove": []}
     assert server.put == [(7, None, change), (7, 3, change)]
     assert _kept(game).launch_args_synced == ["-intro:off"]
+
+
+def test_while_offline_a_change_is_kept_in_the_outbox_and_sent_when_the_server_is_back(game):
+    server = Server()
+    connectivity.set_forced(True)
+
+    assert launchsettings.push(server, game, {"proton": "GE-Proton10-1"}, everywhere=True) is False
+    assert server.put == [] and launchsettings.has_waiting()
+
+    connectivity.set_forced(False)
+    launchsettings.flush_all(server)
+    assert [p[2] for p in server.put] == [{"proton": "GE-Proton10-1"}] and not launchsettings.has_waiting()
+
+
+def test_pulling_while_offline_asks_nothing_and_fetches_the_build_only_with_the_internet(monkeypatch, game):
+    server = Server(answer={"shared": _row("GE-Proton10-1"), "device": None})
+    fetched = []
+    monkeypatch.setattr(launchsettings, "ensure_build", lambda rec, pref, say: fetched.append(rec.game_id))
+    connectivity.set_forced(True)
+
+    monkeypatch.setattr(connectivity, "internet_ok", lambda: False)
+    launchsettings.pull(server, game, "auto")
+    monkeypatch.setattr(connectivity, "internet_ok", lambda: True)
+    launchsettings.pull(server, game, "auto")
+
+    assert server.asked == [] and fetched == [7]

@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import launcher, launchargs, manager, protondl, winecfg, winetricks
+from mog_client import connectivity, launcher, launchargs, manager, protondl, winecfg, winetricks
 from mog_client.api import MogClient
 from mog_client import config
 from mog_client.config import InstalledGame
@@ -81,7 +81,13 @@ def ensure_build(
 
 def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[str], None] = lambda _m: None) -> None:
     """Put what the server holds for the game on this machine: the Proton build, and the winecfg settings when they differ
-    from the ones last applied. Nothing the server lacks is touched. Raises RuntimeError when applying the settings fails."""
+    from the ones last applied. Nothing the server lacks is touched. Raises RuntimeError when applying the settings fails.
+    With the server out of reach there is nothing to take: what was applied last time stays (and a build the game needs is
+    still fetched from the internet, if that is there)."""
+    if connectivity.is_offline():
+        if connectivity.internet_ok():
+            ensure_build(rec, preference, say)
+        return
     flush(client, rec.game_id)  # what was changed here and not sent yet goes first, and is not overwritten by the server's older value
     unsent = waiting_fields(rec.game_id)
     answer = client.launch_settings(rec.game_id, device_id(client))
@@ -254,6 +260,8 @@ def flush(client: MogClient, game_id: int, say: Callable[[str], None] = lambda _
     take it as it is: sending it again would not change that, and it would block what follows); one the server could not take
     for now stays. True when nothing is left."""
     with _OUTBOX_LOCK:
+        if connectivity.is_offline():
+            return not waiting(game_id)  # it all stays where it is until the server is back
         for entry in waiting(game_id):
             target = None
             if not entry.get("everywhere"):
