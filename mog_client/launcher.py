@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import connectivity, launchargs, protondl
+from mog_client import connectivity, launchargs, protondl, umudb
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -365,6 +365,12 @@ def effective_launcher(game: InstalledGame, preference: str = "auto") -> str:
     return game.launcher if game.launcher and game.launcher != "auto" else preference
 
 
+def umu_id(game: InstalledGame) -> str:
+    """The `GAMEID` umu starts the game with. umu applies a game's protonfixes only under the id of umu's own database (`umu-zerozone`),
+    so that is used when the game is in it; one that is not gets an id of its own, as umu needs one."""
+    return umudb.find(game.name, game.executable) or f"umu-mog-{game.game_id}"
+
+
 def pfx_dir(game: InstalledGame) -> Path:
     """The prefix MOG hands every engine: a `pfx` folder inside the game's own folder. What goes in
     it, and how, is up to the engine."""
@@ -454,7 +460,7 @@ def launch_command(
         return [exe, *args], {}
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
-    env = {"WINEPREFIX": str(prefix), "GAMEID": f"umu-mog-{game.game_id}"}
+    env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game)}
     if offline:
         env["UMU_RUNTIME_UPDATE"] = "0"  # read by umu and Faugus; Wine and Proton return their own env below
     build, _problem = resolve_proton(game.proton, launcher)

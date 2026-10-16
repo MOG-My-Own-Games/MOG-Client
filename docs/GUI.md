@@ -152,6 +152,11 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - Games launch through the first of Faugus Launcher, umu, Proton and Wine that is installed (Linux). Settings > Library lists what
   was found and "Scan for launchers" looks again; the scan also runs at the first start and after an update. On Windows
   the game starts directly.
+- umu (and Faugus, which runs through it) applies a game's protonfixes only when it is started with the id of umu's own game
+  database as `GAMEID` (`umu-zerozone`). The client keeps that database (`umu-database.csv` in its data folder, fetched at start
+  when it is missing or a week old, never waited for) and uses the id of the game found there, by its title or the name of its
+  executable; a game that is not in it gets an id of its own (`umu-mog-<id>`). When a new copy of the database comes, the launch
+  scripts are written again.
 - A game's own files go in a folder of their own inside the install folder. When what the server sends has no single
   folder (files at the top, or several folders), the client puts it in a folder named for the game; a game that comes in
   its own folder is left as it came.

@@ -97,6 +97,7 @@ from mog_client import (
     snapshot,
     steam,
     trace,
+    umudb,
     updater,
 )
 from mog_client import mods as mods_download
@@ -6849,6 +6850,13 @@ def run_gui(link: str | None = None) -> int:
         app.settings.scripts_written_for = __version__
         logstore.best_effort("Could not save the settings", save_settings, app.settings)
         app.run_bg(lambda: manager.refresh_launch_files(app.settings), on_error=logstore.warning)
+
+    def refresh_umu_database() -> None:
+        """umu's game list gives the ids its fixes are applied under: when a new copy comes, the launch scripts are written again."""
+        if connectivity.internet_ok() and umudb.refresh():
+            manager.refresh_launch_files(app.settings)
+
+    app.run_bg(refresh_umu_database, on_error=logstore.warning)
     win = MainWindow(app)
     listener = Listener()
     if listener.listen():
