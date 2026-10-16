@@ -210,6 +210,18 @@ def test_the_prefix_and_the_files_mog_writes_are_not_the_games_files(tmp_path):
     assert keys(install_candidates(game, manifest)) == ["game/Saves/profile.sav", "game/tools/run.sh"]
 
 
+def test_the_windows_launch_file_is_not_a_save(tmp_path):
+    """On Windows MOG writes `<game>.cmd` next to the game (launch_cmd_path), not `.sh`: it was taken for a save, so a
+    backup sent it and, worse, a newer save from another machine was never taken by itself, as the folder always looked
+    changed here (a conflict at every start). Found by the end-to-end test."""
+    game = tmp_path / "game"
+    _touch(game / "Game Name.cmd", b"@echo off")
+    _touch(game / "save/slot1.sav", b"progress")
+    _touch(game / "tools/setup.cmd", b"@echo off")  # deeper down it is the game's own
+
+    assert keys(install_candidates(game, {})) == ["game/save/slot1.sav", "game/tools/setup.cmd"]
+
+
 def _game_folder(tmp_path):
     install = tmp_path / "Game"
     folder = install / "Living With Sister"

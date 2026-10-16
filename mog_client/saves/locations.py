@@ -31,8 +31,9 @@ GAME_KEY = "game"
 PUBLIC_USER = "Public"
 # Files MOG itself keeps in a game's install folder (the icon), never the game's.
 MOG_FILE_PREFIX = ".mog-"
-# The launch script, entries and folder icon MOG writes at the top of a game's folder (next to the prefix).
-GENERATED_SUFFIXES = (".sh", ".desktop", ".lnk")
+# The launch script (a batch file on Windows), entries and folder icon MOG writes at the top of a game's folder (next to
+# the prefix).
+GENERATED_SUFFIXES = (".sh", ".cmd", ".desktop", ".lnk")
 GENERATED_NAMES = (".directory",)
 # Where a Proton or umu prefix names the Windows user, before any other.
 PREFERRED_USER = "steamuser"
