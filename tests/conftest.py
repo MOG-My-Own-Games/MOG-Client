@@ -4,6 +4,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _start_online():
+    """Reachability is process-wide state: no test inherits another's offline mode."""
+    from mog_client import connectivity
+
+    connectivity.reset()
+    yield
+    connectivity.reset()
+
+
+@pytest.fixture(autouse=True)
 def _keep_the_users_data_untouched(monkeypatch, tmp_path):
     """Tests write logs and launch scripts: into a temp folder, never the real data directory."""
     from mog_client import activity, config, launcher, played, snapshot, steam, trace
