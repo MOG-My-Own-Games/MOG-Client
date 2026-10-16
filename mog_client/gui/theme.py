@@ -45,6 +45,7 @@ QTextEdit { background: #1e232b; color: #e8eaed; border: 2px solid #2c333d; bord
 #overlayCard[level="error"] { border-color: #e2574c; }
 #overlayCard[level="warning"] { border-color: #e8c547; }
 #overlayTitle { font-size: 22px; font-weight: bold; }
+#offlineBadge { background: #2e2a16; color: #e8c547; border: 1px solid #e8c547; border-radius: 12px; padding: 2px 12px; margin: 0 8px 0 0; font-size: 14px; font-weight: bold; }
 #userButton { padding: 8px 18px 8px 10px; margin: 0 8px 0 0; }  /* room on the right for the unread dot */
 QMenu { background: #1e2733; color: #e8eaed; border: 1px solid #343c49; border-radius: 12px; padding: 6px; }
 QMenu::item { padding: 12px 34px 12px 18px; border-radius: 8px; font-size: 18px; }

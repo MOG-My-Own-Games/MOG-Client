@@ -98,6 +98,10 @@ class Settings:
     # turns the integration off. `steam_decided` is whether the user has been asked, here or at the first install.
     steam_accounts: list[str] | None = None
     steam_decided: bool = False
+    # Offline by choice, as in Steam: MOG Server is not asked for anything, and nothing looks for a way back online.
+    offline_forced: bool = False
+    # The version whose changelog was shown (see changelog.py): after an update it is opened once.
+    changelog_seen: str = ""
     # The first-start guide has been through (or the client was set up before there was one).
     first_run_done: bool = False
 

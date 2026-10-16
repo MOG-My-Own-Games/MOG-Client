@@ -12,3 +12,6 @@ dist/
 *.AppImage
 *.exe_version.py
 TODO-commits.md
+mog_client/_changelog.py
+TODO-release-*.md
+TODO.md

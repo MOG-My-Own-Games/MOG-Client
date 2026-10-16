@@ -82,6 +82,8 @@ from PySide6.QtWidgets import (
 from mog_client import (
     activity,
     addons,
+    changelog,
+    connectivity,
     crashlog,
     gameplay,
     identity,
@@ -114,7 +116,7 @@ from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
 from mog_client.gui.placeholder import cover_placeholder
-from mog_client.gui.about import AboutTab
+from mog_client.gui.about import AboutTab, ChangelogTab
 from mog_client.gui.busy import BusyOverlay
 from mog_client.gui.headerart import HeaderArt
 from mog_client.gui.instance import Listener, send_to_running
@@ -209,6 +211,7 @@ NOTIFICATION_ICON = QSize(64, 64)
 CLIENT_KINDS = frozenset({"save_synced", "save_restored", "mod_downloaded", "client_info", "client_warning", "client_error"})
 ROLE_MOD_ROW = Qt.UserRole + 30  # on a sidebar row: the name of the mod it is fetching (None for an install, a sync or a restore)
 IMAGE_WORKERS = 6
+RECOVER_EVERY_MS = 30000  # how often a server out of reach is looked at again
 
 
 _KEYS = {
@@ -255,6 +258,9 @@ class Bridge(QObject):
     update_ready = Signal(str)  # path of the replaced build, to relaunch
     update_failed = Signal(str)
     call = Signal(object)  # a callable to run on the GUI thread
+    connectivity = Signal(str, bool)  # connectivity.ONLINE / NO_SERVER / NO_INTERNET, and whether offline was chosen by hand
+    offline_shown = Signal()  # nothing is coming from the server: the loading panel must not stay
+    back_online = Signal()  # the server answers again after a stretch of being out of reach
 
 
 def is_deck() -> bool:
@@ -282,6 +288,11 @@ class App:
         self.mod_stops: dict[tuple[int, str], threading.Event] = {}  # set to stop that mod's fetch
         self.revision: str | None = None  # the server's library revision at the last load
         self.refreshing = False
+        connectivity.enable()
+        connectivity.set_forced(self.settings.offline_forced)
+        connectivity.subscribe(self.bridge.connectivity.emit)
+        self._probing = False
+        self._confirmed_offline = self.settings.offline_forced  # a probe found the server out of reach (or the user said so)
         self.sizes: dict[int, int] = {}  # bytes each game takes on the server, once asked
         self.after_stop = StopActions()  # runs once that install has stopped
 
@@ -300,6 +311,8 @@ class App:
     def check_update(self, manual: bool = False) -> None:
         def work():
             try:
+                if not connectivity.internet_ok():
+                    raise RuntimeError("no internet connection")
                 self.bridge.update_checked.emit(updater.check_for_update(), "", manual)
             except Exception as e:  # noqa: BLE001 - a failed check must never block startup
                 self.bridge.update_checked.emit(None, str(e), manual)
@@ -335,7 +348,7 @@ class App:
         """Take the launch arguments the server holds for each installed game (edited on the web page, or on another device),
         so a change reaches the launch script a shortcut runs, not only a start from here."""
         now = time.monotonic()
-        if not self.settings.configured or now - self._args_synced_at < every:
+        if not self.settings.configured or connectivity.is_offline() or now - self._args_synced_at < every:
             return
         self._args_synced_at = now
 
@@ -351,8 +364,61 @@ class App:
 
         self.run_bg(work, on_error=lambda _m: None)
 
-    def poll_notifications(self) -> None:
+    def check_connection(self, done: Callable[[bool], None] | None = None) -> None:
+        """Look at whether the server answers (one try, a few seconds). Leaving a stretch of being out of reach is announced
+        as `back_online`, so the library, the waiting launch settings and the saves are taken up again. `done(offline)` then
+        runs on the GUI thread, for a look the user asked for."""
+        if self._probing or not self.settings.configured:
+            return
+        self._probing = True
+
+        def work() -> None:
+            try:
+                connectivity.probe(self.settings.base)
+                offline = connectivity.is_offline()
+                came_back = self._confirmed_offline and not offline
+                self._confirmed_offline = offline
+                if came_back:
+                    self.bridge.back_online.emit()
+                if done is not None:
+                    self.bridge.call.emit(lambda: done(offline))
+            finally:
+                self._probing = False
+
+        self.run_bg(work, on_error=lambda m: logstore.warning(f"Could not look at the connection: {m}"))
+
+    def connect_and_refresh(self, updates: bool = False) -> None:
+        """Start (or start again after the server changed): find out whether the server is there, and only then load the
+        library; out of reach, the last library it sent stays on show and nothing waits for it."""
         if not self.settings.configured:
+            return
+
+        def work() -> None:
+            connectivity.probe(self.settings.base)
+            offline = connectivity.is_offline()
+            self._confirmed_offline = offline
+            if updates and updater.enabled() and self.settings.check_updates and connectivity.internet_ok():
+                self.check_update()
+            if offline:
+                logstore.info(f"Offline mode ({'by choice' if connectivity.forced() else connectivity.state()}): the last library is shown")
+                self.bridge.offline_shown.emit()
+            else:
+                self.refresh()
+
+        self.run_bg(work, on_error=self.bridge.error.emit)
+
+    def set_offline_forced(self, on: bool) -> None:
+        """The user's own offline switch (the account menu): saved, and followed by a look at the server when it is turned off."""
+        self.settings.offline_forced = on
+        logstore.best_effort("Could not save the settings", save_settings, self.settings)
+        connectivity.set_forced(on)
+        if on:
+            self._confirmed_offline = True
+        else:
+            self.check_connection()
+
+    def poll_notifications(self) -> None:
+        if not self.settings.configured or connectivity.is_offline():
             return
         self.sync_launch_args()
 
@@ -368,6 +434,10 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def refresh(self) -> None:
+        if connectivity.is_offline():
+            self.bridge.note.emit("Offline mode: the library is not refreshed")
+            return
+
         def work():
             client = self.client()
             self.revision = client.games_revision()  # before the list, so a change meanwhile shows as a difference
@@ -391,8 +461,16 @@ class App:
         def done() -> None:
             self.refreshing = False
 
+        def failed(message: str) -> None:
+            done()
+            if connectivity.is_offline():  # the server went out of reach meanwhile: the mode says so, no message for each call
+                self.bridge.note.emit(f"Offline mode: the library could not be refreshed ({message})")
+                self.bridge.offline_shown.emit()
+            else:
+                self.bridge.error.emit(message)
+
         self.refreshing = True
-        self.run_bg(work, on_error=lambda m: (done(), self.bridge.error.emit(m)))
+        self.run_bg(work, on_error=failed)
 
     def load_mods(self, game_id: int) -> None:
         """Ask for the game's mods; the answer comes as `mods_loaded`."""
@@ -489,7 +567,7 @@ class App:
 
     def poll_library(self) -> None:
         """Ask the server whether the library changed (a scan, a scrape, an edit) and, if so, load it again."""
-        if not self.settings.configured or self.refreshing:
+        if not self.settings.configured or self.refreshing or connectivity.is_offline():
             return
 
         def work() -> None:
@@ -526,6 +604,9 @@ class App:
             return
         avatar = me.get("avatar_path")
         name, picture = me.get("username") or self.settings.user, client.get_image(avatar) if avatar else None
+        if avatar and picture is None:  # not fetched (the server went out of reach meanwhile): the picture seen last stays
+            kept = snapshot.load_user(self.settings.base)
+            picture = kept[1] if kept else None
         self.bridge.user.emit(name, picture)
         try:
             snapshot.save_user(self.settings.base, name, picture)
@@ -538,6 +619,8 @@ class App:
         if not cache.is_file():
             blob = client.get_image(server_path)
             if blob is None:
+                if not connectivity.internet_ok():
+                    return None
                 try:
                     blob = fetch_url(url)
                 except RuntimeError:
@@ -2569,17 +2652,40 @@ class AddonsPage(Page):
 
 
 class AboutPage(Page):
-    """What MOG is, who made it, under what licence and where to find it; opened from the user menu."""
+    """Two tabs, opened from the user menu: About (what MOG is, who made it, under what licence and where to find it) and
+    Changelog (what changed in this version, which is also what an update opens once); the pad's L2 and R2 switch them."""
 
     title = "About"
 
-    def __init__(self) -> None:
+    def __init__(self, changelog_first: bool = False) -> None:
         super().__init__()
         self.about = AboutTab()
-        QVBoxLayout(self).addWidget(self.about)
+        self.changelog = ChangelogTab()
+        self.tabs = FocusTabs()
+        self.tabs.tabBar().setFocusPolicy(Qt.StrongFocus)
+        self.tabs.addTab(self.about, "About")
+        self.tabs.addTab(self.changelog, "Changelog")
+        QVBoxLayout(self).addWidget(self.tabs)
+        if changelog_first:
+            self.tabs.setCurrentWidget(self.changelog)
+        self.tabs.currentChanged.connect(self._on_tab)
+
+    def switch_tab(self, step: int) -> None:
+        self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % self.tabs.count())
+
+    def _on_tab(self, _index: int) -> None:
+        if QApplication.focusWidget() is not self.tabs.tabBar():  # switching from the bar keeps the focus there
+            self.focus_default()
+
+    def scroll_logs(self, amount: float) -> bool:
+        """The right stick: scroll the notes when their tab is the one showing."""
+        if self.tabs.currentWidget() is not self.changelog:
+            return False
+        self.changelog.scroll_by(amount)
+        return True
 
     def focus_default(self) -> None:
-        self.about.focus_default()
+        self.tabs.currentWidget().focus_default()
 
 
 class SettingsPage(Page):
@@ -3012,7 +3118,7 @@ class SettingsPage(Page):
         )
         save_settings(self.win.app.settings)
         self.win.back()
-        self.win.app.refresh()
+        self.win.app.connect_and_refresh()
         warning = net.plain_http_warning(self.win.app.settings.base)
         if warning:
             self.win.message(warning, "warning")
@@ -4037,6 +4143,7 @@ class GamePage(Page):
 
     _rebuilding = False
     _rebuild_again = False
+    _starting = False  # Play was pressed and the game is not up yet (see `play`)
 
     def rebuild(self) -> None:
         """Make the buttons again. Asked while they are being made (filling them reads the progress, which looks at
@@ -4126,6 +4233,8 @@ class GamePage(Page):
             self.bar.setValue(1)
             self.first = self._button("Play", self.play, True)
             self.play_ring = SpinRing(self.first)
+            if self._starting:  # the buttons were made again while the game is on its way
+                self.first.setText("Starting...")
             self._button("Options", lambda: self.show_options(rec))
             self._button("Addons", lambda: self.win.push(AddonsPage(self.win, self.game, rec)))
         elif rec and rec.state == "awaiting_executable":
@@ -4231,7 +4340,7 @@ class GamePage(Page):
         ring = getattr(self, "play_ring", None)
         if ring is not None:
             try:
-                ring.set_active(kind is not None or self.game["id"] in self.app.jobs)
+                ring.set_active(kind is not None or self._starting or self.game["id"] in self.app.jobs)
             except RuntimeError:  # the button it sat on was rebuilt and is gone
                 self.play_ring = None
 
@@ -4242,8 +4351,28 @@ class GamePage(Page):
         self._ring.fire(self.cover)
 
     def play(self) -> None:
+        if self._starting:
+            return
         rec = load_library()[self.game["id"]]
-        self.pull_launch_settings(rec, lambda: self._play(rec))
+        self._set_starting(True)
+
+        def go() -> None:
+            self._set_starting(False)
+            self._play(rec)
+
+        self.pull_launch_settings(rec, go)
+
+    def _set_starting(self, starting: bool) -> None:
+        """Pressing Play answers at once: the ring turns round the button, which says "Starting...", for as long as the
+        launch settings are taken from the server (the wait that otherwise shows nothing). After it come the questions of
+        the save sync, or the "Playing" message."""
+        self._starting = starting
+        try:
+            if self.first is not None and self.first.text() in ("Play", "Starting..."):
+                self.first.setText("Starting..." if starting else "Play")
+        except RuntimeError:  # the button was rebuilt and is gone
+            return
+        self.update_transfer()
 
     def _play(self, rec: InstalledGame) -> None:
         if self.win.saves.wait_for_restore(rec, lambda: self.start(rec)):
@@ -4374,6 +4503,8 @@ class GamePage(Page):
                 where = "all devices" if answer == "all" else "this device"
                 if kept:
                     self.app.bridge.message.emit("info", f"{what} for {rec.name} kept on the server for {where}")
+                elif connectivity.is_offline():
+                    self.app.bridge.message.emit("info", f"{what} for {rec.name} kept here: it is sent to the server once it is reachable")
                 else:
                     self.app.bridge.message.emit(
                         "warning", f"{what} for {rec.name} could not reach the server: it is kept here and sent as soon as the server takes it"
@@ -4407,7 +4538,11 @@ class GamePage(Page):
                 except (RuntimeError, OSError) as e:
                     self.app.bridge.error.emit(str(e))
                     return
-                if launchsettings.needs_download(rec, preference):
+                if launchsettings.needs_download(rec, preference) and not connectivity.internet_ok():
+                    self.app.bridge.message.emit(
+                        "warning", f"There is no internet connection: {rec.proton} is fetched the next time you play with one"
+                    )
+                elif launchsettings.needs_download(rec, preference):
                     self.app.jobs[rec.game_id] = "proton"
                     self.app.bridge.call.emit(self.rebuild)
                     try:
@@ -4426,8 +4561,13 @@ class GamePage(Page):
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
 
+        def fetch(url: str) -> bytes:
+            if not connectivity.internet_ok():
+                raise RuntimeError("no internet connection")  # the cached list, or the finished majors, are shown instead
+            return fetch_url(url, timeout=5.0 if connectivity.is_offline() else 30.0)
+
         def show() -> None:
-            releases = protonge.available(data_dir() / "proton-ge.json", fetch_url)
+            releases = protonge.available(data_dir() / "proton-ge.json", fetch)
             self.app.bridge.call.emit(lambda: self.win.push(EnginePage(self.win, rec, done, releases)))
 
         self.app.run_bg(show, on_error=lambda m: self.app.bridge.error.emit(m))
@@ -5494,10 +5634,15 @@ class MainWindow(QMainWindow):
         self.user_btn.setAccessibleName("Account")
         self.user_btn.clicked.connect(self.open_user_menu)
         self.user_btn.setVisible(bool(app.settings.user))
+        # Next to the account: MOG Server cannot be reached (or the user chose to work without it).
+        self.offline_badge = QLabel("Offline mode")
+        self.offline_badge.setObjectName("offlineBadge")
+        self.offline_badge.setVisible(False)
         self.user_menu = QMenu(self)
         self.user_menu.addAction("Settings", self.open_settings)
         self.notifications_action = self.user_menu.addAction("Notifications", self.open_notifications)
         self.user_menu.addAction("Refresh library", lambda: self.app.refresh())
+        self.offline_action = self.user_menu.addAction("Go offline", self.toggle_offline)
         self.user_menu.addSeparator()
         self.user_menu.addAction("About", self.open_about)
         self.user_menu.addSeparator()
@@ -5514,6 +5659,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.title)
         top.addWidget(self.search, 1)
         top.addStretch(1)
+        top.addWidget(self.offline_badge)
         top.addWidget(self.user_btn)
         top.setContentsMargins(0, 0, 0, 0)
         self.top_bar = QWidget()  # a height of its own: swapping the logo for the title must not move the page below
@@ -5577,6 +5723,9 @@ class MainWindow(QMainWindow):
         b.update_checked.connect(self.on_update_checked)
         b.notifications.connect(self.on_notifications)
         b.libraries.connect(self.library.set_libraries)
+        b.connectivity.connect(self.on_connectivity)
+        b.offline_shown.connect(lambda: self.library.show_loading(False))
+        b.back_online.connect(self.on_back_online)
         self.notif_timer = QTimer(self)
         self.notif_timer.timeout.connect(app.poll_notifications)
         self.notif_timer.start(15000)
@@ -5588,7 +5737,56 @@ class MainWindow(QMainWindow):
         self.library_timer = QTimer(self)
         self.library_timer.timeout.connect(app.poll_library)
         self.library_timer.start(20000)
+        self.recover_timer = QTimer(self)  # while MOG Server is out of reach: is it back? (never when offline is by choice)
+        self.recover_timer.timeout.connect(self.look_for_server)
+        self.recover_timer.start(RECOVER_EVERY_MS)
+        self._update_offline_ui()
         self._show(self.library)
+
+    def _update_offline_ui(self) -> None:
+        offline = connectivity.is_offline() and self.app.settings.configured
+        forced = connectivity.forced()
+        self.offline_badge.setVisible(offline)
+        if forced:
+            self.offline_badge.setToolTip("Offline mode, turned on by you: MOG Server is not asked for anything. Go online in the account menu.")
+        elif connectivity.state() == connectivity.NO_INTERNET:
+            self.offline_badge.setToolTip("There is no internet connection. MOG looks again now and then.")
+        else:
+            self.offline_badge.setToolTip("MOG Server cannot be reached. MOG looks again now and then.")
+        self.offline_action.setText("Go online" if connectivity.is_offline() else "Go offline")
+        self.offline_action.setVisible(self.app.settings.configured)
+
+    def on_connectivity(self, _state: str, _forced: bool) -> None:
+        self._update_offline_ui()
+        if connectivity.is_offline() and not connectivity.forced() and not self.app._confirmed_offline:
+            self.app.check_connection()  # a request failed: is the server really out of reach?
+
+    def look_for_server(self) -> None:
+        if connectivity.is_offline() and not connectivity.forced():
+            self.app.check_connection()
+
+    def toggle_offline(self) -> None:
+        if connectivity.is_offline() and not connectivity.forced():  # offline on its own: look for the server now, not in 30 seconds
+            self.message("Looking for MOG Server...", "info")
+            self.app.check_connection(
+                lambda offline: self.message("MOG Server cannot be reached: staying in Offline mode", "warning") if offline else None
+            )
+            return
+        going_offline = not connectivity.forced()
+        self.app.set_offline_forced(going_offline)
+        self.message(
+            "Offline mode: MOG Server is not asked for anything until you go online again."
+            if going_offline
+            else "Going online: looking for MOG Server...",
+            "info",
+        )
+
+    def on_back_online(self) -> None:
+        """MOG Server answers again: take up what waited for it."""
+        self.notify("MOG Server is reachable again")
+        self.app.refresh()
+        self.app.poll_notifications()
+        self.saves.back_online()
 
     def _show_snapshot(self) -> None:
         """What the server last sent, so the window shows the library and the user at once, before the real list
@@ -6043,7 +6241,7 @@ class MainWindow(QMainWindow):
         if isinstance(page, NotificationsPage) and name == gamepad.REFRESH:
             page.delete_current()
             return
-        if isinstance(page, SettingsPage) and name in (gamepad.TRIGGER_L, gamepad.TRIGGER_R):
+        if isinstance(page, (SettingsPage, AboutPage)) and name in (gamepad.TRIGGER_L, gamepad.TRIGGER_R):
             page.switch_tab(-1 if name == gamepad.TRIGGER_L else 1)
             self.sounds.play(NAVIGATE)
             return
@@ -6140,7 +6338,7 @@ class MainWindow(QMainWindow):
     def _scroll(self, amount: float) -> None:
         """The right stick: scroll the log in Settings, else the list or text that has the focus."""
         page = self.current_page()
-        if isinstance(page, SettingsPage) and page.scroll_logs(amount):
+        if isinstance(page, (SettingsPage, AboutPage)) and page.scroll_logs(amount):
             return
         area = QApplication.focusWidget()
         while area is not None and not isinstance(area, QAbstractScrollArea):
@@ -6199,6 +6397,7 @@ class MainWindow(QMainWindow):
         self.library.set_libraries([])
         self.refresh_items()
         self.user_btn.setVisible(False)
+        self.offline_badge.setVisible(False)
         self.user_btn.set_count(0)
         self.notify("Signed out")
         self.open_settings()
@@ -6261,8 +6460,17 @@ class MainWindow(QMainWindow):
         save_settings(settings)
         self.open_steam_integration()
 
-    def open_about(self) -> None:
-        self.push(AboutPage())
+    def open_about(self, changelog_first: bool = False) -> None:
+        self.push(AboutPage(changelog_first))
+
+    def offer_changelog(self) -> None:
+        """After an update, once per version: open what changed in it."""
+        settings = self.app.settings
+        if not changelog.should_show(settings, __version__):
+            return
+        settings.changelog_seen = __version__
+        save_settings(settings)
+        self.open_about(changelog_first=True)
 
     def begin_play(self, rec: InstalledGame, proc, **timing) -> None:
         """A game was started from here: show that it is running, follow it to its end (a launcher that
@@ -6289,7 +6497,7 @@ class MainWindow(QMainWindow):
         def work() -> None:
             ctx = None
             if sync_enabled(rec, self.app.settings):
-                ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)
+                ctx = runner.make_context(rec, self.app.settings, self.app.client(), log=logstore.warning)  # offline: only a machine already known
             recorder = runner.runtime_prefix_recorder(ctx) if ctx and not rec.native else None
             if ctx:
                 runner.restore_when_made(ctx, lambda text: self.app.bridge.message.emit("info", text), stop.is_set)
@@ -6302,6 +6510,9 @@ class MainWindow(QMainWindow):
             if started and ctx:
                 self.app.bridge.call.emit(lambda: self._sync_started(rec))
             result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None
+            if started and ctx is None and sync_enabled(rec, self.app.settings) and connectivity.is_offline():
+                sync.defer(rec.game_id, sync.QUIT)  # this machine is not known to the server yet: that is for when it is back
+                result = sync.BackupResult("offline")
             self.app.bridge.call.emit(lambda: self._play_ended(rec, proc, started, stop.is_set(), result))
 
         def failed(message: str) -> None:
@@ -6616,21 +6827,24 @@ def run_gui(link: str | None = None) -> int:
         win.showFullScreen()
     else:
         win.show()
-    if updater.enabled() and app.settings.check_updates:
-        app.check_update()
     if link:
         win._pending_link = link
     if app.settings.configured and not app.settings.first_run_done:
         app.settings.first_run_done = True  # set up before there was a guide: it has nothing to add
         logstore.best_effort("Could not save the settings", save_settings, app.settings)
     if app.settings.configured:
-        app.refresh()
+        app.connect_and_refresh(updates=True)  # the update check waits for that look at the connection
     elif not app.settings.first_run_done:
+        if updater.enabled() and app.settings.check_updates:
+            app.check_update()
         win.open_first_run()
     else:
+        if updater.enabled() and app.settings.check_updates:
+            app.check_update()
         win.open_settings()
         if link:
             win.handle_link(link)
     if app.settings.first_run_done:
         QTimer.singleShot(0, win.offer_steam_client)
+        QTimer.singleShot(0, win.offer_changelog)
     return qapp.exec()

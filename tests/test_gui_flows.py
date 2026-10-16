@@ -15,7 +15,7 @@ from PySide6.QtGui import QKeyEvent, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from mog_client import config, installdirs, launcher, logstore, winetricks  # noqa: E402
+from mog_client import config, connectivity, installdirs, launcher, logstore, winetricks  # noqa: E402
 from mog_client.api import fmt_bytes  # noqa: E402
 from mog_client.config import Settings, load_settings  # noqa: E402
 from mog_client.gui import app as gui  # noqa: E402
@@ -1199,7 +1199,7 @@ def _menu_texts(win):
 
 
 def test_the_user_icon_is_the_last_thing_on_the_right_and_opens_a_menu(win, qapp):
-    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "About", "Sign out"]
+    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "Go offline", "About", "Sign out"]
     assert win.user_btn.x() + win.user_btn.width() > win.search.x() + win.search.width()  # at the far right
 
     win.user_btn.click()  # looked at before events run: the offscreen display closes a popup that has no focus
@@ -1239,9 +1239,9 @@ def test_the_menu_rows_do_what_they_say(win, qapp, monkeypatch):
 
 def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_in_settings(win, qapp):
     kinds = ["-" if a.isSeparator() else a.text() for a in win.user_menu.actions()]
-    assert kinds == ["Settings", "Notifications", "Refresh library", "-", "About", "-", "Sign out"]
+    assert kinds == ["Settings", "Notifications", "Refresh library", "Go offline", "-", "About", "-", "Sign out"]
 
-    win.user_menu.actions()[4].trigger()
+    win.user_menu.actions()[5].trigger()
     pump(qapp)
     page = win.current_page()
     assert isinstance(page, gui.AboutPage) and page.title == "About" and page.about.github.text() == "Open the GitHub page"
@@ -1250,6 +1250,88 @@ def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_
     win.open_settings()
     tabs = win.current_page().tabs
     assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Library", "Logs"]
+
+
+def test_going_offline_by_hand_shows_the_badge_and_keeps_the_server_unasked_until_going_online(win, qapp, monkeypatch):
+    assert not win.offline_badge.isVisibleTo(win)
+    win.offline_action.trigger()
+    pump(qapp)
+    assert connectivity.forced() and win.app.settings.offline_forced and load_settings().offline_forced
+    assert win.offline_badge.isVisibleTo(win) and win.offline_action.text() == "Go online"
+    assert "turned on by you" in win.offline_badge.toolTip()
+
+    probes = []
+    monkeypatch.setattr(win.app, "check_connection", lambda: probes.append(1))
+    win.look_for_server()  # the timer: nothing looks for a way out of an offline mode that was chosen
+    assert probes == []
+
+    win.offline_action.trigger()
+    pump(qapp)
+    assert not connectivity.forced() and not load_settings().offline_forced and probes == [1]
+    assert win.offline_action.text() == "Go offline"
+
+
+def test_a_picture_that_could_not_be_fetched_does_not_replace_the_one_kept(win, qapp):
+    from mog_client import snapshot
+
+    base = win.app.settings.base
+    snapshot.save_user(base, "admin", b"the picture")
+    shown = []
+    win.app.bridge.user.connect(lambda name, picture: shown.append((name, picture)))
+
+    class Server:  # answers who it is, then goes out of reach before the picture
+        def me(self):
+            return {"username": "admin", "avatar_path": "/api/avatar"}
+
+        def get_image(self, path):
+            return None
+
+    win.app._load_user(Server())
+    pump(qapp)
+    assert shown == [("admin", b"the picture")] and snapshot.load_user(base) == ("admin", b"the picture")
+
+
+def test_when_offline_on_its_own_the_menu_says_go_online_and_looks_for_the_server_at_once(win, qapp, monkeypatch):
+    monkeypatch.setattr(connectivity, "server_reachable", lambda base: False)
+    monkeypatch.setattr(connectivity, "_reaches_internet", lambda: True)
+    win.app.check_connection()
+    for _ in range(100):
+        pump(qapp)
+        if not win.app._probing:
+            break
+    pump(qapp)
+    assert connectivity.state() == connectivity.NO_SERVER and win.offline_action.text() == "Go online"
+
+    looked = []
+    monkeypatch.setattr(win.app, "check_connection", lambda done=None: looked.append(done))
+    win.offline_action.trigger()
+    assert len(looked) == 1 and not connectivity.forced()  # not turned into a choice to stay offline
+    looked[0](True)
+    pump(qapp)
+    assert [r.text for r in logstore.store.records()[-2:]] == ["Looking for MOG Server...", "MOG Server cannot be reached: staying in Offline mode"]
+
+
+def test_a_server_out_of_reach_shows_the_badge_and_a_way_back_refreshes_the_library(win, qapp, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(win.app, "refresh", lambda: refreshed.append(1))
+    monkeypatch.setattr(connectivity, "server_reachable", lambda base: False)
+    monkeypatch.setattr(connectivity, "_reaches_internet", lambda: False)
+    win.app.check_connection()
+    for _ in range(100):
+        pump(qapp)
+        if not win.app._probing:
+            break
+    pump(qapp)
+    assert connectivity.state() == connectivity.NO_INTERNET and win.offline_badge.isVisibleTo(win)
+    assert "internet" in win.offline_badge.toolTip()
+
+    monkeypatch.setattr(connectivity, "server_reachable", lambda base: True)
+    win.app.check_connection()
+    for _ in range(100):
+        pump(qapp)
+        if refreshed:
+            break
+    assert refreshed == [1] and not win.offline_badge.isVisibleTo(win)
 
 
 def test_signing_out_asks_first_then_forgets_the_password_and_opens_settings(win, qapp):
@@ -2742,6 +2824,65 @@ def test_the_ring_follows_the_play_button_when_the_page_is_rebuilt(win, qapp, tm
     win.saves.restoring.clear()
     win.refresh_tasks()
     assert page.play_ring.isHidden()
+
+
+def test_pressing_play_turns_the_ring_and_says_starting_until_the_launch_settings_are_in(win, qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QAbstractAnimation
+
+    _a_game_is_listed(win, qapp, tmp_path, monkeypatch)
+    win.show_game(1)
+    page = win.current_page()
+    waiting = []
+    played = []
+    monkeypatch.setattr(page, "pull_launch_settings", lambda rec, then: waiting.append(then))  # the server has not answered
+    monkeypatch.setattr(page, "_play", lambda rec: played.append(rec))
+
+    page.play()
+    page.play()  # a second press while it waits changes nothing
+    assert len(waiting) == 1
+    assert page.first.text() == "Starting..." and page.play_ring.spin.state() == QAbstractAnimation.Running
+
+    page.rebuild()  # the buttons made again while it waits keep saying so
+    pump(qapp)
+    assert page.first.text() == "Starting..." and not page.play_ring.isHidden()
+
+    waiting[0]()  # the answer came: on to the questions of the save sync, and the game
+    assert page.first.text() == "Play" and page.play_ring.isHidden() and len(played) == 1
+
+
+def test_about_has_an_about_and_a_changelog_tab_and_the_pad_switches_them(win, qapp, monkeypatch):
+    from mog_client import changelog
+
+    monkeypatch.setattr(changelog, "CHANGELOG", "## Fixes\n\n- a: b [[abc1234](https://github.com/o/r/commit/abc1234)]")
+    win.open_about()
+    page = win.current_page()
+    assert [page.tabs.tabBar().tabText(i) for i in range(2)] == ["About", "Changelog"]
+    assert page.tabs.currentWidget() is page.about and not page.scroll_logs(1.0)
+
+    page.switch_tab(1)
+    assert page.tabs.currentWidget() is page.changelog
+    assert "a: b" in page.changelog.view.toPlainText() and page.changelog.kofi.text() == "Support on Ko-fi"
+
+    page.switch_tab(1)  # wraps round
+    assert page.tabs.currentWidget() is page.about
+
+
+def test_the_changelog_opens_once_after_an_update_and_not_in_a_new_install(win, qapp, monkeypatch):
+    from mog_client import changelog
+
+    saved = []
+    monkeypatch.setattr(gui, "save_settings", lambda settings: saved.append(settings.changelog_seen))
+    monkeypatch.setattr(changelog, "CHANGELOG", "## Fixes\n\n- a: b")
+    monkeypatch.setattr(gui, "__version__", "9.9.9")
+    win.app.settings.changelog_seen = "9.9.8"
+
+    win.offer_changelog()
+    page = win.current_page()
+    assert isinstance(page, gui.AboutPage) and page.tabs.currentWidget() is page.changelog and saved == ["9.9.9"]
+
+    win.back()
+    win.offer_changelog()  # the same version again: nothing
+    assert not isinstance(win.current_page(), gui.AboutPage)
 
 
 def test_a_notice_the_client_keeps_itself_sits_in_the_list_and_never_goes_to_the_server(win, qapp, monkeypatch):

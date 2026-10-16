@@ -33,7 +33,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 
 ## A game's page and its Options
 
-- Play starts the game through its launcher. While a game started from MOG runs, a message over the window shows its
+- Play starts the game through its launcher. It answers at once: the button says "Starting..." and the ring turns round it
+  while the launch settings are taken from the server, until the "Playing" message takes over. While a game started from MOG runs, a message over the window shows its
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
 - Options:
@@ -192,7 +193,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 ## The user menu and Settings
 
 - The user menu (picture and name at the top right; Start or Ctrl+Comma, also Select or Ctrl+U) holds Settings,
-  Notifications (with the unread count), Refresh library and Sign out.
+  Notifications (with the unread count), Refresh library, Go offline / Go online, About and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.
 - Four tabs, switched with L2 and R2 (Ctrl+Page Up/Down): General (saves, launcher, updates, sounds), Server, Library and
@@ -203,6 +204,38 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   (a drive that is not connected) is listed last, without a size.
 - The Logs tab shows everything the client logged (white for info, yellow for warnings, red for errors), filterable by
   level and scrollable with the right stick. The same log is kept in `logs/client.log` in the client's data folder.
+- About (in the user menu) has two tabs, About and Changelog, switched with L2 and R2. Changelog lists what changed in the
+  version that is running, under *Changes* and *Fixes*, each with a link to its commit, and has the Ko-fi button. It opens by
+  itself once after an update (a build made by hand carries no notes and links to the releases page instead).
+
+## Offline mode
+
+MOG works without its server as far as it can. A yellow **Offline mode** badge beside the account picture says the client
+is in it, and its tooltip says why. There are three ways in:
+
+- **No server**: the internet answers, MOG Server does not.
+- **No internet**: nothing answers. Updates and downloads of Proton builds are not tried.
+- **By choice**: **Go offline** in the user menu, as in Steam. The server is not asked for anything, nothing looks for a way
+  out, and only **Go online** in the same menu leaves it (the choice is kept for the next start).
+  When the badge came by itself, the same menu row says **Go online** too: it looks for the server at once instead of
+  waiting for the next look.
+
+At the start the client looks at the server's health check (a few seconds at most) before loading the library; out of
+reach, the library of the last start is shown. Without the choice above it looks again every 30 seconds, and when the server
+answers the library is loaded again and what waited for it is done.
+
+While offline:
+
+- Nothing waits on the server: a call to it fails at once instead of after its retries. **Play** starts the game with the
+  launch settings it already has, with no save questions; the notifications, the library check and the launch arguments
+  are not polled.
+- Changes to the Proton version, winecfg and winetricks are kept in the launch outbox (see above) and sent later. A
+  Proton-GE build the game needs is still downloaded when the internet is there.
+- **Engine** shows the Proton-GE releases from the cache (or the finished majors) instead of waiting on GitHub.
+- Games run through umu or Faugus get `UMU_RUNTIME_UPDATE=0`, so umu does not look for a newer Steam Linux Runtime, and use
+  the newest Proton-GE found on this device instead of looking for one. The launch scripts of Steam and the desktop entries
+  never carry it: they have no way of knowing. Wine and Proton have no such setting.
+- The saves of a game that ended are not backed up but marked, and you are told; see [SAVES.md](SAVES.md).
 
 ## Notifications
 

@@ -31,6 +31,11 @@ Save sync can be switched off for all games in Settings or for one game in its O
   hand), on Options > Saves... > "Back up saves now" and when the game is uninstalled.
 - **Before the game starts**: a newer save from another machine is offered when started from MOG, after an install, and
   under Options > Saves... > "Restore a saved version...".
+- **Offline** (the server cannot be reached, or Offline mode was chosen, see [GUI.md](GUI.md)): nothing is sent and no save
+  question is asked before a game starts. A backup that was due is left as it is, marked "waiting for the server" in the game's
+  last check, and you are told. Nothing is changed in the baseline, so when the server is back the next look over the saves
+  finds what changed and sends it, even with "Check saves at startup" off. A game started from Steam or the desktop checks
+  the server for a few seconds first and goes on without it.
 - A restore never replaces a file without first copying it to a backup (`saves/<game id>/backups` in the client's data
   folder).
 

@@ -343,6 +343,7 @@ class FirstRunPage(QWidget):
         settings.sync_on_start = self.sync_start.isChecked()
         settings.first_run_done = True
         settings.steam_asked_for = __version__  # this guide was the question
+        settings.changelog_seen = __version__  # a new install has no update to read about
         save_settings(settings)
 
     def _leave(self) -> None:
