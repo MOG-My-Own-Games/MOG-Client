@@ -600,6 +600,43 @@ def _rmtree(path: str) -> bool:
     return not target.exists() and not target.is_symlink()
 
 
+def holds_install(client, game_id: int) -> bool:
+    """Whether the server still holds the game's finished install (its cache), which a check of the files is made against."""
+    session = client.get_session(game_id)
+    return bool(session) and session.get("state") == "done"
+
+
+def regenerate_cache(rec: InstalledGame, client, stop: threading.Event, log: Log, on_session: Callable[[dict], None] = lambda _s: None) -> bool:
+    """Have the server make the game's install again, so that there is a cache to check the files against: it runs the
+    installers saved for the game (or picks one, as for a first install) and nothing is downloaded. True when it is done, False
+    when `stop` ended the wait; RuntimeError when it failed or needs a manual installer pick."""
+    gid = rec.game_id
+    while True:
+        try:
+            session = client.start_session(gid, None, None, None, extract_only=True if rec.extract_only else None)
+            break
+        except RuntimeError as e:  # an older server refuses a start while its places are taken, where a newer one queues it
+            if "429" not in str(e) and "Too many concurrent installs" not in str(e):
+                raise
+            on_session({"state": "queued"})
+            log("the server is running as many installs as it can: waiting for a place")
+            if stop.wait(QUEUE_RETRY_SECONDS):
+                return False
+    final = session
+    if session.get("state") != "awaiting_installer":
+        final = poll_session(
+            client, gid, timeout=24 * 3600, session_id=session.get("id"), log=log, warn=log, on_session=on_session, stop_event=stop
+        )
+    if stop.is_set():
+        return False
+    state = (final or {}).get("state")
+    if state == "awaiting_installer":
+        raise RuntimeError(f"{NEEDS_PICK}, open {client.c.base}{(final or {}).get('vnc_url') or ''}")
+    if state != "done":
+        raise RuntimeError(f"the server could not make the install again: {(final or {}).get('error') or state or 'no answer'}")
+    return True
+
+
 def repair(
     rec: InstalledGame,
     client,

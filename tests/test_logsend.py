@@ -71,3 +71,36 @@ def test_a_server_that_fails_never_breaks_the_caller(logs):
 
     assert logsend.send(Broken(), 3, Settings(upload_logs=True)) is False
     assert logsend.send(Server(ok=False), 3, Settings(upload_logs=True), force=True) is False
+
+
+def test_the_log_holds_what_winetricks_said_too(logs):
+    (logs / "tool-5.log").write_text("winetricks: vcrun2015 failed\n")
+
+    assert "--- tool-5.log ---\nwinetricks: vcrun2015 failed" in logsend.collect(5)
+    assert "tool-" not in logsend.collect(None)
+
+
+def test_the_log_of_a_start_that_went_wrong_goes_up_without_saves_to_back_up(logs, monkeypatch):
+    from mog_client.saves import devices
+
+    monkeypatch.setattr(devices, "known_device", lambda: SimpleNamespace(device_id=3))
+    server = Server()
+
+    assert logsend.send_for_game(server, Settings(upload_logs=True), 5) is True
+    assert server.sent[0][0] == 3 and "game output" in server.sent[0][1]
+    assert logsend.send_for_game(server, Settings(upload_logs=True), 5) is True  # forced: not held back by the gap of 30 seconds
+    assert logsend.send_for_game(server, Settings(upload_logs=False), 5) is False  # only for those who allowed it
+    assert len(server.sent) == 2
+
+
+def test_a_machine_the_server_does_not_know_yet_or_that_fails_sends_nothing_and_raises_nothing(logs, monkeypatch):
+    from mog_client.saves import devices
+
+    monkeypatch.setattr(devices, "known_device", lambda: None)
+    assert logsend.send_for_game(Server(), Settings(upload_logs=True), 5) is False
+
+    def broken():
+        raise OSError("disk")
+
+    monkeypatch.setattr(devices, "known_device", broken)
+    assert logsend.send_for_game(Server(), Settings(upload_logs=True), 5) is False

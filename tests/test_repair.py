@@ -97,3 +97,59 @@ def test_repair_says_when_the_list_is_not_to_be_had(tmp_path):
     server.list_files = refuse
     with pytest.raises(RuntimeError, match="could not list"):
         manager.repair(rec(tmp_path), server, threading.Event(), lambda t: None)
+
+
+class Regenerating(Server):
+    """A server whose cache is gone; `start_session` makes it again, in the states `states` (the last one ends the wait)."""
+
+    def __init__(self, states, refuse_first=0, error=None):
+        super().__init__({}, "")
+        self.states, self.started, self.refuse, self.error = list(states), [], refuse_first, error
+        self.c = SimpleNamespace(base="http://server")
+
+    def start_session(self, gid, installer_path, proton, ttl, **kw):
+        if self.refuse:
+            self.refuse -= 1
+            raise RuntimeError("HTTP 429: Too many concurrent installs")
+        self.started.append((gid, installer_path, kw))
+        self.state = self.states[0]
+        return {"id": 7, "state": self.states[0], "vnc_url": "/vnc"}
+
+    def get_session(self, gid, session_id=None):
+        state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        self.state = state
+        return {"id": 7, "state": state, "error": self.error} if state else {}
+
+
+def test_the_install_is_said_to_be_held_only_while_a_finished_session_is(tmp_path):
+    assert manager.holds_install(Server({}, "done"), 1) is True
+    assert manager.holds_install(Server({}, "failed"), 1) is False and manager.holds_install(Server({}, ""), 1) is False
+
+
+def test_the_cache_is_made_again_with_the_installers_the_server_has_saved_and_nothing_is_downloaded(tmp_path, monkeypatch):
+    monkeypatch.setattr("mog_client.transfer.POLL_INTERVAL", 0)
+    server = Regenerating(["installing", "streaming", "done"])
+
+    assert manager.regenerate_cache(rec(tmp_path), server, threading.Event(), lambda t: None) is True
+
+    assert server.started == [(4, None, {"extract_only": None})] and server.downloaded == []  # no installer named: the saved order is used
+
+
+def test_a_busy_server_is_asked_again_and_a_stop_ends_the_wait(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "QUEUE_RETRY_SECONDS", 0)
+    server = Regenerating(["done"], refuse_first=1)
+    seen = []
+    assert manager.regenerate_cache(rec(tmp_path), server, threading.Event(), lambda t: None, seen.append) is True
+    assert seen[0] == {"state": "queued"}
+
+    stop = threading.Event()
+    stop.set()
+    assert manager.regenerate_cache(rec(tmp_path), Regenerating(["done"], refuse_first=5), stop, lambda t: None) is False
+
+
+def test_an_install_that_needs_a_hand_or_fails_is_an_error_not_a_check(tmp_path, monkeypatch):
+    monkeypatch.setattr("mog_client.transfer.POLL_INTERVAL", 0)
+    with pytest.raises(RuntimeError, match="manual installer pick, open http://server/vnc"):
+        manager.regenerate_cache(rec(tmp_path), Regenerating(["awaiting_installer"]), threading.Event(), lambda t: None)
+    with pytest.raises(RuntimeError, match="could not make the install again: wine crashed"):
+        manager.regenerate_cache(rec(tmp_path), Regenerating(["installing", "failed"], error="wine crashed"), threading.Event(), lambda t: None)

@@ -6,12 +6,15 @@ for what that lacks."""
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import sys
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import connectivity, launcher, launchargs, manager, protondl, winecfg, winetricks
+from mog_client import connectivity, launcher, launchargs, logstore, manager, protondl, winecfg, winetricks
 from mog_client.api import MogClient
 from mog_client import config
 from mog_client.config import InstalledGame
@@ -60,10 +63,10 @@ def prefix_of(rec: InstalledGame) -> Path:
 
 
 def needs_download(rec: InstalledGame, preference: str) -> bool:
-    """Whether the game's Proton build is a Proton-GE release this device lacks and its engine can use."""
+    """Whether the game's Proton build is a Proton-GE or UMU-Proton release this device lacks and its engine can use."""
     name = rec.proton
     engine = detect_launcher(effective_launcher(rec, preference))
-    return bool(name) and engine in ("umu", "faugus", "proton") and protondl.is_ge(name) and name not in launcher.list_proton_builds()
+    return bool(name) and engine in ("umu", "faugus", "proton") and protondl.is_fetchable(name) and name not in launcher.list_proton_builds()
 
 
 def ensure_build(
@@ -79,14 +82,18 @@ def ensure_build(
     return True
 
 
-def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[str], None] = lambda _m: None) -> None:
-    """Put what the server holds for the game on this machine: the Proton build, and the winecfg settings when they differ
-    from the ones last applied. Nothing the server lacks is touched. Raises RuntimeError when applying the settings fails.
+def pull(
+    client: MogClient, rec: InstalledGame, preference: str, say: Callable[[str], None] = lambda _m: None, on_progress=None
+) -> None:
+    """Put what the server holds for the game on this machine: the Proton build (`on_progress(done, total)` follows its
+    download), and the winecfg settings when they differ from the ones last applied. Nothing the server lacks is touched.
+    Raises RuntimeError when applying the settings fails, once everything else that could be done has been (a verb that
+    fails does not keep the winecfg settings, DLL overrides among them, from being put in: the game needs those most).
     With the server out of reach there is nothing to take: what was applied last time stays (and a build the game needs is
     still fetched from the internet, if that is there)."""
     if connectivity.is_offline():
         if connectivity.internet_ok():
-            ensure_build(rec, preference, say)
+            ensure_build(rec, preference, say, on_progress)
         return
     flush(client, rec.game_id)  # what was changed here and not sent yet goes first, and is not overwritten by the server's older value
     unsent = waiting_fields(rec.game_id)
@@ -102,17 +109,20 @@ def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[
         wanted["proton"] = None
     if "winecfg_reg" in unsent:
         wanted["winecfg_reg"] = None
+    if "winetricks" in unsent:  # the list sent from here is newer: what it took out must not come back from the older one
+        wanted["winetricks"] = []
     _sync_args(client, rec, answer, preference)
     if wanted["proton"] and wanted["proton"] != rec.proton:
         manager.set_proton(rec, wanted["proton"], preference)
         say(f"{rec.name} now runs under {wanted['proton']}")
-    ensure_build(rec, preference, say)
+    ensure_build(rec, preference, say, on_progress)
     pending = winetricks.missing(wanted["winetricks"], rec.winetricks)
     unknown = [v for v in pending if "=" in v and winetricks.registry_changes(v) is None]
     if unknown:  # winetricks would be left to deal with these, and it may open a window (a wrong name always does)
         say(f"{', '.join(unknown)}: the client cannot put that setting in the prefix by itself, so it is not applied at start; "
             "press Done in Winetricks to try it with winetricks")
     pending = [v for v in pending if v not in unknown]
+    failure: RuntimeError | None = None
     todo = [v for v in pending if v not in rec.winetricks_failed]
     if len(todo) < len(pending):
         say(f"{', '.join(v for v in pending if v in rec.winetricks_failed)} could not be applied before and is not tried at each "
@@ -121,14 +131,16 @@ def pull(client: MogClient, rec: InstalledGame, preference: str, say: Callable[[
         say(f"Installing {', '.join(todo)} into the prefix of {rec.name} with winetricks (the game starts when it is done)")
         try:
             run_winetricks(rec, preference, todo)
-        except RuntimeError:
+        except RuntimeError as e:
             manager._update(rec, winetricks_failed=list(dict.fromkeys([*rec.winetricks_failed, *todo])))
-            raise
+            failure = e
     reg = winecfg.clean_import(wanted["winecfg_reg"] or "")
     if reg and digest(reg) != rec.winecfg_applied:
         say(f"Applying the Wine settings of {rec.name} kept on the server")
         apply_reg(rec, preference, reg)
         manager._update(rec, winecfg_applied=digest(reg))
+    if failure is not None:
+        raise failure
 
 
 def _sync_args(client: MogClient, rec: InstalledGame, answer: dict | None, preference: str) -> None:
@@ -290,6 +302,15 @@ def flush_all(client: MogClient, say: Callable[[str], None] = lambda _m: None) -
         say(f"Launch settings of game {game_id} sent to the server")
 
 
+def winecfg_to_keep(game_id: int, answer: dict | None) -> str | None:
+    """The winecfg settings a new prefix of the game is to get: the ones still waiting to be sent from here, else the
+    server's (`answer`)."""
+    for entry in reversed(waiting(game_id)):
+        if "winecfg_reg" in entry.get("changes", {}):
+            return entry["changes"]["winecfg_reg"]
+    return effective(answer)["winecfg_reg"]
+
+
 def push(client: MogClient, rec: InstalledGame, changes: dict, everywhere: bool) -> bool:
     """Keep `changes` for this device or, with `everywhere`, for all of the game's: written to the file first, then sent. False
     when the server has not taken them yet; they are sent as soon as it can."""
@@ -308,7 +329,7 @@ def undo_path(rec: InstalledGame) -> Path:
     return _winecfg_dir() / f"{rec.game_id}.undo.reg"
 
 
-def _prefix_settings(rec: InstalledGame) -> str | None:
+def prefix_settings(rec: InstalledGame) -> str | None:
     """The winecfg settings the prefix holds now, or None when it has no registry yet: the engine makes the prefix the first time
     anything runs in it, with its own defaults in these same keys, and with no earlier state to compare with, a default cannot
     be told from a setting."""
@@ -341,7 +362,7 @@ def apply_reg(rec: InstalledGame, preference: str, reg_text: str) -> None:
     reg = winecfg.clean_import(reg_text)
     if not reg:
         return
-    before = _prefix_settings(rec)
+    before = prefix_settings(rec)
     if before is not None:
         remember_undo(rec, winecfg.undo_text(before, reg))
     path = _winecfg_dir() / f"{rec.game_id}.reg"
@@ -369,6 +390,8 @@ def apply_settings(rec: InstalledGame, preference: str, entries: list[str]) -> N
     changes = [change for entry in entries for change in winetricks.registry_changes(entry) or []]
     if not changes:
         return
+    if any(winetricks.key_of(entry) == "locale" for entry in entries):
+        remember_code_pages(rec)
     path = _winecfg_dir() / f"{rec.game_id}.winetricks.reg"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(winecfg._reg_of(changes))
@@ -395,6 +418,199 @@ def run_winetricks(rec: InstalledGame, preference: str, verbs: list[str]) -> Non
     if direct:
         apply_settings(rec, preference, direct)
         _note_applied(rec, direct)
+        refresh_script(rec, preference)
+
+
+def reset_settings(rec: InstalledGame, preference: str, entries: list[str]) -> None:
+    """Take settings the client writes itself (`vd=1280x1024`, see `winetricks.registry_reset`) out of the game's prefix: their
+    registry values are deleted, so Wine's defaults hold again, and they are no longer noted as applied."""
+    changes = [change for entry in entries for change in winetricks.registry_reset(entry) or []]
+    if changes:
+        path = _winecfg_dir() / f"{rec.game_id}.winetricks.reg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(winecfg._reg_of(changes))
+        _import_reg(rec, preference, path)
+    language = any(winetricks.key_of(entry) == "locale" for entry in entries)
+    if language:
+        restore_code_pages(rec, preference)
+    manager._update(
+        rec,
+        winetricks=[v for v in rec.winetricks if v not in entries],
+        winetricks_failed=[v for v in rec.winetricks_failed if v not in entries],
+    )
+    if language:
+        refresh_script(rec, preference)
+
+
+def refresh_script(rec: InstalledGame, preference: str) -> None:
+    """The game's launch script written again: it starts the game with the environment a system language gives it (see
+    `launcher.launch_command`), so it follows when that changes, for the desktop entry and the Steam shortcut that run it."""
+    if sys.platform == "win32" or rec.native or rec.state != "installed" or not rec.executable:
+        return
+    try:
+        launcher.write_launch_script(rec, preference)
+    except (RuntimeError, OSError) as e:
+        logstore.warning(f"Could not write the launch script of {rec.name} again: {e}")
+
+
+def _code_pages_path(rec: InstalledGame) -> Path:
+    return _winecfg_dir() / f"{rec.game_id}.codepages.reg"
+
+
+def remember_code_pages(rec: InstalledGame) -> None:
+    """Keep the prefix's code pages (ACP and OEMCP) as they are before a system language changes them, once: the first
+    language set is what they go back to. Nothing is kept for a prefix with no registry yet."""
+    path = _code_pages_path(rec)
+    if path.is_file():
+        return
+    system_reg = next((c for c in (prefix_of(rec) / "system.reg", prefix_of(rec) / "pfx" / "system.reg") if c.is_file()), None)
+    if system_reg is None:
+        return
+    lines = winecfg.section_values(system_reg.read_text(errors="replace"), "System\\\\CurrentControlSet\\\\Control\\\\Nls\\\\CodePage", ("acp", "oemcp"))
+    if lines:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(winecfg._reg_of([(winetricks.CODEPAGE_KEY, line) for line in lines]))
+
+
+def restore_code_pages(rec: InstalledGame, preference: str) -> None:
+    """Put the code pages back as `remember_code_pages` kept them."""
+    path = _code_pages_path(rec)
+    if path.is_file():
+        _import_reg(rec, preference, path)
+        path.unlink(missing_ok=True)
+
+
+def _drive_c(prefix: Path) -> Path | None:
+    """The prefix's C: drive: in the prefix itself for Wine, one level down (`pfx/pfx`) for Proton."""
+    return next((c for c in (prefix / "drive_c", prefix / "pfx" / "drive_c") if c.is_dir()), None)
+
+
+def _copy_into(src: Path, dst: Path) -> None:
+    """`src` copied into `dst` over what `dst` has with the same name. A link is copied as a link and never followed, and a
+    link `dst` already has is left alone: Wine points Documents and the like to the home folder, where the files already are."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dst / item.name
+        if target.is_symlink():
+            continue
+        if item.is_symlink() or not item.is_dir():
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+            if item.is_symlink():
+                os.symlink(os.readlink(item), target)
+            else:
+                shutil.copy2(item, target)
+        else:
+            if target.exists() and not target.is_dir():
+                target.unlink()
+            _copy_into(item, target)
+
+
+def _make_prefix(rec: InstalledGame, preference: str) -> None:
+    """Have the game's engine make its prefix, empty, as it does the first time anything runs in it."""
+    proc = launcher.start_tool(rec, preference, "wineboot", ("-u",))
+    code = proc.wait(timeout=600)
+    # A launcher such as Faugus's may hand over and return at once: wait for wineboot itself, if it is still there.
+    watcher.wait_for_tool("wineboot", prefix_of(rec), appear_timeout=15.0, linger=3.0)
+    if code != 0 or _drive_c(prefix_of(rec)) is None:
+        raise RuntimeError(launcher.launch_failure(proc) or "the engine did not make a new prefix")
+
+
+def rebuild_prefix(
+    rec: InstalledGame, preference: str, keep: list[str], winecfg_reg: str | None = None,
+    say: Callable[[str], None] = lambda _m: None,
+) -> None:
+    """Make the game's prefix again with only `keep` in it: what winetricks installed cannot be taken out any other way.
+    The old prefix is set aside, a new one is made, the old one's `drive_c/users` (where most saves are) is copied into it,
+    and only then is the old one deleted; when the new one cannot be made, the old one is put back. Then `keep` and the
+    winecfg settings `winecfg_reg` go into the new one (without them, the next start applies the server's). RuntimeError
+    when something fails."""
+    prefix = prefix_of(rec)
+    old = prefix.with_name(launcher.OLD_PREFIX_DIR)
+    if old.exists() or old.is_symlink():
+        raise RuntimeError(f"{old} is left from a rebuild that did not finish: take what you need out of it, delete it, then try again")
+    if prefix.exists():
+        prefix.rename(old)
+    say(f"Making a new prefix for {rec.name}")
+    try:
+        _make_prefix(rec, preference)
+        old_drive = _drive_c(old) if old.exists() else None
+        if old_drive is not None and (old_drive / "users").is_dir():
+            _copy_into(old_drive / "users", _drive_c(prefix) / "users")
+    except BaseException:
+        shutil.rmtree(prefix, ignore_errors=True)
+        if old.exists():
+            old.rename(prefix)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    if old.exists():
+        say(f"The old prefix of {rec.name} could not be deleted completely: {old} can be deleted by hand")
+    undo_path(rec).unlink(missing_ok=True)  # it describes the old prefix
+    manager._update(rec, winetricks=[], winetricks_failed=[], winecfg_applied=None)
+    _code_pages_path(rec).unlink(missing_ok=True)  # the new prefix has its own
+    todo = winetricks.clean(keep)
+    if todo:
+        say(f"Installing {', '.join(todo)} into the new prefix of {rec.name}")
+        try:
+            run_winetricks(rec, preference, todo)
+        except RuntimeError:
+            manager._update(rec, winetricks_failed=list(dict.fromkeys([*rec.winetricks_failed, *todo])))
+            raise
+    reg = winecfg.clean_import(winecfg_reg or "")
+    if reg:
+        apply_reg(rec, preference, reg)
+        manager._update(rec, winecfg_applied=digest(reg))
+
+
+CLEARED = {"proton": None, "winecfg_reg": None, "winetricks": None, "launch_args": None}
+
+
+def custom_settings(rec: InstalledGame, answer: dict | None) -> list[str]:
+    """What the game has set beyond its files and saves, here and on the server (`answer`), one line each, to show before
+    `clear_custom` takes it all away."""
+    wanted = effective(answer)
+    lines = []
+    for tag in dict.fromkeys([*rec.launch_args, *(wanted["launch_args"] or [])]):
+        lines.append(f"Launch argument: {tag}")
+    if rec.launcher and rec.launcher != "auto":
+        lines.append(f"Engine: {launcher.launcher_label(rec.launcher)}")
+    for proton in dict.fromkeys(p for p in (rec.proton, wanted["proton"]) if p):
+        lines.append(f"Proton: {proton}")
+    if rec.wine:
+        lines.append(f"Wine: {rec.wine}")
+    for entry in winetricks.clean([*rec.winetricks, *wanted["winetricks"]]):
+        lines.append(f"Winetricks: {entry}")
+    for value in winecfg.describe(winecfg_to_keep(rec.game_id, answer) or ""):
+        lines.append(f"Registry (winecfg): {value}")
+    return lines
+
+
+def clear_custom(rec: InstalledGame, preference: str, rows: list[str], say: Callable[[str], None] = lambda _m: None) -> None:
+    """Take away all the game has set beyond its files and saves: the launch arguments, the engine and its Proton or Wine
+    build, and the prefix (made again by `rebuild_prefix` with nothing in it: no winetricks verb or setting, no winecfg
+    setting, nothing an installer left; `drive_c/users` is kept). The server's `rows` ("shared", "device") that hold
+    something are emptied too, through the outbox and before anything else, so a start meanwhile does not bring it back."""
+    for row in rows:
+        queue(rec.game_id, dict(CLEARED), everywhere=row == "shared")
+    if rec.launch_args:
+        manager.set_launch_args(rec, [], preference)  # the next look at the server takes them off its list too (see _sync_args)
+    if rec.launcher and rec.launcher != "auto":
+        manager.set_launcher(rec, "auto", preference)
+    if rec.proton:
+        manager.set_proton(rec, None, preference)
+    if rec.wine:
+        manager.set_wine(rec, None, preference)
+    language = winetricks.locale_of(rec.winetricks) is not None
+    if not rec.native and prefix_of(rec).exists():
+        rebuild_prefix(rec, preference, [], None, say)
+    else:
+        undo_path(rec).unlink(missing_ok=True)
+        _code_pages_path(rec).unlink(missing_ok=True)
+        manager._update(rec, winetricks=[], winetricks_failed=[], winecfg_applied=None)
+    if language:  # the script started the game with it
+        refresh_script(rec, preference)
 
 
 def _note_applied(rec: InstalledGame, entries: list[str]) -> None:
@@ -407,16 +623,18 @@ def _note_applied(rec: InstalledGame, entries: list[str]) -> None:
 
 
 def run_winecfg(
-    rec: InstalledGame, preference: str, sleep: Callable[[float], None] = time.sleep, wait=watcher.wait_for_tool
+    rec: InstalledGame, preference: str, sleep: Callable[[float], None] = time.sleep, wait=watcher.wait_for_tool,
+    program: str = "winecfg",
 ) -> str:
-    """Open winecfg in the game's prefix, wait for it to be closed, and return the settings it left (empty when there are none).
-    The wait is for winecfg's own process: it is no .exe of the game's folder, which is all the game watcher looks for."""
+    """Open winecfg (or `program`: regedit changes the same settings) in the game's prefix, wait for it to be closed, and
+    return the settings it left (empty when there are none). The wait is for the program's own process: it is no .exe of
+    the game's folder, which is all the game watcher looks for."""
     reg_file = winecfg.find_user_reg(prefix_of(rec))
     before = reg_file.stat().st_mtime if reg_file else 0.0
-    settings_before = _prefix_settings(rec)
-    proc = launcher.start_tool(rec, preference, "winecfg")
-    if not wait("winecfg", prefix_of(rec), abort_before_start=lambda: proc.poll() not in (None, 0)):
-        raise RuntimeError(launcher.launch_failure(proc) or "winecfg did not start")
+    settings_before = prefix_settings(rec)
+    proc = launcher.start_tool(rec, preference, program)
+    if not wait(program, prefix_of(rec), abort_before_start=lambda: proc.poll() not in (None, 0)):
+        raise RuntimeError(launcher.launch_failure(proc) or f"{program} did not start")
     waited = 0.0
     while waited < WRITE_WAIT:  # Wine writes the registry when its last process ends
         reg_file = winecfg.find_user_reg(prefix_of(rec))

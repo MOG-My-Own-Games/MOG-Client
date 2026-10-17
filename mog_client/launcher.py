@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import connectivity, launchargs, protondl, umudb
+from mog_client import connectivity, launchargs, protondl, umudb, winetricks
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -27,6 +27,7 @@ _REDIST_DIRS = re.compile(r"(redist|directx|dotnet|vcredist|_commonredist|__inst
 
 
 PREFIX_DIR = "pfx"  # the prefix folder inside a game's folder (see pfx_dir)
+OLD_PREFIX_DIR = "pfx.rebuild"  # the prefix being replaced while a new one is made (launchsettings.rebuild_prefix)
 
 
 # What a GOG Linux installer leaves beside the game that is not the game: its support and uninstall scripts and
@@ -65,7 +66,7 @@ def list_executables(install_dir: Path) -> list[Path]:
     for dirpath, dirnames, filenames in os.walk(install_dir):
         here = Path(dirpath)
         if here == install_dir:
-            dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]  # the prefix is full of Windows executables
+            dirnames[:] = [d for d in dirnames if d not in (PREFIX_DIR, OLD_PREFIX_DIR)]  # prefixes are full of Windows executables
         dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
             suffix = os.path.splitext(name)[1].lower()
@@ -92,6 +93,17 @@ def list_executables(install_dir: Path) -> list[Path]:
 
     found.sort(key=lambda p: (*rank(p), p.name.lower()))
     return found
+
+
+def all_executables(install_dir: Path) -> list[Path]:
+    """Every .exe under install_dir, outside the prefix, sorted by path: what `list_executables` leaves out too (settings
+    tools, other launchers, redistributables), for running one by hand in the prefix."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(install_dir):
+        if Path(dirpath) == install_dir:
+            dirnames[:] = [d for d in dirnames if d not in (PREFIX_DIR, OLD_PREFIX_DIR)]
+        found += [Path(dirpath) / name for name in filenames if name.lower().endswith(".exe")]
+    return sorted((p for p in found if p.is_file()), key=lambda p: str(p.relative_to(install_dir)).lower())
 
 
 FAUGUS_FLATPAK = "io.github.Faugus.faugus-launcher"
@@ -397,7 +409,7 @@ def fix_native_permissions(install_dir: Path) -> int:
     changed = 0
     for dirpath, dirnames, filenames in os.walk(install_dir):
         if Path(dirpath) == install_dir:
-            dirnames[:] = [d for d in dirnames if d != PREFIX_DIR]
+            dirnames[:] = [d for d in dirnames if d not in (PREFIX_DIR, OLD_PREFIX_DIR)]
         for name in filenames:
             if _SHARED_LIBRARY.search(name):
                 continue
@@ -460,7 +472,8 @@ def launch_command(
         return [exe, *args], {}
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
-    env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game)}
+    language = winetricks.locale_env(game.winetricks)  # the game's system language (LC_ALL and LANG), when it has one
+    env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game), **language}
     if offline:
         env["UMU_RUNTIME_UPDATE"] = "0"  # read by umu and Faugus; Wine and Proton return their own env below
     build, _problem = resolve_proton(game.proton, launcher)
@@ -470,7 +483,7 @@ def launch_command(
         return _winetricks_command(game, launcher, prefix, build, args)
     if launcher == "wine":
         program, _problem = resolve_wine(game.wine)
-        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix)}
+        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix), **language}
     if launcher == "proton":
         proton = Path(build) if build else find_proton()
         steam_root = next(
@@ -479,8 +492,14 @@ def launch_command(
         return [str(proton), "run", exe, *args], {
             "STEAM_COMPAT_DATA_PATH": str(prefix),
             "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
+            **language,
         }
     if launcher == "faugus":
+        if eaten := faugus_takes_as_env(args):
+            raise RuntimeError(
+                f"Faugus would take {', '.join(eaten)} for environment variables, so {Path(exe).name} would not get them: "
+                "choose umu-launcher or Proton as the game's engine to use them"
+            )
         runner, umu_path, _ = faugus_invocation()
         if require_umu and not Path(umu_path).is_file() and not shutil.which("umu-run"):
             raise RuntimeError("open Faugus once so it can download umu-run, then try again")
@@ -490,6 +509,12 @@ def launch_command(
         tail = " ".join(shlex.quote(a) for a in (exe, *args))
         return [*runner, f"{inline}{shlex.quote(umu_path)} {tail}"], {}
     return ["umu-run", exe, *args], {**env, "PROTONPATH": build or "GE-Proton"}
+
+
+def faugus_takes_as_env(args) -> list[str]:
+    """The arguments Faugus would take out of the command as environment variables: any word `name=value` whose name could
+    be a variable (`vd=1280x1024` too), wherever it is. winetricks, given none of its verbs, opens its own window."""
+    return [a for a in args if "=" in a and a.split("=", 1)[0].isidentifier()]
 
 
 def _winetricks_command(
@@ -571,14 +596,16 @@ def launch_log_path(game: InstalledGame) -> Path:
     return data_dir() / "logs" / f"launch-{game.game_id}.log"
 
 
-def _spawn(game: InstalledGame, cmd: list[str], extra: dict[str, str], log_path: Path) -> subprocess.Popen:
+def _spawn(
+    game: InstalledGame, cmd: list[str], extra: dict[str, str], log_path: Path, cwd: Path | None = None
+) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as log:
         log.write(f"$ {shlex.join(cmd)}\n")
         log.flush()
         proc = subprocess.Popen(
             cmd,
-            cwd=str(Path(game.executable).parent),
+            cwd=str(cwd or Path(game.executable).parent),
             env={**host_environ(), **extra},
             stdin=subprocess.DEVNULL,
             stdout=log,
@@ -595,10 +622,13 @@ def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
     return _spawn(game, cmd, extra, launch_log_path(game))
 
 
-def start_tool(game: InstalledGame, preference: str, program: str, args: tuple[str, ...] = ()) -> subprocess.Popen:
-    """Start a Wine program (winecfg, regedit) in the game's prefix through the game's engine, logged apart from the game."""
+def start_tool(
+    game: InstalledGame, preference: str, program: str, args: tuple[str, ...] = (), cwd: Path | None = None
+) -> subprocess.Popen:
+    """Start a Wine program (winecfg, regedit, or any .exe given by its path) in the game's prefix through the game's
+    engine, logged apart from the game; it runs in `cwd`, else in the game executable's folder."""
     cmd, extra = launch_command(game, preference, program=program, args=args, offline=connectivity.is_offline())
-    return _spawn(game, cmd, extra, data_dir() / "logs" / f"tool-{game.game_id}.log")
+    return _spawn(game, cmd, extra, data_dir() / "logs" / f"tool-{game.game_id}.log", cwd)
 
 
 def launch_failure(proc: subprocess.Popen, lines: int = 3) -> str | None:

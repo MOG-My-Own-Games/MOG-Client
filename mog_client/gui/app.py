@@ -149,6 +149,7 @@ from mog_client.gui.widgets import (
 )
 from mog_client.launcher import (
     Version,
+    all_executables,
     available_launchers,
     client_command,
     detect_launcher,
@@ -163,12 +164,13 @@ from mog_client.launcher import (
     pfx_dir,
     remember_client,
     selection_problems,
+    start_tool,
 )
 from mog_client.progress import RateMeter, format_eta
-from mog_client.saves import devices, runner, sync
+from mog_client.saves import devices, runner, sync, watcher
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client import launchargs, launchsettings, protonge, videos, winetricks
+from mog_client import launchargs, launchsettings, logsend, protonge, videos, winetricks
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
@@ -1021,7 +1023,8 @@ class ConfirmPage(Page):
         lay.addStretch()
         if header := game_header(win, game):
             lay.addWidget(header)
-        lay.addWidget(self.text_label)
+        # A long list (what Nuke custom settings takes away) scrolls rather than pushing the buttons off the card.
+        lay.addWidget(FitScrollArea(self.text_label) if text.count("\n") > 10 else self.text_label)
         lay.addLayout(_centered_row(self.no, self.yes))
         lay.addStretch()
 
@@ -1286,6 +1289,15 @@ class ModsPage(Page):
         self.render()
 
 
+def fresh_record(rec: InstalledGame) -> InstalledGame:
+    """A page's copy of a game's record brought up to date in place. A start may have saved newer values from another thread
+    (the verbs its pull installed), and saving the old copy, as `manager._update` saves all of it, would undo them."""
+    stored = load_library().get(rec.game_id)
+    if stored is not None:
+        rec.__dict__.update(vars(stored))
+    return rec
+
+
 def add_option_button(
     win: "MainWindow", lay: QVBoxLayout, text: str, action, danger: bool = False, pop: int = 1
 ) -> QPushButton:
@@ -1309,7 +1321,8 @@ def mark_custom(button: QPushButton, text: str, custom: bool) -> None:
 
 
 class LinuxOptionsPage(Page):
-    """What only a Linux install has: the launch engine, the Proton build, winecfg and where the prefix is."""
+    """What only a Linux install has: the launch engine, the Proton build, winecfg, winetricks, running a program in the
+    prefix and where the prefix is."""
 
     modal = True
     compact = True
@@ -1321,6 +1334,7 @@ class LinuxOptionsPage(Page):
         self.win, self.rec = win, rec
         self.first: QPushButton | None = None
         self.engine_button: QPushButton | None = None
+        self.language_button: QPushButton | None = None
         content = QWidget()
         lay = QVBoxLayout(content)
 
@@ -1334,6 +1348,8 @@ class LinuxOptionsPage(Page):
         if not rec.native:
             add("Wine configuration (winecfg)", lambda: page.open_winecfg(rec))
             add("Winetricks", lambda: page.open_winetricks(rec), pop=0)
+            self.language_button = add("", lambda: page.choose_language(rec), pop=0)
+            add("Launch executable...", lambda: page.launch_in_prefix(rec), pop=0)
         if sync_enabled(rec, win.app.settings):
             add("Prefix location", lambda: win.saves.choose_prefix(rec))
         outer = QVBoxLayout(self)
@@ -1353,6 +1369,10 @@ class LinuxOptionsPage(Page):
         version = rec.wine if (detect_launcher(effective_launcher(rec, self.win.app.settings.launcher)) == "wine") else rec.proton
         text = f"Engine: {engine}" + (f", {version}" if version and not rec.native else "")
         mark_custom(self.engine_button, text, rec.launcher != "auto" or bool(version and not rec.native))
+        if self.language_button is not None:
+            code = winetricks.locale_of(rec.winetricks)
+            name = next((n for c, n, *_rest in winetricks.LANGUAGES if c == code), None)
+            mark_custom(self.language_button, f"System language: {name or 'default'}", code is not None)
 
     def focus_default(self) -> None:
         if self.first:
@@ -1475,6 +1495,7 @@ class OptionsPage(Page):
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
             add("Repair: check the installed files", lambda: page.repair(rec))
             add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
+            add("Nuke custom settings", lambda: page.nuke_settings(rec), True)
         if rec:
             add("Uninstall...", lambda: win.push(UninstallOptionsPage(win, page, rec)), True, pop=0)
         else:
@@ -3463,6 +3484,7 @@ class ExecutablePage(Page):
         self.on_done(item.data(Qt.UserRole), users, self.desktop.isChecked(), self.on_desktop.isChecked())
 
 
+SHORT_RUN = 120  # seconds: a game that ends sooner than this did not run, and its log is sent (see logsend.send_for_game)
 SHOT_SIZE = QSize(224, 126)
 # What the main button says while a game has a job: it is set up, removed, or has winecfg open.
 JOB_TEXT = {
@@ -3471,7 +3493,19 @@ JOB_TEXT = {
     "winecfg": "winecfg is open...",
     "proton": "Downloading Proton...",
     "winetricks": "winetricks is running...",
+    "rebuild": "Rebuilding the prefix...",
+    "tool": "A program is open in the prefix...",
+    "nuke": "Clearing custom settings...",
 }
+# Wine's own programs offered by Launch executable: (label, (program, arguments...)).
+PREFIX_TOOLS = (
+    ("Registry editor (regedit)", ("regedit",)),
+    ("Command prompt (cmd)", ("wineconsole", "cmd")),
+    ("File manager (winefile)", ("winefile",)),
+    ("Control panel (control)", ("control",)),
+    ("Task manager (taskmgr)", ("taskmgr",)),
+    ("Uninstall programs (uninstaller)", ("uninstaller",)),
+)
 # Set on a strip item that is a video: its YouTube id (a screenshot has its URL in Qt.UserRole instead).
 VIDEO_ROLE = Qt.UserRole + 1
 
@@ -4353,12 +4387,29 @@ class GamePage(Page):
 
         self.pull_launch_settings(rec, go)
 
+    def _start_note(self, text: str, percent: int | None = None) -> None:
+        """What the wait of "Starting..." is doing (downloading a Proton build, installing a verb, applying settings), under the
+        cover in place of "Installed", with the bar following a download and running back and forth for the rest."""
+        if not self._starting:
+            return
+        try:
+            self.status.setText(text)
+            self.bar.setRange(0, 100 if percent is not None else 0)
+            if percent is not None:
+                self.bar.setValue(percent)
+        except RuntimeError:  # the page is gone
+            pass
+
     def _set_starting(self, starting: bool) -> None:
         """Pressing Play answers at once: the ring turns round the button, which says "Starting...", for as long as the
         launch settings are taken from the server (the wait that otherwise shows nothing). After it come the questions of
         the save sync, or the "Playing" message."""
         self._starting = starting
         try:
+            if not starting:  # what was said under the cover goes back to what it is
+                self.status.setText("Installed")
+                self.bar.setRange(0, 1)
+                self.bar.setValue(1)
             if self.first is not None and self.first.text() in ("Play", "Starting..."):
                 self.first.setText("Starting..." if starting else "Play")
         except RuntimeError:  # the button was rebuilt and is gone
@@ -4377,13 +4428,31 @@ class GamePage(Page):
             then()
             return
 
+        def say(text: str) -> None:
+            self.app.bridge.note.emit(text)
+            self.app.bridge.call.emit(lambda: self._start_note(text))
+
+        last = [-1]
+
+        def progress(done: int, total: int) -> None:
+            percent = done * 100 // total if total else 0
+            if percent != last[0]:  # one update per percent, not per chunk
+                last[0] = percent
+                self.app.bridge.call.emit(lambda: self._start_note(f"Downloading {rec.proton}: {percent}%", percent))
+
         def work() -> None:
+            went_wrong = False
             try:
-                launchsettings.pull(self.app.client(), rec, self.app.settings.launcher, lambda m: self.app.bridge.note.emit(m))
+                launchsettings.pull(self.app.client(), rec, self.app.settings.launcher, say, progress)
             except Exception as e:  # noqa: BLE001 - an unreachable server or a refused import never stops a game from starting
+                went_wrong = True
+                logstore.warning(f"Could not take the launch settings of {rec.name} from the server: {e}")
                 self.app.bridge.message.emit("warning", f"Could not take the launch settings from the server: {e}")
             for problem in selection_problems(rec, self.app.settings.launcher):  # what was set elsewhere and is not here
+                went_wrong = True
                 self.app.bridge.message.emit("warning", problem)
+            if went_wrong:  # the game is about to start without them: the log says why, from a device out of reach too
+                logsend.send_for_game(self.app.client(), self.app.settings, rec.game_id)
             self.app.bridge.call.emit(then)
 
         self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(then))
@@ -4454,7 +4523,8 @@ class GamePage(Page):
 
     def repair(self, rec: InstalledGame) -> None:
         """Check every file the server installed against its hash, as a task in the sidebar, and fetch again the ones that
-        differ or are missing."""
+        differ or are missing. The check is made against the install cache on the server: when that is gone, you are asked
+        whether to have the server make it again first (it runs the installer again), and the check follows."""
         gid = rec.game_id
         library = self.win.library
         if gid in library.repairs:
@@ -4468,7 +4538,7 @@ class GamePage(Page):
                 library.repairs[gid] = percent
             self.win.refresh_tasks()
 
-        def go() -> None:
+        def check(regenerate: bool) -> None:
             last = [-1]
 
             def progress(done: int, total: int) -> None:
@@ -4480,6 +4550,14 @@ class GamePage(Page):
             def work() -> None:
                 self.app.bridge.call.emit(lambda: listed(0))
                 try:
+                    if regenerate:
+                        self.app.bridge.message.emit(
+                            "info",
+                            f"The server is making the install of {rec.name} again, which can take a while. "
+                            "The files are checked when it is done.",
+                        )
+                        if not manager.regenerate_cache(rec, self.app.client(), threading.Event(), logstore.info):
+                            return
                     result = manager.repair(rec, self.app.client(), threading.Event(), logstore.info, progress)
                 finally:
                     self.app.bridge.call.emit(lambda: listed(None))
@@ -4493,9 +4571,29 @@ class GamePage(Page):
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not check the files: {m}"))
 
+        def go() -> None:
+            def look() -> None:
+                try:
+                    held = manager.holds_install(self.app.client(), gid)
+                except RuntimeError:
+                    held = True  # the check itself will say what is wrong
+                self.app.bridge.call.emit(lambda: check(False) if held else regenerate())
+
+            self.app.run_bg(look, on_error=lambda m: self.app.bridge.error.emit(f"Could not check the files: {m}"))
+
+        def regenerate() -> None:
+            self.win.ask(
+                f"The server no longer holds the install of {rec.name} (its install cache), so there is nothing to check the "
+                "files against. Have the server make it again, then check the files? It runs the installer again, which can "
+                "take a while and uses room on the server until its cache is deleted. Nothing is changed here until it is done.",
+                lambda: check(True),
+                game=rec.game_id,
+            )
+
         self.win.ask(
             f"Check every file of {rec.name} against the server's copy? Files that differ or are missing are downloaded again "
-            "(a file you changed yourself is replaced). The install cache must still be on the server.",
+            "(a file you changed yourself is replaced). If the server's install cache is gone, you are asked whether to make "
+            "it again first.",
             go,
             game=rec.game_id,
         )
@@ -4602,28 +4700,32 @@ class GamePage(Page):
         """The winetricks page, with what the server keeps for the game on it: that is read first, so what was set on the
         server's web page or on another device shows here before it has been applied (it is applied when the game starts, or
         when Done is pressed). When the server cannot be reached the page shows what the prefix has."""
-
-        def show(wanted: list[str]) -> None:
-            self._show_winetricks(rec, wanted)
+        fresh_record(rec)
 
         def look() -> None:
-            wanted: list[str] = []
+            rows: dict[str, list[str]] = {"shared": [], "device": []}
+            answer = None
             try:
                 client = self.app.client()
                 answer = client.launch_settings(rec.game_id, launchsettings.device_id(client))
-                wanted = launchsettings.effective(answer)["winetricks"] if answer else []
+                for row in rows:
+                    rows[row] = winetricks.clean(((answer or {}).get(row) or {}).get("winetricks"))
             except Exception as e:  # noqa: BLE001 - no server: the page shows the prefix's own
                 logstore.info(f"Could not read the winetricks the server keeps for {rec.name}: {e}")
-            self.app.bridge.call.emit(lambda: show(wanted))
+            reg = launchsettings.winecfg_to_keep(rec.game_id, answer)
+            self.app.bridge.call.emit(lambda: self._show_winetricks(rec, rows, reg))
 
-        self.app.run_bg(look, on_error=lambda _m: self.app.bridge.call.emit(lambda: show([])))
+        self.app.run_bg(look, on_error=lambda _m: self.app.bridge.call.emit(lambda: self._show_winetricks(rec, {}, None)))
 
-    def _show_winetricks(self, rec: InstalledGame, wanted: list[str]) -> None:
+    def _show_winetricks(self, rec: InstalledGame, rows: dict[str, list[str]], winecfg_reg: str | None) -> None:
         """A list of the usual winetricks verbs and settings (`vd=1280x1024`). Ticked are the ones the game should have: those
         in the prefix and those the server keeps for it (marked, until they are applied); the newly ticked are applied to the
         prefix, and what the prefix has is kept on the server, so a reinstall or another device gets it too. A setting has one
-        value: ticking another value of it takes the tick off the first, and a value of your own is added with Add settings."""
-        applied = list(rec.winetricks)
+        value: ticking another value of it takes the tick off the first, and a value of your own is added with Add settings.
+        What is unticked is taken out: a setting from the registry, a verb by making the prefix again (winetricks cannot
+        uninstall), and both from the server's lists."""
+        applied = winetricks.clean(rec.winetricks)  # an entry that is none (`vcrun2015=true`) is dropped
+        wanted = winetricks.clean([*rows.get("shared", []), *rows.get("device", [])])
         should = winetricks.normalize([*applied, *wanted])  # one value for a name: the server's replaces the prefix's
         later = " (on the server, not applied yet)"
 
@@ -4650,49 +4752,344 @@ class GamePage(Page):
             self.win.push(SettingPage(self.win, added))
 
         def done(picked: list[str]) -> None:
-            todo = winetricks.missing(winetricks.resolve(picked, applied), applied)
-            if not todo:
-                self.win.message("Nothing new to install: what is ticked is already in the prefix", "info")
+            keep = winetricks.resolve(picked, applied)
+            todo = winetricks.missing(keep, applied)
+            gone = winetricks.removed(keep, applied)
+            reset = [v for v in gone if winetricks.registry_reset(v) is not None]
+            rebuild = [v for v in gone if v not in reset]
+            # The server's rows without what was unticked: each row that had it, or the union would bring it back.
+            server = {row: [v for v in verbs if v not in winetricks.removed(keep, verbs)] for row, verbs in rows.items()}
+            server = {row: verbs for row, verbs in server.items() if verbs != rows[row]}
+            if not (todo or gone or server):
+                self.win.message("Nothing changed: what is ticked is already in the prefix", "info")
                 return
             if rec.game_id in self.app.jobs:
                 self.win.message(f"{rec.name} is busy; try again when it is done", "info")
                 return
-            self.app.jobs[rec.game_id] = "winetricks"
-            self.rebuild()
-            self.win.message(f"Installing {', '.join(todo)} with winetricks. This can take a while.", "info")
-
-            def work() -> None:
-                try:
-                    launchsettings.run_winetricks(rec, self.app.settings.launcher, todo)
-                    ok = True
-                except RuntimeError as e:
-                    self.app.bridge.error.emit(f"winetricks: {e}")
-                    ok = False
-                finally:
-                    self.app.jobs.pop(rec.game_id, None)
-                    self.app.bridge.finished.emit(rec.game_id, "")
-                if ok:
-                    self.app.bridge.message.emit("info", f"{', '.join(todo)} installed into the prefix of {rec.name}")
-                    self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winetricks": list(rec.winetricks)}, "The winetricks verbs"))
-
-            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"winetricks: {m}"))
+            if not rebuild:
+                self._change_winetricks(rec, "winetricks", todo, reset, server, lambda: self._apply_winetricks(rec, todo, reset))
+                return
+            if watcher.running_pids(Path(rec.install_dir)):
+                self.win.message(f"{rec.name} is running: close it, then untick again", "warning")
+                return
+            self.win.ask(
+                f"winetricks cannot uninstall {', '.join(rebuild)}. The prefix of {rec.name} will be deleted and made again with "
+                "only what is ticked. Your files under drive_c/users (where most saves are) are copied into the new one, but "
+                "settings the game keeps in the Wine registry are lost. Rebuild the prefix?",
+                lambda: self._rebuild_after_backup(
+                    rec, lambda: self._change_winetricks(
+                        rec, "rebuild", todo, gone, server,
+                        lambda: launchsettings.rebuild_prefix(rec, self.app.settings.launcher, keep, winecfg_reg, logstore.info),
+                    )
+                ),
+                danger=True,
+                game=rec.game_id,
+            )
 
         self.win.checklist(
             "Winetricks",
             "Tick what the game needs. Ticked ones are in this prefix or kept for the game on the server; the ones not in the "
-            "prefix yet are installed when you press Done (it can take a while, and some need the internet). A setting such "
-            "as vd=1280x1024 has one value: ticking another takes the tick off the first.",
+            "prefix yet are installed when you press Done (it can take a while, and some need the internet). Unticked ones are "
+            "taken out: a verb only by making the prefix again. A setting such as vd=1280x1024 has one value: ticking another "
+            "takes the tick off the first.",
             items,
             done,
             exclusive=winetricks.key_of,
             extra=("Add settings...", add_settings),
         )
 
+    def _apply_winetricks(self, rec: InstalledGame, todo: list[str], reset: list[str]) -> None:
+        preference = self.app.settings.launcher
+        launchsettings.run_winetricks(rec, preference, todo)
+        launchsettings.reset_settings(rec, preference, reset)
+
+    def _change_winetricks(
+        self, rec: InstalledGame, job: str, todo: list[str], taken: list[str], server: dict[str, list[str]], change
+    ) -> None:
+        """Run `change` (it changes the prefix: `todo` in, `taken` out) as the game's job, then send the server's rows that
+        lost an entry once it is out of the prefix, and ask where what was added holds."""
+        if rec.game_id in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
+        self.app.jobs[rec.game_id] = job
+        self.rebuild()
+        if job == "rebuild":
+            self.win.message(f"Rebuilding the prefix of {rec.name}. This can take a while.", "info")
+        elif todo:
+            self.win.message(f"Installing {', '.join(todo)} with winetricks. This can take a while.", "info")
+
+        def work() -> None:
+            try:
+                change()
+                ok = True
+            except (RuntimeError, OSError) as e:
+                self.app.bridge.error.emit(f"{'Rebuilding the prefix' if job == 'rebuild' else 'winetricks'}: {e}")
+                ok = False
+            finally:
+                self.app.jobs.pop(rec.game_id, None)
+                self.app.bridge.finished.emit(rec.game_id, "")
+            if job == "rebuild" and ok:
+                self.app.bridge.message.emit("info", f"The prefix of {rec.name} was made again with only what is ticked")
+            elif ok and (todo or taken):
+                done = [f"{', '.join(todo)} installed into" if todo else "", f"{', '.join(taken)} taken out of" if taken else ""]
+                self.app.bridge.message.emit("info", f"{' and '.join(d for d in done if d)} the prefix of {rec.name}")
+            if not ok and any(v in rec.winetricks for v in taken):
+                return  # still in the prefix, so the server keeps it (a rebuild that failed after the swap did take it out)
+            for row, verbs in server.items():  # it must go where it was, so nothing is asked
+                launchsettings.queue(rec.game_id, {"winetricks": verbs}, everywhere=row == "shared")
+            if server:
+                try:
+                    launchsettings.flush(self.app.client(), rec.game_id)
+                except Exception as e:  # noqa: BLE001 - it waits in the outbox and is sent at the next look
+                    logstore.info(f"The winetricks of {rec.name} wait to be sent to the server: {e}")
+            if ok and todo:
+                self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winetricks": list(rec.winetricks)}, "The winetricks verbs"))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"winetricks: {m}"))
+
+    def _rebuild_after_backup(self, rec: InstalledGame, then) -> None:
+        """Back the game's saves up before its prefix is deleted, when its save sync is on, then `then()`. When they cannot be
+        backed up, whether to go on is asked."""
+        if not sync_enabled(rec, self.app.settings):
+            then()
+            return
+
+        def anyway(reason: str | None) -> None:
+            self.win.ask(
+                f"The saves of {rec.name} could not be backed up first ({reason or 'save sync is not ready'}). Rebuild the prefix "
+                "anyway? Your files under drive_c/users are still copied into the new one.",
+                then,
+                danger=True,
+                game=rec.game_id,
+            )
+
+        def backup(ctx: sync.Context) -> None:
+            try:
+                status = sync.backup(ctx, sync.MANUAL, force=True).status
+            except Exception as e:  # noqa: BLE001 - asked about
+                status = str(e)
+            if status in ("uploaded", "unchanged", "nothing", "duplicate"):
+                self.app.bridge.call.emit(then)
+            else:
+                self.app.bridge.call.emit(lambda: anyway(status))
+
+        self.win.saves.with_context(rec, backup, anyway, ask=True)
+
+    def nuke_settings(self, rec: InstalledGame) -> None:
+        """Take away everything the game has set beyond its files and saves, here and on the server, after a list of all of
+        it and a question (see `launchsettings.clear_custom`)."""
+        fresh_record(rec)
+        if rec.game_id in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
+
+        def look() -> None:
+            answer = None
+            try:
+                client = self.app.client()
+                answer = client.launch_settings(rec.game_id, launchsettings.device_id(client))
+            except Exception as e:  # noqa: BLE001 - what is here is listed, and the server is cleared when it can be
+                logstore.info(f"Could not read the launch settings the server keeps for {rec.name}: {e}")
+            self.app.bridge.call.emit(lambda: self._confirm_nuke(rec, answer))
+
+        self.app.run_bg(look, on_error=lambda _m: self.app.bridge.call.emit(lambda: self._confirm_nuke(rec, None)))
+
+    def _confirm_nuke(self, rec: InstalledGame, answer: dict | None) -> None:
+        lines = launchsettings.custom_settings(rec, answer)
+        rows = [row for row in ("shared", "device") if any(v is not None for k, v in ((answer or {}).get(row) or {}).items() if k in launchsettings.CLEARED)]
+        rebuild = not rec.native and sys.platform != "win32" and launchsettings.prefix_of(rec).exists()
+        if not lines and not rows and not rebuild:
+            self.win.message(f"{rec.name} has no custom settings", "info")
+            return
+        if watcher.running_pids(Path(rec.install_dir)):
+            self.win.message(f"{rec.name} is running: close it, then try again", "warning")
+            return
+        text = ([f"You have set for {rec.name}:"] + [f"- {line}" for line in lines]) if lines else [f"{rec.name} has no settings of its own."]
+        if rebuild:
+            text.append(
+                "The prefix is deleted and made again, empty: whatever was installed or changed in it goes too. Your files "
+                "under drive_c/users (where most saves are) are copied into the new one."
+            )
+        if "shared" in rows:
+            text.append("The settings are cleared on the server too, also those for all devices: your other devices lose them as well.")
+        elif rows:
+            text.append("The settings this device keeps on the server are cleared too.")
+        text.append("Continue?")
+
+        def nuke() -> None:
+            if rec.game_id in self.app.jobs:
+                self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+                return
+            self.app.jobs[rec.game_id] = "nuke"
+            self.rebuild()
+
+            def work() -> None:
+                try:
+                    launchsettings.clear_custom(rec, self.app.settings.launcher, rows, logstore.info)
+                    ok = True
+                except (RuntimeError, OSError) as e:
+                    self.app.bridge.error.emit(f"Clearing the custom settings of {rec.name}: {e}")
+                    ok = False
+                finally:
+                    self.app.jobs.pop(rec.game_id, None)
+                    self.app.bridge.finished.emit(rec.game_id, "")
+                if rows:
+                    try:
+                        launchsettings.flush(self.app.client(), rec.game_id)
+                    except Exception as e:  # noqa: BLE001 - it waits in the outbox and is sent at the next look
+                        logstore.info(f"Clearing the server's launch settings of {rec.name} waits for the server: {e}")
+                if ok:
+                    self.app.bridge.message.emit("info", f"The custom settings of {rec.name} were cleared")
+
+            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
+
+        self.win.ask("\n".join(text), lambda: self._rebuild_after_backup(rec, nuke) if rebuild else nuke(), danger=True, game=rec.game_id)
+
+    def choose_language(self, rec: InstalledGame) -> None:
+        """The game's system language: its locale and code pages in the prefix, and the LC_ALL and LANG it is started with
+        (some games only show their own language, or show it readably, under the system's). Kept as a `locale=` entry beside
+        the winetricks settings, so the server and the game's other devices have it too."""
+        fresh_record(rec)
+
+        def look() -> None:
+            rows: dict[str, list[str]] = {"shared": [], "device": []}
+            try:
+                client = self.app.client()
+                answer = client.launch_settings(rec.game_id, launchsettings.device_id(client))
+                for row in rows:
+                    rows[row] = winetricks.clean(((answer or {}).get(row) or {}).get("winetricks"))
+            except Exception as e:  # noqa: BLE001 - no server: it is changed here, and sent when it can be
+                logstore.info(f"Could not read the winetricks the server keeps for {rec.name}: {e}")
+            self.app.bridge.call.emit(lambda: self._language_page(rec, rows))
+
+        self.app.run_bg(look, on_error=lambda _m: self.app.bridge.call.emit(lambda: self._language_page(rec, {})))
+
+    def _language_page(self, rec: InstalledGame, rows: dict[str, list[str]]) -> None:
+        current = winetricks.locale_of(rec.winetricks)
+        options = [("The launcher's own (the default)" + (" - now" if current is None else ""), "")]
+        options += [(f"{name} ({code})" + (" - now" if code == current else ""), code) for code, name, *_rest in winetricks.LANGUAGES]
+        self.win.choose(
+            "System language",
+            f"The language {rec.name} sees as the system's. Pick the one its text is in when it shows boxes or the wrong "
+            "language. The prefix's locale and code pages are set, and the game is started with it.",
+            options,
+            lambda code: self._set_language(rec, code or None, rows),
+            game=rec.game_id,
+        )
+
+    def _set_language(self, rec: InstalledGame, code: str | None, rows: dict[str, list[str]]) -> None:
+        fresh_record(rec)
+        old = next((e for e in rec.winetricks if winetricks.key_of(e) == "locale"), None)
+        if (f"locale={code}" if code else None) == old:
+            self.win.message(f"{rec.name} already has that system language", "info")
+            return
+        if rec.game_id in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
+        # What the server keeps of it goes from its rows, so the other one does not bring an older language back.
+        server = {row: [v for v in verbs if winetricks.key_of(v) != "locale"] for row, verbs in rows.items() if any(winetricks.key_of(v) == "locale" for v in verbs)}
+        name = next((n for c, n, *_rest in winetricks.LANGUAGES if c == code), "the default")
+        self.app.jobs[rec.game_id] = "winetricks"
+        self.rebuild()
+
+        def work() -> None:
+            try:
+                if code:
+                    launchsettings.run_winetricks(rec, self.app.settings.launcher, [f"locale={code}"])
+                elif old:
+                    launchsettings.reset_settings(rec, self.app.settings.launcher, [old])
+                ok = True
+            except (RuntimeError, OSError) as e:
+                self.app.bridge.error.emit(f"System language: {e}")
+                ok = False
+            finally:
+                self.app.jobs.pop(rec.game_id, None)
+                self.app.bridge.finished.emit(rec.game_id, "")
+            if not ok:
+                return
+            self.app.bridge.message.emit("info", f"The system language of {rec.name} is now {name.lower() if not code else name}")
+            for row, verbs in server.items():
+                launchsettings.queue(rec.game_id, {"winetricks": verbs}, everywhere=row == "shared")
+            if server:
+                try:
+                    launchsettings.flush(self.app.client(), rec.game_id)
+                except Exception as e:  # noqa: BLE001 - it waits in the outbox and is sent at the next look
+                    logstore.info(f"The winetricks of {rec.name} wait to be sent to the server: {e}")
+            if code:
+                self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winetricks": list(rec.winetricks)}, "The system language"))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"System language: {m}"))
+
+    def launch_in_prefix(self, rec: InstalledGame) -> None:
+        """Run a program in the game's prefix: one of Wine's own tools, one of the game's executables (those offered for its
+        shortcut first, then the rest of its .exe files), or any .exe browsed for."""
+        root = Path(rec.install_dir)
+        options = [(label, ("tool", tool)) for label, tool in PREFIX_TOOLS]
+        try:
+            candidates = [p for p in list_executables(root) if p.suffix.lower() == ".exe"]
+            others = [p for p in all_executables(root) if p not in candidates]
+        except OSError:
+            candidates, others = [], []
+        current = Path(rec.executable) if rec.executable else None
+        for path in [*candidates, *others]:
+            label = str(path.relative_to(root)) + ("  (the game's executable)" if path == current else "")
+            options.append((label, ("exe", str(path))))
+        options.append(("Browse...", ("browse", None)))
+
+        def chosen(value) -> None:
+            if value[0] == "browse":
+                self.win.push(BrowsePage(self.win, root, lambda path: self._run_in_prefix(rec, ("exe", str(path)))))
+            else:
+                self._run_in_prefix(rec, value)
+
+        self.win.choose("Launch executable", f"Run a program in the prefix of {rec.name}.", options, chosen, game=rec.game_id)
+
+    def _run_in_prefix(self, rec: InstalledGame, value: tuple[str, object]) -> None:
+        """Start a program of `launch_in_prefix` and keep the game busy until it is closed. What regedit changed among the
+        winecfg settings is kept on the server (all devices or this one, asked); the other programs change this device only."""
+        if rec.game_id in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
+        fresh_record(rec)
+        kind, target = value
+        if kind == "tool":
+            program, args = target[0], tuple(target[1:])
+            name, cwd = (args[0] if args else program), None
+        else:
+            exe = Path(str(target))
+            program, args, name, cwd = str(exe), (), exe.name, exe.parent
+        self.app.jobs[rec.game_id] = "tool"
+        self.rebuild()
+        logstore.info(f"Running {name} in the prefix of {rec.name}")
+
+        def work() -> None:
+            settings = None
+            try:
+                if program == "regedit":  # what it changes in the settings winecfg keeps is kept on the server as winecfg's are
+                    before = launchsettings.prefix_settings(rec)
+                    text = launchsettings.run_winecfg(rec, self.app.settings.launcher, program="regedit")
+                    settings = text if text != before else None
+                else:
+                    proc = start_tool(rec, self.app.settings.launcher, program, args, cwd=cwd)
+                    if not watcher.wait_for_tool(name.casefold(), pfx_dir(rec), abort_before_start=lambda: proc.poll() not in (None, 0)):
+                        failure = launch_failure(proc)
+                        if failure:
+                            self.app.bridge.error.emit(f"{name}: {failure}")
+            finally:
+                self.app.jobs.pop(rec.game_id, None)
+                self.app.bridge.finished.emit(rec.game_id, "")
+            if settings is not None:
+                manager._update(rec, winecfg_applied=launchsettings.digest(settings) if settings else None)
+                self.app.bridge.call.emit(lambda: self._keep_on_server(rec, {"winecfg_reg": settings or None}, "The registry settings"))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"{name}: {m}"))
+
     def open_winecfg(self, rec: InstalledGame) -> None:
         """Open winecfg in the game's prefix; when it is closed, what it changed is kept on the server."""
         if rec.game_id in self.app.jobs:
             self.win.message(f"{rec.name} is busy; try again when it is done", "info")
             return
+        fresh_record(rec)
         self.app.jobs[rec.game_id] = "winecfg"
         self.rebuild()
         self.win.message(f"winecfg is open for {rec.name}. Close it when you are done.", "info")
@@ -5862,6 +6259,13 @@ class MainWindow(QMainWindow):
         finally:
             QTimer.singleShot(0, lambda: central.setUpdatesEnabled(True))
 
+    def raise_layers(self) -> None:
+        """What is laid over the pages stays over them, in this order: showing a modal page raises its card, which would
+        otherwise cover a message that is up (the one a Proton or winetricks change gives while its menu closes)."""
+        for layer in (self.playing, self.busy, self.overlay):
+            if layer.isVisible():
+                layer.raise_()
+
     def _switch_to(self, page: Page) -> None:
         # A modal page is drawn over the nearest page that is not one, which is the one the window's header is for.
         base = next(p for p in reversed(self.history) if not p.modal) if page.modal else page
@@ -5870,6 +6274,7 @@ class MainWindow(QMainWindow):
             self.modal.show_page(page, page.title, back=len(self.history) >= 2 and self.history[-2].modal)
         else:
             self.modal.hide_page()
+        self.raise_layers()
         page, shown = base, page
         on_library = page is self.library
         self.back_btn.setVisible(not on_library)
@@ -6543,6 +6948,9 @@ class MainWindow(QMainWindow):
                 Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, log=say,
                 on_started=lambda: status("Playing"), on_wait=waiting, **timing,
             )
+            if not stop.is_set() and (not started or (time.time_ns() - started_ns) / 1e9 < SHORT_RUN):
+                say("the game ended within moments: sending the log, if that is allowed")
+                logsend.send_for_game(self.app.client(), self.app.settings, rec.game_id)  # a crash at start saves nothing to back up
             if started and ctx:
                 self.app.bridge.call.emit(lambda: self._sync_started(rec))
             result = sync.backup(ctx, sync.QUIT, since_ns=started_ns) if (started and ctx) else None

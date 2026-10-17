@@ -1,5 +1,5 @@
-"""Fetching a Proton-GE release into the folder Steam, Faugus and umu look builds up in, so a build the game was given is
-there whatever launcher runs it (Faugus only checks for the build and shows a message when it is missing; it does not
+"""Fetching a Proton-GE or UMU-Proton release into the folder Steam, Faugus and umu look builds up in, so a build the game was
+given is there whatever launcher runs it (Faugus only checks for the build and shows a message when it is missing; it does not
 fetch it). Stdlib only."""
 
 from __future__ import annotations
@@ -13,7 +13,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 GE_NAME = re.compile(r"GE-Proton\d+-\d+$")
+UMU_NAME = re.compile(r"UMU-Proton-\d+\.\d+-\d+(?:\.\d+)?[a-z]?$")  # UMU-Proton-10.0-4, UMU-Proton-9.0-3.2, UMU-Proton-9.0-4e
 RELEASES = "https://github.com/GloriousEggroll/proton-ge-custom/releases/download"
+UMU_RELEASES = "https://github.com/Open-Wine-Components/umu-proton/releases/download"
 CHUNK = 1 << 20
 
 
@@ -21,9 +23,19 @@ def is_ge(name: str | None) -> bool:
     return bool(name) and GE_NAME.match(name) is not None
 
 
+def is_umu(name: str | None) -> bool:
+    return bool(name) and UMU_NAME.match(name) is not None
+
+
+def is_fetchable(name: str | None) -> bool:
+    """Whether `install` can fetch the build: a Proton-GE or a UMU-Proton release by its name."""
+    return is_ge(name) or is_umu(name)
+
+
 def urls(name: str) -> tuple[str, str]:
     """The release's archive and the file with its SHA-512."""
-    return f"{RELEASES}/{name}/{name}.tar.gz", f"{RELEASES}/{name}/{name}.sha512sum"
+    base = UMU_RELEASES if is_umu(name) else RELEASES
+    return f"{base}/{name}/{name}.tar.gz", f"{base}/{name}/{name}.sha512sum"
 
 
 def _open(url: str, timeout: float = 60.0):
@@ -66,10 +78,10 @@ def install(
     opener: Callable[..., object] = _open,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
-    """Download Proton-GE `name`, check its SHA-512 and unpack it as `root/name`. Raises RuntimeError when it cannot (no
-    such release, offline, a hash that does not match); nothing is left half-installed."""
-    if not is_ge(name):
-        raise RuntimeError(f"{name} is not a Proton-GE release name")
+    """Download the Proton-GE or UMU-Proton release `name`, check its SHA-512 and unpack it as `root/name`. Raises RuntimeError
+    when it cannot (no such release, offline, a hash that does not match); nothing is left half-installed."""
+    if not is_fetchable(name):
+        raise RuntimeError(f"{name} is not a Proton-GE or UMU-Proton release name")
     target = root / name
     if (target / "proton").is_file():
         return target

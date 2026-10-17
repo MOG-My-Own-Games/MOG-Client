@@ -43,6 +43,8 @@ def collect(game_id: int | None = None) -> str:
     parts = [f"MOG Client {__version__} on {platform.system()} {platform.release()}", "--- client.log ---", client[-CLIENT_LOG_BYTES:]]
     if game_id is not None and (launch := tail(logs / f"launch-{game_id}.log", GAME_LOG_BYTES)):
         parts += [f"--- launch-{game_id}.log ---", launch]
+    if game_id is not None and (tool := tail(logs / f"tool-{game_id}.log", GAME_LOG_BYTES)):  # winetricks, winecfg, regedit
+        parts += [f"--- tool-{game_id}.log ---", tool]
     return "\n".join(parts)
 
 
@@ -58,4 +60,17 @@ def send(client, device_id: int | None, settings: Settings, game_id: int | None 
     try:
         return client.upload_device_log(device_id, collect(game_id))
     except Exception:  # noqa: BLE001 - the log is a courtesy: whatever goes wrong, the save sync carries on
+        return False
+
+
+def send_for_game(client, settings: Settings, game_id: int, force: bool = True) -> bool:
+    """Send the log of a start that went wrong (the launch settings could not be taken, the game ended within moments), whether
+    or not there are saves to back up: the save sync only sends it for a backup that has something to say, which a game that
+    never ran has not. Never raises."""
+    try:
+        from mog_client.saves import devices  # not at the top: the save sync imports this module
+
+        record = devices.known_device()
+        return send(client, record.device_id if record else None, settings, game_id, force)
+    except Exception:  # noqa: BLE001 - a courtesy, as `send` is
         return False

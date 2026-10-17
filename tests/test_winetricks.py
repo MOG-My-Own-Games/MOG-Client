@@ -154,3 +154,124 @@ def test_the_settings_the_client_puts_in_the_registry_itself(entry, changes):
 @pytest.mark.parametrize("entry", ["vcrun2019", "virtualdesktop=1280x800", "vd=12x1", "vd=1280", "renderer=dx", "csmt=force", "sound=jack", "fontsmooth=rgb", "vd="])
 def test_what_the_client_does_not_put_in_the_registry_is_left_alone(entry):
     assert winetricks.registry_changes(entry) is None
+
+
+def test_the_catalog_has_the_visual_cpp_runtimes_games_ask_for_and_every_setting_value_is_an_entry():
+    verbs = [v for v, _text in winetricks.CATALOG]
+    assert {"vcrun2015", "vcrun2017", "vcrun2022", "mf", "dotnetdesktop8"} <= set(verbs)
+    assert all(winetricks.is_verb(f"{name}={value}") for name, _text, values in winetricks.SETTINGS for value in values)
+
+
+def test_removed_is_what_was_unticked_and_not_a_setting_given_another_value():
+    kept = ["vcrun2019", "vd=1920x1080"]
+    assert winetricks.removed(kept, ["vcrun2019", "d3dx9", "vd=1280x1024", "renderer=gl"]) == ["d3dx9", "renderer=gl"]
+    assert winetricks.removed(kept, []) == []
+
+
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        ("vd=1280x1024", [("Explorer", '"Desktop"=-')]),
+        ("renderer=no3d", [("Direct3D", '"renderer"=-')]),
+        ("csmt=on", [("Direct3D", '"csmt"=-')]),
+        ("sound=pulse", [("Drivers", '"Audio"=-')]),
+        ("grabfullscreen=y", [("X11 Driver", '"GrabFullscreen"=-')]),
+        ("videomemorysize=2048", [("Direct3D", '"VideoMemorySize"=-')]),
+        ("vcrun2019", None),
+        ("fontsmooth=rgb", None),  # winetricks writes it: only a new prefix takes it out
+        ("renderer=bogus", None),
+    ],
+)
+def test_unticking_a_setting_the_client_writes_deletes_its_registry_value(entry, expected):
+    assert winetricks.registry_reset(entry) == expected
+
+
+def test_the_new_settings_are_written_without_winetricks():
+    assert winetricks.registry_changes("grabfullscreen=y") == [("X11 Driver", '"GrabFullscreen"="Y"')]
+    assert winetricks.registry_changes("renderer=no3d") == [("Direct3D", '"renderer"="no3d"')]
+    assert winetricks.registry_changes("videomemorysize=default") == [("Direct3D", '"VideoMemorySize"=-')]
+
+
+def test_every_exe_of_the_game_is_listed_but_none_of_its_prefixes(tmp_path):
+    for rel in ("Game.exe", "redist/vcredist_x64.exe", "Config/Setup.exe", "pfx/drive_c/x.exe", "pfx.rebuild/drive_c/y.exe", "start.sh"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"x")
+
+    found = [str(p.relative_to(tmp_path)) for p in launcher.all_executables(tmp_path)]
+
+    assert found == ["Config/Setup.exe", "Game.exe", "redist/vcredist_x64.exe"]
+
+
+def test_a_verb_of_the_catalog_with_a_value_is_no_entry():
+    assert not winetricks.is_verb("vcrun2015=true") and winetricks.is_verb("vd=1280x1024")
+    assert winetricks.clean(["vcrun2015=true", "vcrun2019"]) == ["vcrun2019"]
+    assert winetricks.merge(["vcrun2015=true"], ["d3dx9"]) == ["d3dx9"]
+
+
+def test_faugus_is_never_handed_a_setting_it_would_take_for_an_environment_variable(monkeypatch, tmp_path):
+    umu = tmp_path / "umu-run"
+    umu.write_text("")
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-launcher", "--run"], str(umu), False))
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
+
+    with pytest.raises(RuntimeError, match="fontsmooth=rgb"):  # winetricks would get no verb, and open its own window
+        launcher.launch_command(_game(tmp_path), program="winetricks", args=("-q", "vcrun2019", "fontsmooth=rgb"))
+    assert launcher.faugus_takes_as_env(["-q", "a-b=1", "/S", "x=1"]) == ["x=1"]
+
+
+def test_hidewineexports_is_offered_and_written_straight_under_the_wine_key():
+    assert "hidewineexports=enable" in [f"{n}={v}" for n, _t, vs in winetricks.SETTINGS for v in vs]
+    assert winetricks.registry_changes("hidewineexports=enable") == [("", '"HideWineExports"="Y"')]
+    assert winetricks.registry_changes("hidewineexports=disable") == [("", '"HideWineExports"=-')]
+    assert winetricks.registry_reset("hidewineexports=enable") == [("", '"HideWineExports"=-')]
+    assert winetricks.registry_changes("hidewineexports=maybe") is None
+    reg = launchsettings_reg(winetricks.registry_changes("hidewineexports=enable"))
+    assert "[HKEY_CURRENT_USER\\Software\\Wine]\n\"HideWineExports\"=\"Y\"" in reg
+
+
+def launchsettings_reg(changes):
+    from mog_client import winecfg
+
+    return winecfg._reg_of(changes)
+
+
+def test_the_languages_are_offered_once_each_and_a_game_gets_the_one_it_has():
+    codes = [c for c, *_rest in winetricks.LANGUAGES]
+    assert len(codes) == len(set(codes)) and all(winetricks.is_verb(f"locale={c}") for c in codes)
+    assert winetricks.locale_of(["vcrun2019", "locale=ja_JP"]) == "ja_JP" and winetricks.locale_of(["locale=xx_XX", "vd=off"]) is None
+    assert winetricks.locale_env(["locale=zh_CN"]) == {"LC_ALL": "zh_CN.UTF-8", "LANG": "zh_CN.UTF-8"} and winetricks.locale_env([]) == {}
+
+
+def test_a_language_sets_the_locale_and_the_code_pages_with_their_whole_paths():
+    changes = winetricks.registry_changes("locale=ja_JP")
+    assert changes == [
+        ("HKEY_CURRENT_USER\\Control Panel\\International", '"LocaleName"="ja-JP"'),
+        (winetricks.CODEPAGE_KEY, '"ACP"="932"'),
+        (winetricks.CODEPAGE_KEY, '"OEMCP"="932"'),
+    ]
+    assert winetricks.registry_changes("locale=de_DE")[1:] == [(winetricks.CODEPAGE_KEY, '"ACP"="1252"'), (winetricks.CODEPAGE_KEY, '"OEMCP"="850"')]
+    assert winetricks.registry_changes("locale=xx_XX") is None
+    assert winetricks.registry_reset("locale=ja_JP") == [("HKEY_CURRENT_USER\\Control Panel\\International", '"LocaleName"=-')]
+    from mog_client import winecfg
+
+    text = winecfg._reg_of(changes + [("Direct3D", '"csmt"=dword:00000001')])
+    assert "[HKEY_CURRENT_USER\\Control Panel\\International]" in text and "[HKEY_CURRENT_USER\\Software\\Wine\\Direct3D]" in text
+
+
+def test_the_game_is_started_with_its_language_by_every_engine(monkeypatch, tmp_path):
+    umu = tmp_path / "umu-run"
+    umu.write_text("")
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-launcher", "--run"], str(umu), False))
+    game = _game(tmp_path, winetricks=["locale=ja_JP"])
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+    assert launcher.launch_command(game)[1]["LC_ALL"] == "ja_JP.UTF-8"
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
+    cmd, _ = launcher.launch_command(game)
+    assert "LC_ALL=ja_JP.UTF-8" in cmd[2] and "LANG=ja_JP.UTF-8" in cmd[2]
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "wine")
+    monkeypatch.setattr(launcher, "resolve_wine", lambda name: (tmp_path / "wine", None))
+    assert launcher.launch_command(game)[1]["LANG"] == "ja_JP.UTF-8"
+    assert "LC_ALL" not in launcher.launch_command(_game(tmp_path))[1]

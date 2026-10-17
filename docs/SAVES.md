@@ -86,7 +86,9 @@ from MOG):
 - each backup's start, the scan, the upload and the result, with how long it took.
 
 Settings > General > "Send the log with saves" (off by default) also sends this device's log (the client log and the game's
-launch log, the newest part) to the server whenever a backup uploads something or goes wrong, at most every 30 seconds. The
+launch log, the newest part) to the server whenever a backup uploads something or goes wrong, at most every 30 seconds. A game that never ran has no
+saves to back up, so its log is sent apart, whenever the launch settings could not be taken at the start or the game ends within two
+minutes of starting (or never showed up), with winetricks' and winecfg's output (`tool-<id>.log`) added. The
 server keeps the newest one per device under Profile > My devices > Log.
 
 ## The library marks

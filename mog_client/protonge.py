@@ -1,5 +1,5 @@
 """The newest Proton-GE release of each major version (GE-Proton8-32, GE-Proton9-27, GE-Proton10-N, ...), which umu and
-Faugus download by name on first use. An old game often runs better on an old major, and the last release of a major is
+Faugus download by name on first use, and the few other builds games are known to need (`EXTRA`). An old game often runs better on an old major, and the last release of a major is
 the one that is usually right. Stdlib only."""
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ from pathlib import Path
 RELEASES_URL = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=100"
 # Majors that are finished, so the list does not depend on the release list reaching back that far.
 FINISHED = {8: "GE-Proton8-32", 9: "GE-Proton9-27"}
+# Releases that are no major's last, offered too: some games need exactly one (UMU-Proton, from Open-Wine-Components, for the
+# Proton 9.0 line). Oldest first, like the rest; they are downloaded when chosen.
+EXTRA = ("UMU-Proton-9.0-2", "UMU-Proton-9.0-4e")
 CACHE_SECONDS = 24 * 3600
 
 _TAG = re.compile(r"GE-Proton(\d+)-(\d+)$")
@@ -56,4 +59,4 @@ def available(
             cache.write_text(json.dumps({"at": clock(), "tags": tags}))
         except (RuntimeError, OSError, ValueError):
             pass  # offline or rate limited: what is known stays
-    return latest_per_major(tags)
+    return [*EXTRA, *latest_per_major(tags)]

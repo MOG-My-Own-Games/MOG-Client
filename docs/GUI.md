@@ -34,7 +34,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 ## A game's page and its Options
 
 - Play starts the game through its launcher. It answers at once: the button says "Starting..." and the ring turns round it
-  while the launch settings are taken from the server, until the "Playing" message takes over. While a game started from MOG runs, a message over the window shows its
+  while the launch settings are taken from the server, until the "Playing" message takes over. That wait can be long (a
+  Proton-GE build is downloaded once, winetricks verbs are installed, settings are applied), so what it is doing shows under the
+  cover in place of "Installed", with the bar following a download. If the settings cannot be taken, or a verb fails, the game
+  still starts, and the winecfg settings (DLL overrides among them) are put in even when a verb failed. While a game started from MOG runs, a message over the window shows its
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
 - Options:
@@ -47,12 +50,15 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       selects the default engine and version (apply them with OK), and Back leaves without changing anything.
       - Faugus, umu and Proton run Proton builds: the Default, the builds on this device (Steam's library,
         `compatibilitytools.d`) and the last Proton-GE of every major (GE-Proton8-32, GE-Proton9-27, ...; the list comes
-        from GitHub, kept for a day), as an old game often runs best on an old major.
+        from GitHub, kept for a day), as an old game often runs best on an old major, and a few other builds some games
+        need exactly: UMU-Proton-9.0-2 and UMU-Proton-9.0-4e (the Proton 9.0 line, from the umu-proton releases). Any
+        other Proton-GE or UMU-Proton release a game is pinned to on the server (GE-Proton8-4, say) is downloaded too, by
+        its name, the first time that game is played here.
       - Wine runs the system's wine or a build Lutris or Bottles keeps.
       - The engine is per game and overrides the one in Settings; the launch script is rewritten, so the desktop entry and
         Steam shortcut follow. A Proton version is kept on the server (after choosing you say whether it holds for all of the
         game's devices or only this one); the engine and a Wine build stay on this device.
-      - A Proton-GE this device lacks is **downloaded when you choose it** (once, checked against its SHA-512, into
+      - A Proton-GE or UMU-Proton build this device lacks is **downloaded when you choose it** (once, checked against its SHA-512, into
         `~/.local/share/Steam/compatibilitytools.d`, where Steam, Faugus and umu look), because Faugus does not fetch a
         build itself. The same happens the first time you play a game on a device that lacks the build its other devices use.
       - When something set here or on another device is not on this machine (an engine, a Proton or Wine build), a warning
@@ -67,8 +73,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       own defaults in the same keys stay), from a note kept when they were applied or made in a prefix that already existed (the
       engine makes a new one with its own defaults, which cannot be told from settings). Settings applied before that was
       recorded, and what winetricks installed, stay in the prefix.
-    - **Winetricks** (Windows games): a list of the usual verbs (vcrun2019, dotnet48, d3dx9, ...) and of usual settings with a
-      value (`vd=1280x1024`, `renderer=gdi`, `csmt=on`...); the ones already in the prefix are ticked, and so are the ones
+    - **Winetricks** (Windows games): a list of the usual verbs (the Visual C++ runtimes from vcrun6 to vcrun2022, .NET
+      Framework and .NET Desktop, d3dx9, XInput, XAudio, Media Foundation, PhysX, fonts...) and of usual settings with a
+      value (`vd=1280x1024`, `renderer=gdi`, `csmt=on`, `grabfullscreen=y`, `hidewineexports=enable`...); the ones already in the prefix are ticked, and so are the ones
       the server keeps for the game that the prefix does not have yet (read when the page opens, marked "on the server, not applied
       yet"; Done applies them, and so does the next start of the game). A setting has one value:
       ticking another value of it takes the tick off the first, and **Add settings...** opens a page (the same as the
@@ -76,10 +83,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       types into the field): **+** adds what is typed, each one listed has a **-** that takes it out, **OK** ticks them all in
       place of the other values of their names, and **Back**, in red beside OK, leaves without. A setting is kept in the
       same list as the verbs, as `name=value`; when its value changes, the new value is applied again, and the prefix then holds
-      one value for the name. Taking an entry out of the list does not undo it in a prefix. When the server's list has a setting
+      one value for the name. When the server's list has a setting
       for all devices and for this one, this device's value wins.
       **Settings are applied without winetricks, silently:** the client writes the ones it knows (`vd=WxH` or `vd=off`, `renderer`,
-      `csmt`, `mwo`, `sound`, `ddr`, `glsl`, `windowmanagerdecorated`, `windowmanagermanaged`, `usetakefocus`, `videomemorysize`) straight
+      `csmt`, `mwo`, `sound`, `ddr`, `glsl`, `windowmanagerdecorated`, `windowmanagermanaged`, `usetakefocus`, `grabfullscreen`, `hidewineexports`, `videomemorysize`) straight
       into the registry of the game's own prefix with the engine's regedit, as winecfg's settings are, so no winetricks window opens
       when the game starts. A `name=value` it does not know (a wrong name such as `virtualdesktop`, say) is not sent to winetricks at
       start, where it would open a window: it is left for Done in this page, which does try it with winetricks. A verb that winetricks
@@ -90,7 +97,41 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       installed). The button reads "winetricks is running..." meanwhile. Like winecfg, you then say whether the verbs hold
       for all of the game's devices or only this one, and they are kept on the server: when the game is reinstalled, or played on
       another device, the verbs it lacks are installed into the new prefix before the game starts (before the winecfg
-      settings are applied). Verbs cannot be removed from here.
+      settings are applied).
+      With the **Faugus** engine, every `name=value` word of a command becomes an environment variable for Faugus, so a
+      setting the client does not write itself cannot reach winetricks. It is refused with a message (choose umu-launcher
+      or Proton as the game's engine for it), rather than starting winetricks with no verb, which opens its own window. A
+      verb of the list never takes a value: `vcrun2015=true` is not an entry and is ignored.
+      **Unticking takes an entry out**, of the prefix and of the server's lists (each list that had it, all devices' or this
+      one's, so it does not come back from the other):
+      - A setting the client writes itself is deleted from the prefix's registry, so Wine's default holds again. Nothing is asked.
+      - A verb, or a setting left to winetricks, cannot be uninstalled: the prefix is **made again**. A warning
+        asks first, since the prefix is deleted. When the game's save sync is on, its saves are backed up first; if that cannot
+        be done, you are asked whether to go on anyway. The old prefix is set aside as `pfx.rebuild`, the engine makes a new one,
+        and the old one's `drive_c/users` (Documents, AppData, Saved Games: where most saves are) is copied into it. Links are
+        copied as links and never followed. Only then is the old prefix deleted. If the new prefix cannot be made, the old one is
+        put back. The ticked verbs and the winecfg settings then go into the new prefix. What the game kept in the Wine registry
+        is lost. The button reads "Rebuilding the prefix..." meanwhile. Nothing is done while the game runs, and a `pfx.rebuild`
+        left by an interrupted rebuild is never deleted for you.
+    - **System language: ...** (Windows games): the language the game sees as the system's, for a game that shows boxes or the
+      wrong language until it does (a Japanese game on a system in another language, say). Pick one of English, Japanese, Chinese
+      (Simplified, Traditional), Korean, German, French, Spanish, Italian, Portuguese (Brazil), Russian or Polish, or "The
+      launcher's own" to go back. It does two things: the prefix's locale (`LocaleName`) and code pages (`ACP`, `OEMCP`) are written
+      into its registry, as the Winetricks settings are, and the game is started with `LC_ALL` and `LANG` set to it (`ja_JP.UTF-8`),
+      by every engine and by the launch script, which is written again, so the desktop entry and the Steam shortcut have it too. It is
+      kept as a `locale=ja_JP` entry in the Winetricks list (where it can also be ticked), so the server keeps it and another device
+      takes it at its next start: you are asked whether it holds for all devices or only this one. Going back to the default deletes
+      the locale and puts the code pages back as the prefix had them before the first language. The language is a game's own, not the
+      one of the sites in Settings.
+    - **Launch executable...** (Windows games): runs a program in the game's prefix through its engine:
+      - Wine's own tools: regedit, a command prompt, the file manager, the control panel, the task manager and the uninstaller.
+      - The game's executables: first the ones "Shortcuts / executable" offers, then every other .exe of its folder (settings
+        tools, launchers, redistributables).
+      - **Browse...** for any other .exe.
+      The button reads "A program is open in the prefix..." until it is closed. What **regedit** changed among the settings
+      winecfg keeps (DLL overrides, Direct3D, DirectSound, X11 and virtual desktop options, Windows version) is kept on the
+      server like winecfg's: you say whether it holds for all of the game's devices or only this one. Any other key it
+      changes, and what the other programs do, stays in this prefix.
     - **Prefix location**: where the game's Wine prefix is, for the save sync (shown when save sync is on).
   - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts. Its
     **Launch arguments** row has an **Edit** button for what is put after the game's executable. The arguments are **tags**:
@@ -112,11 +153,24 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   - **Refresh metadata**: fetches the metadata and artwork from the server again and rebuilds the icons and entries,
     editing the Steam shortcut in place.
   - **Repair: check the installed files**: compares every file the server installed with the server's hash and
-    downloads again each one that differs or is missing. It needs the install cache to still be on the server, shows in
-    the sidebar as "Checking files...", and replaces a file you changed yourself.
+    downloads again each one that differs or is missing. It checks against the install cache on the server, shows in
+    the sidebar as "Checking files...", and replaces a file you changed yourself. When the cache is no longer on the
+    server it does not stop there: it asks whether to have the server **make the install again** (it runs the game's
+    saved installers again, which can take a while and uses room on the server until its cache is deleted; nothing is
+    downloaded for that), and the check follows when it is done. Saying no checks nothing. An install that needs a
+    manual installer pick says so, with the address to finish it.
   - **Saves...** opens a menu (Back returns to Options) with a **Save sync (this game)** switch and, while it is on,
     **Back up saves now**, **Restore a saved version...** and, while a restore is waiting, **Cancel restoring saves**
     (see [SAVES.md](SAVES.md)).
+  - **Nuke custom settings** (red) takes away everything the game has set beyond its files and saves:
+    - Its launch arguments, its engine, and its Proton or Wine build: it goes back to the defaults of Settings.
+    - Its prefix, made again empty as Winetricks does when a verb is unticked (see above): no winetricks verb or setting,
+      no winecfg setting, nothing an installer left. The saves under `drive_c/users` are copied into the new one, and backed
+      up first when the save sync is on.
+    - What the server keeps for the game, for this device and for all devices, so a start does not bring it back. It goes
+      through the launch outbox, so it is sent later when the server cannot be reached.
+    It first lists all of it ("You have set: ... Continue?"), with what the server keeps too. It does nothing while the game
+    runs. The button reads "Clearing custom settings..." meanwhile.
   - **Uninstall...** opens a menu (Back returns to Options) with **Uninstall from this device**, **Uninstall and delete
     the server cache** and **Delete server cache only**. Uninstalling asks before deleting `pfx/`, which may hold save
     files; if you keep it, everything else in the folder goes. For a game that is not installed here, Options shows

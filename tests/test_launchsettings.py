@@ -788,7 +788,7 @@ def test_while_offline_a_change_is_kept_in_the_outbox_and_sent_when_the_server_i
 def test_pulling_while_offline_asks_nothing_and_fetches_the_build_only_with_the_internet(monkeypatch, game):
     server = Server(answer={"shared": _row("GE-Proton10-1"), "device": None})
     fetched = []
-    monkeypatch.setattr(launchsettings, "ensure_build", lambda rec, pref, say: fetched.append(rec.game_id))
+    monkeypatch.setattr(launchsettings, "ensure_build", lambda rec, pref, say, on_progress=None: fetched.append(rec.game_id))
     connectivity.set_forced(True)
 
     monkeypatch.setattr(connectivity, "internet_ok", lambda: False)
@@ -797,3 +797,213 @@ def test_pulling_while_offline_asks_nothing_and_fetches_the_build_only_with_the_
     launchsettings.pull(server, game, "auto")
 
     assert server.asked == [] and fetched == [7]
+
+
+def _old_prefix(prefix, proton):
+    """A prefix with a save, a DLL a verb put there and a link Wine made to the home folder."""
+    users = (prefix / "pfx" if proton else prefix) / "drive_c" / "users" / "steamuser"
+    (users / "Documents" / "My Game").mkdir(parents=True)
+    (users / "Documents" / "My Game" / "save.dat").write_text("progress")
+    system32 = users.parents[1] / "windows" / "system32"
+    system32.mkdir(parents=True)
+    (system32 / "msvcp140.dll").write_text("verb")
+    (users / "Music").symlink_to("/nonexistent/old-music")
+    return users
+
+
+@pytest.fixture
+def rebuild(monkeypatch, tmp_path, game):
+    prefix = tmp_path / "Game" / "pfx"
+    monkeypatch.setattr(launchsettings, "prefix_of", lambda rec: prefix)
+    monkeypatch.setattr(launchsettings.config, "data_dir", lambda: tmp_path / "data")
+    state = SimpleNamespace(prefix=prefix, proton=False, wineboot=0, ran=[], verbs=[], regs=[])
+
+    def start_tool(rec, pref, program, args=()):
+        state.ran.append(program)
+        if program == "wineboot":
+            drive = (prefix / "pfx" if state.proton else prefix) / "drive_c"
+            (drive / "users" / "steamuser" / "Documents").mkdir(parents=True)
+            (drive / "users" / "steamuser" / "Documents" / "fresh.txt").write_text("new prefix")
+            (drive / "users" / "steamuser" / "Desktop").symlink_to("/nonexistent/home-desktop")
+        code = state.wineboot if program == "wineboot" else 0
+        return SimpleNamespace(wait=lambda timeout=None: code, poll=lambda: code, log_path=None)
+
+    monkeypatch.setattr(launchsettings.launcher, "start_tool", start_tool)
+    monkeypatch.setattr(launchsettings.watcher, "wait_for_tool", lambda *a, **k: True)
+    monkeypatch.setattr(
+        launchsettings, "run_winetricks", lambda rec, pref, verbs: (state.verbs.append(verbs), rec.winetricks.extend(verbs))
+    )
+    monkeypatch.setattr(launchsettings, "apply_reg", lambda rec, pref, reg: state.regs.append(reg))
+    return state
+
+
+@pytest.mark.parametrize("proton", [False, True])
+def test_a_rebuilt_prefix_keeps_the_users_folder_and_only_what_is_ticked(game, rebuild, proton):
+    rebuild.proton = proton
+    _old_prefix(rebuild.prefix, proton)
+    game.winetricks, game.winecfg_applied = ["vcrun2019", "d3dx9"], "old"
+    launchsettings.undo_path(game).parent.mkdir(parents=True)
+    launchsettings.undo_path(game).write_text("about the old prefix")
+
+    launchsettings.rebuild_prefix(game, "auto", ["d3dx9"], REG)
+
+    users = (rebuild.prefix / "pfx" if proton else rebuild.prefix) / "drive_c" / "users" / "steamuser"
+    assert (users / "Documents" / "My Game" / "save.dat").read_text() == "progress"
+    assert (users / "Documents" / "fresh.txt").is_file()  # what the new prefix has stays too
+    assert (users / "Music").is_symlink() and (users / "Desktop").readlink().as_posix() == "/nonexistent/home-desktop"
+    assert not list(rebuild.prefix.rglob("msvcp140.dll"))  # what the verb put there is gone with the old prefix
+    assert not (rebuild.prefix.parent / "pfx.rebuild").exists()
+    assert rebuild.verbs == [["d3dx9"]] and game.winetricks == ["d3dx9"] and rebuild.regs
+    assert not launchsettings.undo_path(game).exists()
+    assert manager.load_library()[7].winecfg_applied == launchsettings.digest(launchsettings.winecfg.clean_import(REG))
+
+
+def test_a_prefix_the_engine_cannot_make_again_leaves_the_old_one_where_it_was(game, rebuild):
+    _old_prefix(rebuild.prefix, False)
+    rebuild.wineboot = 1
+    game.winetricks = ["vcrun2019"]
+
+    with pytest.raises(RuntimeError):
+        launchsettings.rebuild_prefix(game, "auto", [], None)
+
+    assert (rebuild.prefix / "drive_c" / "users" / "steamuser" / "Documents" / "My Game" / "save.dat").is_file()
+    assert (rebuild.prefix / "drive_c" / "windows" / "system32" / "msvcp140.dll").is_file()
+    assert not (rebuild.prefix.parent / "pfx.rebuild").exists() and game.winetricks == ["vcrun2019"]
+
+
+def test_a_rebuild_left_unfinished_is_never_deleted_blindly(game, rebuild):
+    _old_prefix(rebuild.prefix, False)
+    (rebuild.prefix.parent / "pfx.rebuild" / "drive_c").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="did not finish"):
+        launchsettings.rebuild_prefix(game, "auto", [], None)
+
+    assert rebuild.ran == [] and (rebuild.prefix.parent / "pfx.rebuild" / "drive_c").is_dir()
+
+
+def test_unticked_settings_are_deleted_from_the_registry_and_forgotten(game, prefix):
+    game.winetricks = ["vd=1280x1024", "vcrun2019", "csmt=on"]
+
+    launchsettings.reset_settings(game, "auto", ["vd=1280x1024", "csmt=on"])
+
+    assert '"Desktop"=-' in prefix.imported[0] and '"csmt"=-' in prefix.imported[0]
+    assert game.winetricks == ["vcrun2019"] and manager.load_library()[7].winetricks == ["vcrun2019"]
+
+
+def test_a_winetricks_list_waiting_to_be_sent_is_not_undone_by_the_servers_older_one(monkeypatch, game):
+    monkeypatch.setattr(launchsettings, "waiting_fields", lambda game_id: {"winetricks"})
+    monkeypatch.setattr(launchsettings, "flush", lambda client, game_id, say=None: False)
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda *a: pytest.fail("what was taken out must not come back"))
+
+    launchsettings.pull(Server({"shared": _row(verbs=["vcrun2019"]), "device": None}), game, "auto")
+
+
+def test_a_new_prefix_gets_the_winecfg_settings_still_waiting_to_be_sent_first(game):
+    launchsettings.queue(7, {"winecfg_reg": REG}, everywhere=False)
+    assert launchsettings.winecfg_to_keep(7, {"shared": _row(reg="older"), "device": None}) == REG
+    launchsettings._drop(7, launchsettings.waiting(7)[0])
+    assert launchsettings.winecfg_to_keep(7, {"shared": _row(reg="older"), "device": None}) == "older"
+
+
+def test_the_custom_settings_listed_are_this_devices_and_the_servers(game):
+    game.launch_args, game.proton, game.winetricks = ["-dx11"], "GE-Proton9-27", ["vcrun2019"]
+    answer = {"shared": _row(reg=REG, verbs=["d3dx9"]), "device": None}
+
+    lines = launchsettings.custom_settings(game, answer)
+
+    assert lines == [
+        "Launch argument: -dx11",
+        "Proton: GE-Proton9-27",
+        "Winetricks: vcrun2019",
+        "Winetricks: d3dx9",
+        'Registry (winecfg): DllOverrides: "d3d9"="native"',
+    ]
+
+
+def test_clearing_the_custom_settings_empties_the_servers_rows_first_and_makes_the_prefix_again(monkeypatch, game, rebuild):
+    _old_prefix(rebuild.prefix, False)
+    order = []
+    monkeypatch.setattr(manager, "set_launch_args", lambda rec, tags, pref: (order.append("args"), setattr(rec, "launch_args", tags)))
+    monkeypatch.setattr(manager, "set_proton", lambda rec, name, pref="auto": (order.append("proton"), setattr(rec, "proton", name)))
+    game.launch_args, game.proton, game.winetricks = ["-dx11"], "GE-Proton9-27", ["vcrun2019"]
+
+    launchsettings.clear_custom(game, "auto", ["shared", "device"])
+
+    assert [e["everywhere"] for e in launchsettings.waiting(7)] == [True, False]
+    assert launchsettings.waiting(7)[0]["changes"] == launchsettings.CLEARED
+    assert order == ["args", "proton"] and rebuild.verbs == [] and game.winetricks == []
+    assert (rebuild.prefix / "drive_c" / "users" / "steamuser" / "Documents" / "My Game" / "save.dat").is_file()
+
+
+def test_a_verb_that_fails_does_not_keep_the_winecfg_settings_from_being_put_in_and_is_still_an_error(monkeypatch, game):
+    order = []
+
+    def fail(rec, pref, verbs):
+        order.append("verbs")
+        raise RuntimeError("winetricks exited with 1")
+
+    monkeypatch.setattr(launchsettings, "run_winetricks", fail)
+    monkeypatch.setattr(launchsettings, "apply_reg", lambda rec, pref, reg: order.append("reg"))
+    server = Server({"shared": _row(reg=REG, verbs=["vcrun2015"]), "device": None})
+
+    with pytest.raises(RuntimeError, match="exited with 1"):
+        launchsettings.pull(server, game, "auto")
+
+    assert order == ["verbs", "reg"]  # the DLL overrides the game needs are in, whatever happened to the verb
+    assert game.winetricks_failed == ["vcrun2015"] and game.winecfg_applied == launchsettings.digest(launchsettings.winecfg.clean_import(REG))
+
+
+def test_the_build_download_reports_its_progress_while_pulling(monkeypatch, game, tmp_path):
+    game.proton = "GE-Proton9-27"
+    monkeypatch.setattr(launchsettings, "needs_download", lambda rec, pref: True)
+    seen = []
+    monkeypatch.setattr(launchsettings.protondl, "install", lambda name, into, on_progress=None: on_progress(5, 10))
+    monkeypatch.setattr(manager, "set_proton", lambda rec, name, pref="auto": None)
+
+    launchsettings.pull(Server({"shared": _row(proton="GE-Proton9-27"), "device": None}), game, "auto", on_progress=lambda d, t: seen.append((d, t)))
+
+    assert seen == [(5, 10)]
+
+
+SYSTEM_REG = (
+    "[System\\\\CurrentControlSet\\\\Control\\\\Nls\\\\CodePage] 1792\n#time=1\n"
+    '"ACP"="1252"\n"MACCP"="10000"\n"OEMCP"="437"\n\n[Other] 1\n"ACP"="1"\n'
+)
+
+
+def test_the_code_pages_are_kept_before_the_first_language_and_put_back_with_the_default(game, prefix):
+    (prefix.folder / "system.reg").write_text(SYSTEM_REG)
+
+    launchsettings.apply_settings(game, "auto", ["locale=ja_JP"])
+    prefix.imported.clear()
+    (prefix.folder / "system.reg").write_text(SYSTEM_REG.replace("1252", "932").replace("437", "932"))
+    launchsettings.apply_settings(game, "auto", ["locale=de_DE"])  # a second language does not keep the first one's pages
+
+    game.winetricks = ["locale=de_DE"]
+    prefix.imported.clear()
+    launchsettings.reset_settings(game, "auto", ["locale=de_DE"])
+
+    assert '"LocaleName"=-' in prefix.imported[0]
+    assert '"ACP"="1252"' in prefix.imported[1] and '"OEMCP"="437"' in prefix.imported[1] and "MACCP" not in prefix.imported[1]
+    assert game.winetricks == [] and not launchsettings._code_pages_path(game).exists()
+
+
+def test_the_launch_script_is_written_again_when_a_language_is_applied(monkeypatch, game, prefix):
+    written = []
+    monkeypatch.setattr(launchsettings.launcher, "write_launch_script", lambda rec, pref: written.append(rec.winetricks[:]))
+
+    launchsettings.run_winetricks(game, "auto", ["locale=ja_JP"])
+
+    assert written == [["locale=ja_JP"]]  # after the language is in the record, so the script has it
+
+
+@pytest.mark.parametrize("name", ["UMU-Proton-9.0-2", "UMU-Proton-9.0-4e"])
+def test_a_umu_proton_build_a_game_is_pinned_to_is_fetched_too(monkeypatch, game, tmp_path, name):
+    _ge_game(game, monkeypatch, tmp_path, "umu")
+    game.proton = name
+
+    assert launchsettings.needs_download(game, "auto") is True
+
+    _ge_game(game, monkeypatch, tmp_path, "umu", have=(name,))
+    game.proton = name
+    assert launchsettings.needs_download(game, "auto") is False

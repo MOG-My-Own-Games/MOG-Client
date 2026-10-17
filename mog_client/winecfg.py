@@ -113,6 +113,26 @@ def clean_import(reg_text: str) -> str:
     return _filtered(_collect(reg_text.splitlines(), _from_reg_header))
 
 
+def section_values(reg_text: str, section: str, names: tuple[str, ...]) -> list[str]:
+    """The `"name"="value"` lines of a prefix's registry file (`system.reg`, `user.reg`) for `names` (lower case) in `section`
+    (its path with doubled backslashes, as those files write it), as `.reg` lines."""
+    found: list[str] = []
+    inside = False
+    for line in reg_text.splitlines():
+        if line.startswith("["):
+            inside = line[1 : line.find("]")].lower() == section.lower()
+        elif inside and line.startswith('"'):
+            end = line.find('"', 1)
+            if end > 0 and line[1:end].lower() in names and line[end + 1 :].startswith("="):
+                found.append(line)
+    return found
+
+
+def describe(reg_text: str) -> list[str]:
+    """One line for each value the settings set, `Key: "name"="value"` (the key under HKCU\\Software\\Wine), to show them."""
+    return [f"{key or 'Wine'}: {value.splitlines()[0]}" for key, value in _index(clean_import(reg_text)).values()]
+
+
 def _index(reg_text: str, keep_deletes: bool = False) -> dict[tuple[str, str], tuple[str, str]]:
     """{(key, value name), both lower case: (key, the value's text)} of a `.reg` as `export_settings` and `clean_import` leave it."""
     found: dict[tuple[str, str], tuple[str, str]] = {}
@@ -125,11 +145,12 @@ def _index(reg_text: str, keep_deletes: bool = False) -> dict[tuple[str, str], t
 
 
 def _reg_of(entries: list[tuple[str, str]]) -> str:
-    """`.reg` text for (key, value text) pairs, grouped by key in the order they come."""
+    """`.reg` text for (key, value text) pairs, grouped by key in the order they come. A key is below Software\\Wine, unless
+    it starts with HKEY_ (a whole path, as the language settings need)."""
     sections: dict[str, list[str]] = {}
     for key, value in entries:
         sections.setdefault(key, []).append(value)
-    blocks = [f"[{ROOT}\\{key}]\n" if key else f"[{ROOT}]\n" for key in sections]
+    blocks = [f"[{key}]\n" if key.startswith("HKEY_") else f"[{ROOT}\\{key}]\n" if key else f"[{ROOT}]\n" for key in sections]
     return (
         f"{HEADER}\n\n" + "\n\n".join(block + "\n".join(values) for block, values in zip(blocks, sections.values())) + "\n"
         if sections

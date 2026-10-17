@@ -3316,7 +3316,7 @@ def test_the_linux_entries_are_in_one_linux_page_of_the_options(win, tmp_path, m
     assert not any(t.startswith(("Engine", "Prefix")) or "winecfg" in t for t in options)
 
     linux = _texts(gui.LinuxOptionsPage(win, SimpleNamespace(), rec))
-    assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "Prefix location"]
+    assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "System language: default", "Launch executable...", "Prefix location"]
 
 
 def test_a_linux_game_has_no_winecfg_no_version_and_no_prefix_location_without_save_sync(win, tmp_path, monkeypatch):
@@ -3691,8 +3691,8 @@ def _game_page(win, monkeypatch, tmp_path, **extra):
 
     rec = _game_record(tmp_path, "g.exe", **extra)
     _rich_game(win, monkeypatch)  # first: loading the games drops the records that do not fit one
-    manager.save_library({41: rec})
     rec.game_id = 41
+    manager.save_library({41: rec})
     win.show_game(41)
     return win.current_page(), rec
 
@@ -3759,7 +3759,7 @@ def test_winetricks_lists_the_verbs_with_the_prefixs_ticked_and_installs_only_th
     from mog_client import launchsettings
 
     page, rec = _game_page(win, monkeypatch, tmp_path)
-    rec.winetricks = ["vcrun2019", "custom9"]
+    gui.manager._update(rec, winetricks=["vcrun2019", "custom9"])
     pushed, ran, told, kept = [], [], [], []
     monkeypatch.setattr(win, "push", pushed.append)
     monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
@@ -3778,9 +3778,9 @@ def test_winetricks_lists_the_verbs_with_the_prefixs_ticked_and_installs_only_th
     assert labels["custom9"] == ("custom9 (set elsewhere)", True)  # a verb from another device that is not in the catalog
 
     checklist.on_done(["vcrun2019", "custom9"])  # nothing new
-    assert ran == [] and "Nothing new" in told[-1]
+    assert ran == [] and "Nothing changed" in told[-1]
 
-    checklist.on_done(["vcrun2019", "dotnet48", "d3dx9"])
+    checklist.on_done(["vcrun2019", "custom9", "dotnet48", "d3dx9"])
     pump(qapp)
 
     assert ran == [["dotnet48", "d3dx9"]] and "winetricks" not in page.app.jobs.get(rec.game_id, "")
@@ -4827,7 +4827,7 @@ def test_winetricks_lists_settings_beside_the_flags_one_value_for_each_name_and_
     from mog_client import launchsettings
 
     page, rec = _game_page(win, monkeypatch, tmp_path)
-    rec.winetricks = ["vcrun2019", "vd=1280x1024", "mine=custom"]
+    gui.manager._update(rec, winetricks=["vcrun2019", "vd=1280x1024", "mine=custom"])
     pushed, ran, told, kept = [], [], [], []
     monkeypatch.setattr(win, "push", pushed.append)
     monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
@@ -4859,7 +4859,7 @@ def test_winetricks_lists_settings_beside_the_flags_one_value_for_each_name_and_
 def test_add_settings_takes_as_many_as_typed_with_a_minus_on_each_and_ticks_them_in_place_of_the_other_values(win, qapp, monkeypatch, tmp_path):
     _activate(win, qapp)
     page, rec = _game_page(win, monkeypatch, tmp_path)
-    rec.winetricks = ["vd=1280x1024"]
+    gui.manager._update(rec, winetricks=["vd=1280x1024"])
     _server_keeps_winetricks(win, monkeypatch, None)
     page.open_winetricks(rec)
     pump(qapp)
@@ -4904,7 +4904,7 @@ def test_the_winetricks_page_shows_what_the_server_keeps_ticked_and_marked_until
     from mog_client import launchsettings
 
     page, rec = _game_page(win, monkeypatch, tmp_path)
-    rec.winetricks = ["vcrun2019", "vd=1280x1024"]
+    gui.manager._update(rec, winetricks=["vcrun2019", "vd=1280x1024"])
     _server_keeps_winetricks(win, monkeypatch, ["renderer=gdi", "vd=1920x1080", "dotnet48", "mine=custom"])  # set on the web page
     pushed, ran = [], []
     monkeypatch.setattr(win, "push", pushed.append)
@@ -4941,3 +4941,278 @@ def test_find_game_is_in_the_options_of_a_game_with_no_record_too(win):
 
     page = SimpleNamespace(delete_server_cache=lambda: None, game={"id": 4, "name": "G"})
     assert "Find game..." in _texts(gui.OptionsPage(win, page, None))
+
+
+def test_unticking_a_verb_asks_then_rebuilds_the_prefix_and_takes_it_off_the_servers_row(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    gui.manager._update(rec, winetricks=["vcrun2019", "d3dx9"])
+    _server_keeps_winetricks(win, monkeypatch, ["vcrun2019"])
+    pushed, asked, rebuilt = [], [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(win, "ask", lambda text, yes, **k: (asked.append(text), yes()))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    monkeypatch.setattr(gui.watcher, "running_pids", lambda install_dir: [])
+    monkeypatch.setattr(launchsettings, "rebuild_prefix", lambda r, pref, keep, reg, say: rebuilt.append(keep))
+    monkeypatch.setattr(launchsettings, "flush", lambda client, game_id: True)
+    monkeypatch.setattr(page, "_keep_on_server", lambda *a: pytest.fail("nothing was added"))
+
+    page.open_winetricks(rec)
+    pump(qapp)
+    pushed[0].on_done(["d3dx9"])
+    pump(qapp)
+
+    assert len(asked) == 1 and "vcrun2019" in asked[0] and "deleted" in asked[0]
+    assert rebuilt == [["d3dx9"]] and rec.game_id not in page.app.jobs
+    assert launchsettings.waiting(41) == [{"everywhere": True, "changes": {"winetricks": []}}]  # the row that had it
+
+
+def test_unticking_a_setting_only_resets_it_in_the_registry(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    gui.manager._update(rec, winetricks=["vcrun2019", "vd=1280x1024"])
+    _server_keeps_winetricks(win, monkeypatch, None)
+    pushed, reset, told = [], [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(win, "ask", lambda *a, **k: pytest.fail("a setting needs no new prefix"))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda r, pref, verbs: verbs and pytest.fail("nothing to install"))
+    monkeypatch.setattr(launchsettings, "reset_settings", lambda r, pref, entries: reset.append(entries))
+    win.app.bridge.message.connect(lambda level, text: told.append(text))
+
+    page.open_winetricks(rec)
+    pump(qapp)
+    pushed[0].on_done(["vcrun2019"])
+    pump(qapp)
+
+    assert reset == [["vd=1280x1024"]] and any("vd=1280x1024 taken out of the prefix" in t for t in told)
+
+
+def test_launch_executable_lists_wine_tools_then_the_games_executables_and_runs_the_pick_in_the_prefix(win, qapp, monkeypatch, tmp_path):
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    for rel in ("g.exe", "redist/vcredist_x64.exe", "start.sh"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"x")
+    chosen, started = [], []
+    monkeypatch.setattr(win, "choose", lambda title, text, options, on_choose, **k: chosen.append((options, on_choose)))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui, "start_tool", lambda r, pref, program, args=(), cwd=None: started.append((program, args, cwd)))
+    monkeypatch.setattr(gui.watcher, "wait_for_tool", lambda *a, **k: True)
+
+    page.launch_in_prefix(rec)
+    options, on_choose = chosen[0]
+    labels = [label for label, _value in options]
+
+    assert labels[0] == "Registry editor (regedit)" and labels[-1] == "Browse..."
+    assert labels[len(gui.PREFIX_TOOLS):-1] == ["g.exe  (the game's executable)", "redist/vcredist_x64.exe"]  # no .sh: not a Wine program
+
+    on_choose(options[1][1])
+    on_choose(options[len(gui.PREFIX_TOOLS) + 1][1])
+    assert started == [("wineconsole", ("cmd",), None), (str(tmp_path / "redist/vcredist_x64.exe"), (), tmp_path / "redist")]
+    assert rec.game_id not in page.app.jobs
+
+
+def test_a_page_s_old_copy_of_a_record_takes_what_a_start_saved_before_it_is_saved_again(win, monkeypatch, tmp_path):
+    from mog_client import manager
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    saved = manager.load_library()[41]
+    manager._update(saved, winetricks=["vcrun2019"])  # what the pull at the start installed, on another copy
+
+    assert gui.fresh_record(rec) is rec and rec.winetricks == ["vcrun2019"]
+
+
+def test_nuke_custom_settings_lists_everything_it_takes_away_and_asks_first(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    gui.manager._update(rec, launch_args=["-dx11"], winetricks=["vcrun2019"])
+    (tmp_path / "pfx").mkdir()
+    _server_keeps_winetricks(win, monkeypatch, ["d3dx9"])
+    asked, cleared = [], []
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    monkeypatch.setattr(win, "ask", lambda text, yes, **k: (asked.append(text), yes()))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    monkeypatch.setattr(gui.watcher, "running_pids", lambda install_dir: [])
+    monkeypatch.setattr(launchsettings, "clear_custom", lambda r, pref, rows, say: cleared.append(rows))
+    monkeypatch.setattr(launchsettings, "flush", lambda client, game_id: True)
+
+    assert "Nuke custom settings" in _texts(_options(win, rec))
+    page.nuke_settings(rec)
+    pump(qapp)
+
+    assert "- Launch argument: -dx11" in asked[0] and "- Winetricks: vcrun2019" in asked[0] and "- Winetricks: d3dx9" in asked[0]
+    assert "prefix is deleted" in asked[0] and "all devices" in asked[0] and asked[0].endswith("Continue?")
+    assert cleared == [["shared"]] and rec.game_id not in page.app.jobs
+
+
+def _regedit_run(win, qapp, monkeypatch, tmp_path, before, after):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    kept = []
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "prefix_settings", lambda r: before)
+    monkeypatch.setattr(launchsettings, "run_winecfg", lambda r, pref, program="winecfg": after if program == "regedit" else pytest.fail(program))
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: kept.append((changes, what)))
+    page._run_in_prefix(rec, ("tool", ("regedit",)))
+    pump(qapp)
+    return rec, page, kept
+
+
+def test_what_regedit_changed_in_the_wine_settings_is_kept_on_the_server_as_winecfgs_are(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    rec, page, kept = _regedit_run(win, qapp, monkeypatch, tmp_path, "old", "new")
+
+    assert kept == [({"winecfg_reg": "new"}, "The registry settings")] and rec.game_id not in page.app.jobs
+    assert gui.manager.load_library()[41].winecfg_applied == launchsettings.digest("new")
+
+
+def test_regedit_that_changed_nothing_in_the_wine_settings_asks_nothing(win, qapp, monkeypatch, tmp_path):
+    _rec, _page, kept = _regedit_run(win, qapp, monkeypatch, tmp_path, "same", "same")
+
+    assert kept == []
+
+
+def test_a_message_that_is_up_stays_over_the_menu_card_when_a_page_is_shown_again(win, qapp, monkeypatch, tmp_path):
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    win.push(gui.LinuxOptionsPage(win, page, rec))
+    win.message("GE-Proton9-27 now runs", "info")
+    win.push(gui.ChoicePage(win, "Which devices?", "text", [("All", "all")], lambda _v: None))  # raises the card
+
+    order = [c for c in win.centralWidget().children() if c in (win.modal, win.overlay)]
+
+    assert win.overlay.isVisible() and order == [win.modal, win.overlay]  # the last child is the topmost
+
+
+def test_starting_says_what_it_is_doing_under_the_cover_and_goes_back_to_installed(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    page._set_starting(True)
+
+    page._start_note("Downloading GE-Proton8-32: 40%", 40)
+    assert page.status.text() == "Downloading GE-Proton8-32: 40%" and page.bar.maximum() == 100 and page.bar.value() == 40
+
+    page._start_note("Installing vcrun2015 into the prefix of G")
+    assert page.bar.maximum() == 0  # runs back and forth: nothing says how long it takes
+
+    page._set_starting(False)
+    page._start_note("late")  # a message that comes after the start is over changes nothing
+    assert page.status.text() == "Installed" and page.bar.maximum() == 1
+
+
+def test_a_start_that_could_not_take_the_launch_settings_sends_the_log_and_still_starts(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    sent, told, started = [], [], []
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(page.app, "client", lambda: "client")
+    monkeypatch.setattr(gui, "selection_problems", lambda r, pref: [])
+    monkeypatch.setattr(launchsettings, "pull", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("winetricks exited with 1")))
+    monkeypatch.setattr(gui.logsend, "send_for_game", lambda client, settings, game_id: sent.append(game_id))
+    win.app.bridge.message.connect(lambda level, text: told.append(text))
+
+    page.pull_launch_settings(rec, lambda: started.append(1))
+    pump(qapp)
+
+    assert sent == [rec.game_id] and started == [1] and any("winetricks exited with 1" in t for t in told)
+
+
+def test_the_system_language_is_picked_from_a_list_and_applied_then_kept_on_the_server(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    gui.manager._update(rec, winetricks=["vcrun2019", "locale=de_DE"])
+    _server_keeps_winetricks(win, monkeypatch, ["locale=de_DE", "d3dx9"])
+    chosen, ran, kept, queued = [], [], [], []
+    monkeypatch.setattr(win, "choose", lambda title, text, options, on_choose, **k: chosen.append((options, on_choose)))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "run_winetricks", lambda r, pref, verbs: (ran.append(verbs), gui.manager._update(r, winetricks=winetricks.merge(r.winetricks, verbs))))
+    monkeypatch.setattr(launchsettings, "queue", lambda game_id, changes, everywhere: queued.append((changes, everywhere)))
+    monkeypatch.setattr(launchsettings, "flush", lambda client, game_id: True)
+    monkeypatch.setattr(page, "_keep_on_server", lambda r, changes, what: kept.append((changes, what)))
+
+    page.choose_language(rec)
+    pump(qapp)
+    options, on_choose = chosen[0]
+    labels = [label for label, _v in options]
+    assert labels[0].startswith("The launcher's own") and "German (de_DE) - now" in labels and "Japanese (ja_JP)" in labels
+
+    on_choose("ja_JP")
+    pump(qapp)
+
+    assert ran == [["locale=ja_JP"]] and rec.winetricks == ["vcrun2019", "locale=ja_JP"]  # one language: the new takes the old one's place
+    assert queued == [({"winetricks": ["d3dx9"]}, True)]  # the server's row loses the older language
+    assert kept == [({"winetricks": ["vcrun2019", "locale=ja_JP"]}, "The system language")] and rec.game_id not in page.app.jobs
+    assert "System language: Japanese" in _texts(gui.LinuxOptionsPage(win, page, rec))
+
+
+def test_going_back_to_the_default_language_resets_the_prefix_and_asks_nothing(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launchsettings
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    gui.manager._update(rec, winetricks=["locale=ja_JP"])
+    _server_keeps_winetricks(win, monkeypatch, None)
+    chosen, reset = [], []
+    monkeypatch.setattr(win, "choose", lambda title, text, options, on_choose, **k: chosen.append(on_choose))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(launchsettings, "reset_settings", lambda r, pref, entries: reset.append(entries))
+    monkeypatch.setattr(page, "_keep_on_server", lambda *a: pytest.fail("nothing is added"))
+
+    page.choose_language(rec)
+    pump(qapp)
+    chosen[0]("")
+    pump(qapp)
+
+    assert reset == [["locale=ja_JP"]]
+
+
+def _repair_page(win, monkeypatch, tmp_path, holds):
+    from mog_client import manager
+
+    page, rec = _game_page(win, monkeypatch, tmp_path)
+    asked, ran = [], []
+    monkeypatch.setattr(win, "ask", lambda text, yes, **k: (asked.append(text), yes()))
+    monkeypatch.setattr(page.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(page.app, "client", lambda: "client")
+    monkeypatch.setattr(manager, "holds_install", lambda client, gid: holds)
+    monkeypatch.setattr(manager, "regenerate_cache", lambda r, client, stop, log, *a: ran.append("regenerate") or True)
+    monkeypatch.setattr(manager, "repair", lambda r, client, stop, log, progress: ran.append("repair") or SimpleNamespace(failed=[], repaired=0, checked=3))
+    return page, rec, asked, ran
+
+
+def test_a_check_with_the_install_cache_on_the_server_asks_once_and_just_checks(win, qapp, monkeypatch, tmp_path):
+    page, rec, asked, ran = _repair_page(win, monkeypatch, tmp_path, holds=True)
+
+    page.repair(rec)
+    pump(qapp)
+
+    assert len(asked) == 1 and ran == ["repair"]
+
+
+def test_a_check_without_the_install_cache_asks_whether_to_make_it_again_and_then_checks(win, qapp, monkeypatch, tmp_path):
+    page, rec, asked, ran = _repair_page(win, monkeypatch, tmp_path, holds=False)
+
+    page.repair(rec)
+    pump(qapp)
+
+    assert len(asked) == 2 and "make it again" in asked[1] and "installer again" in asked[1]
+    assert ran == ["regenerate", "repair"]  # in that order, and only after the yes
+
+
+def test_declining_to_make_the_cache_again_checks_nothing(win, qapp, monkeypatch, tmp_path):
+    page, rec, asked, ran = _repair_page(win, monkeypatch, tmp_path, holds=False)
+    monkeypatch.setattr(win, "ask", lambda text, yes, **k: (asked.append(text), yes() if len(asked) == 1 else None))
+
+    page.repair(rec)
+    pump(qapp)
+
+    assert len(asked) == 2 and ran == [] and rec.game_id not in win.library.repairs

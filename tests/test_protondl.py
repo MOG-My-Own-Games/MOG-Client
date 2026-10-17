@@ -101,8 +101,8 @@ def test_offline_or_a_missing_release_says_so(tmp_path):
 
 @pytest.mark.parametrize("name", ["Proton 9.0", "GE-Proton", "../GE-Proton9-27", "GE-Proton9-27/x", ""])
 def test_only_release_names_are_taken(tmp_path, name):
-    assert not protondl.is_ge(name)
-    with pytest.raises(RuntimeError, match="not a Proton-GE"):
+    assert not protondl.is_ge(name) and not protondl.is_fetchable(name)
+    with pytest.raises(RuntimeError, match="not a Proton-GE or UMU-Proton"):
         protondl.install(name, tmp_path, Web(b""))
 
 
@@ -111,3 +111,19 @@ def test_the_checksum_is_read_for_the_archive_by_name():
 
     assert protondl.expected_hash(text, f"{NAME}.tar.gz") == "b" * 128
     assert protondl.expected_hash("not a checksum", f"{NAME}.tar.gz") is None
+
+
+@pytest.mark.parametrize("name", ["UMU-Proton-10.0-4", "UMU-Proton-9.0-2", "UMU-Proton-9.0-3.2", "UMU-Proton-9.0-4e"])
+def test_umu_proton_releases_are_fetched_from_their_own_repository(tmp_path, name):
+    web = Web(_archive({f"{name}/proton": b"#!/bin/sh\n", f"{name}/files/bin/wine": b"x"}), name=name)
+    web.files = {url.replace(protondl.RELEASES, protondl.UMU_RELEASES): data for url, data in web.files.items()}
+
+    target = protondl.install(name, tmp_path / "tools", web)
+
+    assert protondl.is_umu(name) and not protondl.is_ge(name) and protondl.is_fetchable(name)
+    assert (target / "proton").is_file() and web.calls[0] == f"{protondl.UMU_RELEASES}/{name}/{name}.sha512sum"
+
+
+@pytest.mark.parametrize("name", ["UMU-Proton", "UMU-Proton-9", "UMU-Proton-9.0", "umu-proton-9.0-2", "UMU-Proton-9.0-2/x", "UMU-Proton-9.0-2e9"])
+def test_other_umu_names_are_not_taken(name):
+    assert not protondl.is_umu(name)
