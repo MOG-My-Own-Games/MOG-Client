@@ -7,12 +7,13 @@
 2. Two client containers install it at the same time: one runs MOG Client on Linux (the game through Wine, a prefix in
    the game's folder), the other runs the same source with Windows' own Python under Wine (`sys.platform == "win32"`,
    the game's `.exe` started directly). Both must download from the one install on the server.
-3. Linux plays a new game (three turns of an AI game run by `freeciv-server.exe` from `freeciv/new-game.serv`) and backs
-   its saves up with `mog --save-sync`.
-4. Windows takes them with `mog --save-pre`, loads Linux's last save, plays on to turn 5 (`freeciv/continue.serv`) and
-   backs up.
-5. The test checks each backup holds the game's saves and nothing else, that Windows' turn 5 is Linux's game (same map
-   seed, terrain and leaders), and that Linux gets Windows' saves back with `mog --save-pre`.
+3. The game goes back and forth, an AI game run by `freeciv-server.exe` and saved every turn:
+   - Linux plays turns 1-3 of a new game (`freeciv/new-game.serv`) and backs up with `mog --save-sync`;
+   - Windows takes those saves with `mog --save-pre`, loads turn 3 and plays 4-6 (`freeciv/continue-on-windows.serv`),
+     then backs up;
+   - Linux takes them back, loads turn 6 and plays 7-9 (`freeciv/continue-on-linux.serv`), then backs up.
+4. The test checks that each backup is exactly the game's saves (nothing of the prefix or of MOG's own files), that turns
+   6 and 9 are the game of turn 3 (same terrain and leaders), and that Windows ends up with all nine saves.
 
 ## Running it
 

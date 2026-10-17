@@ -2,16 +2,18 @@
 
 1. The server gets a library with Freeciv's Windows installer and runs it in its sandbox, auto mode reading the wizard.
 2. Both clients install the game at the same time, from the one install on the server.
-3. Linux plays a new game (an AI game run by the game's own server program) and backs its saves up.
-4. Windows takes them before starting the game, loads Linux's save, plays on and backs up.
-5. The test checks what each machine sent, that Windows really carried on Linux's game, and that Linux gets Windows'
-   saves back.
+3. The game goes back and forth (an AI game run by the game's own server program, saved every turn): Linux plays turns
+   1-3 of a new game, Windows takes those saves, loads turn 3 and plays 4-6, Linux takes them back and plays 7-9.
+   Each machine backs up after playing and takes the other's saves before it starts, as a game's shortcut does.
+4. The test checks each backup is exactly the game's saves, that every machine carried on the same game, and that Windows
+   ends up with the whole game.
 
 Needs Docker and a few GB, and takes several minutes; it runs only with MOG_E2E=1. See tests/e2e/README.md.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import secrets
@@ -183,6 +185,56 @@ def turn_of(save: str) -> int:
     return int(re.search(r"^turn=(\d+)$", save, re.MULTILINE).group(1))
 
 
+def as_text(data: bytes) -> str:
+    return data.decode().replace("\r\n", "\n")  # each Freeciv writes its own line endings (CRLF on Windows)
+
+
+def hashes(files: dict) -> dict[str, str]:
+    return {name: f["sha256"] for name, f in files.items()}
+
+
+def take_saves(box: harness.ClientBox, game_id: int, expected: dict) -> None:
+    """`mog --save-pre`, as the game's shortcut runs it before the game: afterwards this machine has exactly the saves the
+    other one left."""
+    box.mog("--save-pre", str(game_id))
+    here = box.driver("saves", str(game_id))
+    assert hashes(here["files"]) == hashes(expected), (
+        f"{box.role} did not get the other machine's saves before starting the game: it has {sorted(here['files'])}, "
+        f"expected {sorted(expected)}; sync state {here['state']}"
+    )
+    say(f"{box.role}: took the other machine's {len(expected)} saves")
+
+
+def leg(
+    stack: harness.Stack, box: harness.ClientBox, record: dict, game_id: int, script: str, turns: list[int], load: str | None
+) -> tuple[dict, str]:
+    """One machine's turn at the game: play (a new game, or on from the save `load`), back up, and check the backup is
+    exactly the saves on this machine. Returns this machine's saves and the text of its newest one."""
+    before = box.driver("saves", str(game_id))["files"]
+    tags = [f"--file save/{load}"] if load else []
+    play(box, game_id, *tags, f"--read Z:/e2e/freeciv/{script}", "--saves save", "--exit-on-end")
+    files = box.driver("saves", str(game_id))["files"]
+    new = {name: f for name, f in files.items() if name not in before}
+    assert sorted(f["turn"] for f in new.values()) == turns, f"{box.role} should have saved turns {turns}: {sorted(files)}"
+    assert all(name.startswith(f"e2e-{box.role}-") for name in new), sorted(new)
+    say(f"{box.role}: played turns {turns[0]}-{turns[-1]}" + (f" on from {load}" if load else "") + f", saves {sorted(new)}")
+
+    synced = box.mog("--save-sync", str(game_id))
+    assert "save sync: uploaded" in synced.stdout, synced.stdout
+    version = newest_version(stack.api, game_id, f"e2e-{box.role}")
+    archive = stack.api.save_archive(version["id"])
+    prefix = save_prefix(record)
+    wanted = {prefix + name for name in files}
+    assert set(archive) == wanted, (
+        f"{box.role}'s backup is not exactly the game's saves: extra {sorted(set(archive) - wanted)}, "
+        f"missing {sorted(wanted - set(archive))}"
+    )
+    assert {key[len(prefix) :]: hashlib.sha256(data).hexdigest() for key, data in archive.items()} == hashes(files)
+    say(f"server: {box.role}'s version {version['id']} holds {len(archive)} files")
+    newest = max(new, key=lambda name: new[name]["turn"])
+    return files, as_text(archive[prefix + newest])
+
+
 def test_install_play_and_sync_saves_between_linux_and_windows(stack: harness.Stack):
     api, linux, windows = stack.api, stack.clients["linux"], stack.clients["windows"]
 
@@ -204,55 +256,21 @@ def test_install_play_and_sync_saves_between_linux_and_windows(stack: harness.St
     )
     assert records["windows"]["prefix"] is None and records["linux"]["prefix"], records
 
-    # --- Linux: a new game, three turns, then the saves go up
-    play(linux, game_id, "--read Z:/e2e/freeciv/new-game.serv", "--saves save", "--exit-on-end")
-    on_linux = linux.driver("saves", str(game_id))["files"]
-    assert sorted(f["turn"] for f in on_linux.values()) == [1, 2, 3], on_linux
-    say(f"linux: played, saves {sorted(on_linux)}")
-    synced = linux.mog("--save-sync", str(game_id))
-    assert "save sync: uploaded" in synced.stdout, synced.stdout
+    # --- the game goes back and forth: Linux turns 1-3, Windows 4-6, Linux 7-9, each taking the other's saves first
+    on_linux, linux_t3 = leg(stack, linux, records["linux"], game_id, "new-game.serv", [1, 2, 3], load=None)
 
-    linux_version = newest_version(api, game_id, "e2e-linux")
-    linux_files = api.save_archive(linux_version["id"])
-    linux_prefix = save_prefix(records["linux"])
-    assert set(linux_files) == {linux_prefix + name for name in on_linux}, (
-        "Linux's backup holds other files than the game's saves: " + ", ".join(sorted(set(linux_files) - {linux_prefix + n for n in on_linux}))
-    )
-    say(f"server: Linux's version {linux_version['id']} holds {len(linux_files)} files")
+    take_saves(windows, game_id, on_linux)
+    last = max(on_linux, key=lambda name: on_linux[name]["turn"])
+    on_windows, windows_t6 = leg(stack, windows, records["windows"], game_id, "continue-on-windows.serv", [4, 5, 6], load=last)
 
-    # --- Windows: takes Linux's saves before the game starts, loads the last one and plays on
-    windows.mog("--save-pre", str(game_id))
-    before_play = windows.driver("saves", str(game_id))["files"]
-    assert {n: f["sha256"] for n, f in before_play.items()} == {n: f["sha256"] for n, f in on_linux.items()}, (
-        f"Windows did not get Linux's saves before starting the game: it has {sorted(before_play)}; "
-        f"sync state {windows.driver('saves', str(game_id))['state']}"
-    )
-    last_linux = max(on_linux, key=lambda n: on_linux[n]["turn"])
-    play(windows, game_id, f"--file save/{last_linux}", "--read Z:/e2e/freeciv/continue.serv", "--saves save", "--exit-on-end")
-    on_windows = windows.driver("saves", str(game_id))["files"]
-    own = {n: f for n, f in on_windows.items() if n.startswith("e2e-windows-")}
-    assert sorted(f["turn"] for f in own.values()) == [4, 5], on_windows
-    say(f"windows: played on from {last_linux}, saves {sorted(own)}")
-    synced = windows.mog("--save-sync", str(game_id))
-    assert "save sync: uploaded" in synced.stdout, synced.stdout
+    take_saves(linux, game_id, on_windows)
+    last = max(on_windows, key=lambda name: on_windows[name]["turn"])
+    on_linux, linux_t9 = leg(stack, linux, records["linux"], game_id, "continue-on-linux.serv", [7, 8, 9], load=last)
 
-    windows_version = newest_version(api, game_id, "e2e-windows")
-    windows_files = api.save_archive(windows_version["id"])
-    windows_prefix = save_prefix(records["windows"])
-    assert set(windows_files) == {windows_prefix + name for name in on_windows}, (
-        "Windows' backup holds other files than the game's saves: "
-        + ", ".join(sorted(set(windows_files) - {windows_prefix + n for n in on_windows}))
-    )
+    # --- one game all along, never a new one: every machine carried on the one before it
+    assert [turn_of(linux_t3), turn_of(windows_t6), turn_of(linux_t9)] == [3, 6, 9]
+    assert game_identity(windows_t6) == game_identity(linux_t3), "Windows' turn 6 is not the game Linux saved at turn 3"
+    assert game_identity(linux_t9) == game_identity(linux_t3), "Linux's turn 9 is not the game Windows saved at turn 6"
 
-    # --- Windows really carried on Linux's game, not a new one
-    # Each Freeciv writes its own line endings (CRLF on Windows): compared as text.
-    linux_save = linux_files[linux_prefix + last_linux].decode().replace("\r\n", "\n")
-    windows_save = windows_files[windows_prefix + max(own, key=lambda n: own[n]["turn"])].decode().replace("\r\n", "\n")
-    assert turn_of(linux_save) == 3 and turn_of(windows_save) == 5
-    assert game_identity(windows_save) == game_identity(linux_save), "Windows' turn 5 is not the game Linux saved at turn 3"
-
-    # --- and Linux gets Windows' saves back at its next start
-    linux.mog("--save-pre", str(game_id))
-    back_on_linux = linux.driver("saves", str(game_id))["files"]
-    assert {n: f["sha256"] for n, f in back_on_linux.items()} == {n: f["sha256"] for n, f in on_windows.items()}, sorted(back_on_linux)
-    say("linux: has Windows' saves back")
+    # --- and Windows, at its next start, has the whole game back
+    take_saves(windows, game_id, on_linux)

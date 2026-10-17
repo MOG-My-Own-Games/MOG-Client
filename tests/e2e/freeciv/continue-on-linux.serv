@@ -1,0 +1,7 @@
+# Read after `--file <a save>` has loaded it (Windows' turn 6): back on Linux, play on to turn 9 under Linux's name.
+set endturn 9
+set compresstype PLAIN
+set savename e2e-linux
+set autosaves TURN
+set saveturns 1
+start

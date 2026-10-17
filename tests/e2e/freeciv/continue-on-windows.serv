@@ -1,0 +1,8 @@
+# Read after `--file <a save>` has loaded it (Linux's turn 3): play on to turn 6 and save under another name, so the
+# new saves tell which machine wrote them.
+set endturn 6
+set compresstype PLAIN
+set savename e2e-windows
+set autosaves TURN
+set saveturns 1
+start
