@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import threading
 import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -60,6 +61,10 @@ def server_image(docker: harness.Docker) -> tuple[str, Path | None]:
     return harness.SERVER_IMAGE, None
 
 
+def _exit_on_signal(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
 @pytest.fixture(scope="module")
 def stack():
     command = harness.docker_command()
@@ -78,8 +83,13 @@ def stack():
     (library / harness.GAME_FOLDER).mkdir(parents=True)
     os.link(installer, library / harness.GAME_FOLDER / installer.name)
 
+    if left := harness.sweep(docker):
+        say(f"removed what an earlier run left behind: {', '.join(left)}")
     box = harness.Stack(docker, run_dir)
     box.failed = True  # until the setup is through; the test's own outcome then decides (see _record_failure)
+    # A kill or a closed terminal ends the process without running the finally below, and the containers would go on
+    # (and keep the machine awake): turn those signals into an exit that does run it.
+    previous = {sig: signal.signal(sig, _exit_on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
     try:
         say(f"starting the server ({image}{f', code from {server_src}' if server_src else ''})")
         box.start_server(image, library, server_src)
@@ -88,6 +98,8 @@ def stack():
         box.failed = False
         yield box
     finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
         if (box.failed and not (run_dir / "diagnostics").is_dir()) or os.environ.get("MOG_E2E_DIAGNOSTICS") == "1":
             say(f"diagnostics in {box.keep_diagnostics()}")
         if os.environ.get("MOG_E2E_KEEP") == "1":

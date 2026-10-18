@@ -33,7 +33,7 @@ this repo, and downloads Freeciv's installer and Proton-CachyOS into `~/.cache/m
 | `MOG_E2E_SERVER_MOUNT=1` | With the above: mount the checkout's `backend/` and `frontend/` over the image's code (no rebuild). |
 | `MOG_E2E_SERVER_SRC` | Where the MOG-Server checkout is (default: `../MOG-Server`). |
 | `MOG_E2E_REBUILD=1` | Build the client image again. |
-| `MOG_E2E_KEEP=1` | Leave the containers running afterwards, to look at them. |
+| `MOG_E2E_KEEP=1` | Leave the containers running afterwards, to look at them (the next run removes them; they keep a laptop awake). |
 | `MOG_E2E_DIAGNOSTICS=1` | Keep the server and client logs even when the test passes. |
 | `MOG_E2E_DOCKER` | The docker command (default `docker`, or `flatpak-spawn --host docker` inside a Flatpak). |
 | `MOG_E2E_BUILD_NETWORK` | The network images are built with (default `host`). |
@@ -42,6 +42,13 @@ this repo, and downloads Freeciv's installer and Proton-CachyOS into `~/.cache/m
 
 A failure leaves the server log, both clients' commands and logs, and the server's install state in
 `~/.cache/mog-e2e/runs/<run>/diagnostics`; the run folder also holds the server's data and each client's games.
+
+## Cleaning up
+
+The containers and the network of a run are removed when it ends, however it ends, including a `SIGTERM` or a closed
+terminal. A run killed outright (`SIGKILL`) cannot, and running containers keep a machine from sleeping: the next run
+removes what dead runs left (everything labelled `mog-e2e` whose process is gone), or do it by hand with
+`python tests/e2e/harness.py clean`.
 
 ## What it does not cover
 

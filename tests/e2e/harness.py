@@ -36,6 +36,7 @@ PROTON_URL = "https://github.com/CachyOS/proton-cachyos/releases/download/cachyo
 PROTON_SHA256 = "096bfe73b506d6565b04ecc45214197a4091818f16ed91f5324b4d2082d0a263"
 PROTON_BUILD = "cachyos-latest"
 
+LABEL = "mog-e2e"  # on every container and network the test creates
 CLIENT_IMAGE = "mog-e2e-client"
 SERVER_IMAGE = "mog-server:e2e"
 ADMIN = "admin"
@@ -214,6 +215,8 @@ class Stack:
         self.docker = docker
         self.run_dir = run_dir
         self.tag = "mog-e2e-" + secrets.token_hex(3)
+        # Marks what this run creates and which process owns it, so a run that was killed can be swept (see `sweep`).
+        self.labels = ("--label", LABEL, "--label", f"{LABEL}.pid={os.getpid()}")
         self.network = self.tag
         self.server = f"{self.tag}-server"
         self.password = "e2e-" + secrets.token_urlsafe(12)
@@ -229,7 +232,7 @@ class Stack:
     def start_server(self, image: str, library: Path, source: Path | None = None) -> Api:
         """The server, its data (database, install caches, saves) in the run folder. With `source`, a MOG-Server checkout's
         backend and web UI are mounted over the image's, so an existing image runs the code checked out."""
-        self.docker("network", "create", self.network)
+        self.docker("network", "create", *self.labels, self.network)
         data = self.run_dir / "server"
         data.mkdir(parents=True, exist_ok=True)
         builds = cache_dir() / "proton"
@@ -238,7 +241,7 @@ class Stack:
         if source is not None:
             mounts += ["-v", f"{source / 'backend'}:/src/backend:ro", "-v", f"{source / 'frontend'}:/src/frontend:ro"]
         self.docker(
-            "run", "-d", "--name", self.server, "--network", self.network, "--privileged", "--init",
+            "run", "-d", *self.labels, "--name", self.server, "--network", self.network, "--privileged", "--init",
             "-p", "127.0.0.1::5000",
             "-e", f"MOG_ADMIN_USERNAME={ADMIN}", "-e", f"MOG_ADMIN_PASSWORD={self.password}",
             "-e", "LOGLEVEL=DEBUG", "-e", "LUDUSAVI_ENABLED=false", "-e", "HLTB_ENABLED=false",
@@ -272,7 +275,7 @@ class Stack:
         data.mkdir(parents=True, exist_ok=True)
         inside = WINDOWS_DATA if role == "windows" else LINUX_DATA
         self.docker(
-            "run", "-d", "--name", name, "--hostname", f"e2e-{role}", "--network", self.network,
+            "run", "-d", *self.labels, "--name", name, "--hostname", f"e2e-{role}", "--network", self.network,
             "-v", f"{CLIENT_SRC}:/src:ro", "-v", f"{E2E_DIR}:/e2e:ro", "-v", f"{data}:{inside}",
             CLIENT_IMAGE,
         )  # fmt: skip
@@ -302,7 +305,45 @@ class Stack:
         # The containers write as root (or the server's own user): give the run folder back to whoever runs the test.
         owner = f"{os.getuid()}:{os.getgid()}"
         for name, inside in self.mounts.items():
-            self.docker("exec", "-u", "root", name, "chown", "-R", owner, *inside.split(), check=False)
+            self.docker("exec", "-u", "root", name, "chown", "-R", owner, *inside.split(), check=False, timeout=120)
         for name in [*(b.name for b in self.clients.values()), self.server]:
-            self.docker("rm", "-f", name, check=False)
-        self.docker("network", "rm", self.network, check=False)
+            self.docker("rm", "-f", name, check=False, timeout=120)
+        self.docker("network", "rm", self.network, check=False, timeout=60)
+
+
+def sweep(docker: Docker) -> list[str]:
+    """Remove what runs of this test left behind when their process was killed before it could clean up (running
+    containers keep a laptop from sleeping): everything labelled for the test whose owning process is gone. Returns what
+    was removed."""
+    removed = []
+    listing = docker("ps", "-a", "--filter", f"label={LABEL}", "--format", '{{.Names}} {{.Label "' + LABEL + '.pid"}}', check=False)
+    for line in listing.stdout.splitlines():
+        name, _, pid = line.partition(" ")
+        if name and not _alive(pid):
+            docker("rm", "-f", name, check=False, timeout=120)
+            removed.append(name)
+    listing = docker("network", "ls", "--filter", f"label={LABEL}", "--format", '{{.Name}} {{.Label "' + LABEL + '.pid"}}', check=False)
+    for line in listing.stdout.splitlines():
+        name, _, pid = line.partition(" ")
+        if name and not _alive(pid):
+            docker("network", "rm", name, check=False, timeout=60)
+            removed.append(name)
+    return removed
+
+
+def _alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+if __name__ == "__main__":
+    # `python tests/e2e/harness.py clean`: take down what a killed run left behind (this process owns none).
+    import sys
+
+    if sys.argv[1:] == ["clean"]:
+        print("removed:", ", ".join(sweep(Docker(docker_command()))) or "nothing")
