@@ -2,7 +2,7 @@
 
 A game's save files are backed up to the server and follow you between machines. Each upload is filed under the machine it
 came from, and a newer save from another machine is brought over, so you can pick up a game where you left it. The server
-keeps the last three versions from each machine and lists them under the game's Files > Saves tab. A version can be
+keeps the last three versions from each machine (the server's administrator can change that number, 1 to 20) and lists them under the game's Files > Saves tab. A version can be
 downloaded, and a zip can be uploaded by hand.
 
 Save sync can be switched off for all games in Settings or for one game in its Options.
