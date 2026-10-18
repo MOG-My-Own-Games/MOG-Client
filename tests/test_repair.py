@@ -153,3 +153,30 @@ def test_an_install_that_needs_a_hand_or_fails_is_an_error_not_a_check(tmp_path,
         manager.regenerate_cache(rec(tmp_path), Regenerating(["awaiting_installer"]), threading.Event(), lambda t: None)
     with pytest.raises(RuntimeError, match="could not make the install again: wine crashed"):
         manager.regenerate_cache(rec(tmp_path), Regenerating(["installing", "failed"], error="wine crashed"), threading.Event(), lambda t: None)
+
+
+def test_a_save_the_game_wrote_over_an_installer_file_is_not_put_back(tmp_path):
+    server = Server({"a.bin": b"right", "save.dat": b"empty"})
+    (tmp_path / "a.bin").write_bytes(b"broken")
+    (tmp_path / "save.dat").write_bytes(b"progress")
+
+    result = verify_and_repair(
+        server, 1, tmp_path, 7, log=lambda t: None, warn=lambda t: None, fetch_missing=True, keep=lambda p: p == "save.dat"
+    )
+
+    assert (result.repaired, result.kept, server.downloaded) == (1, ["save.dat"], ["a.bin"])
+    assert (tmp_path / "save.dat").read_bytes() == b"progress"
+
+
+def test_repair_leaves_the_files_the_save_sync_tracks(tmp_path, monkeypatch):
+    (tmp_path / "G").mkdir()
+    (tmp_path / "G" / "save.dat").write_bytes(b"progress")
+    state = SimpleNamespace(tracked={"game/G/save.dat": object()})
+    monkeypatch.setattr(manager, "load_state", lambda gid: state)
+    monkeypatch.setattr(manager, "save_install_manifest", lambda gid, files: None)
+    server = Server({"save.dat": b"empty"})
+
+    result = manager.repair(rec(tmp_path, files_dir=str(tmp_path / "G")), server, threading.Event(), lambda t: None)
+
+    assert result.kept == ["save.dat"] and server.downloaded == []
+    assert (tmp_path / "G" / "save.dat").read_bytes() == b"progress"

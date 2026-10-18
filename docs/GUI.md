@@ -156,7 +156,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
     editing the Steam shortcut in place.
   - **Repair: check the installed files**: compares every file the server installed with the server's hash and
     downloads again each one that differs or is missing. It checks against the install cache on the server, shows in
-    the sidebar as "Checking files...", and replaces a file you changed yourself. When the cache is no longer on the
+    the sidebar as "Checking files...", and replaces a file you changed yourself, except the saves: a file the save sync
+    backs up for the game (it is one the installer wrote and the game changed afterwards) is left as it is and the Logs
+    tab names it. When the cache is no longer on the
     server it does not stop there: it asks whether to have the server **make the install again** (it runs the game's
     saved installers again, which can take a while and uses room on the server until its cache is deleted; nothing is
     downloaded for that), and the check follows when it is done. Saying no checks nothing. An install that needs a

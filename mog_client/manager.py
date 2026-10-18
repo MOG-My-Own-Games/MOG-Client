@@ -33,6 +33,7 @@ from mog_client.launcher import (
     write_launch_script,
 )
 from mog_client.saves import installed as ledger
+from mog_client.saves.locations import GAME_KEY
 from mog_client.saves.state import forget_game, load_state, save_install_manifest, save_state
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import RepairResult, download_all_files, poll_session, verify_and_repair
@@ -649,9 +650,15 @@ def repair(
     session = client.get_session(rec.game_id)
     if not session or session.get("state") != "done":
         raise RuntimeError("the server no longer holds this install, so there is nothing to check the files against")
+    tracked = load_state(rec.game_id).tracked  # what the save sync backs up: the game wrote it, so it is never put back
+    prefix = from_install_dir(rec, [{"path": ""}])[0]["path"]
+
+    def is_save(path: str) -> bool:
+        return f"{GAME_KEY}/{prefix}{path}" in tracked
+
     result = verify_and_repair(
         client, rec.game_id, Path(rec.files_dir or rec.install_dir), session_id=session.get("id"), log=log, warn=log,
-        fetch_missing=True, on_progress=on_progress, stop=stop,
+        fetch_missing=True, on_progress=on_progress, stop=stop, keep=is_save,
         on_manifest=lambda files: save_install_manifest(rec.game_id, from_install_dir(rec, files)),
     )
     if not result.listed:

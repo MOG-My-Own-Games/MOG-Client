@@ -4565,7 +4565,10 @@ class GamePage(Page):
                     text = f"{len(result.failed)} file(s) of {rec.name} could not be repaired, see the Logs tab"
                     self.app.bridge.message.emit("error", text)
                 elif result.repaired:
-                    self.app.bridge.message.emit("info", f"{rec.name}: {result.repaired} file(s) repaired")
+                    kept = f", {len(result.kept)} save(s) left as they are" if result.kept else ""
+                    self.app.bridge.message.emit("info", f"{rec.name}: {result.repaired} file(s) repaired{kept}")
+                elif result.kept:
+                    self.app.bridge.message.emit("info", f"{rec.name}: nothing to repair, {len(result.kept)} save(s) left as they are")
                 else:
                     self.app.bridge.message.emit("info", f"All {result.checked} files of {rec.name} are as the server has them")
 

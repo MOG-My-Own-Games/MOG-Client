@@ -232,6 +232,7 @@ class RepairResult:
     checked: int = 0  # files compared with the server's copy
     repaired: int = 0
     failed: list[str] = field(default_factory=list)  # paths that are still wrong
+    kept: list[str] = field(default_factory=list)  # paths that differ but were left as they are (the game's saves)
     listed: bool = True  # False: the server's list of files could not be had, nothing was checked
     stopped: bool = False
 
@@ -247,11 +248,13 @@ def verify_and_repair(
     fetch_missing: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
     stop: threading.Event | None = None,
+    keep: Callable[[str], bool] | None = None,
 ) -> RepairResult:
     """Verify every downloaded file's sha1 against the server's own finished,
     hash-verified manifest and re-fetch whatever doesn't match (and, with `fetch_missing`, whatever is not there).
     `on_manifest` gets that manifest's files ({path, size_bytes, sha1}) once it is known; `on_progress` gets
-    (files looked at, files in all)."""
+    (files looked at, files in all). A file that is there but differs is left alone, and listed in `kept`, when
+    `keep(path)` says it is not the installer's any more (a save the game wrote over one of the installer's files)."""
     result = RepairResult()
     try:
         manifest = client.list_files(game_id, session_id=session_id)
@@ -278,6 +281,10 @@ def verify_and_repair(
             warn(f"  {path}: missing - downloading")
         elif sha1_of(local_path) == entry["sha1"]:
             result.checked += 1
+            continue
+        elif keep is not None and keep(path):
+            result.kept.append(path)
+            log(f"  {path}: changed since the install, left as it is")
             continue
         else:
             warn(f"  {path}: hash mismatch - re-downloading")
