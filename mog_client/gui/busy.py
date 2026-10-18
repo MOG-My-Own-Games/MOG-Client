@@ -19,6 +19,7 @@ def size_text(done: int, total: int) -> str:
 
 class BusyOverlay(QWidget):
     changed = Signal()  # shown or hidden, so the guide at the bottom can follow
+    ended = Signal()  # hidden: the window gives the focus back to its page
     cancel_clicked = Signal()
 
     def __init__(self, parent: QWidget, suspended=lambda: False) -> None:
@@ -98,6 +99,7 @@ class BusyOverlay(QWidget):
         if self.isVisible():
             self.hide()
             self.changed.emit()
+            self.ended.emit()
 
     def fit_to_parent(self) -> None:
         if self.parentWidget() is not None:

@@ -229,6 +229,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   menu.
 - In a menu of buttons such as Linux Options, Up from the first one goes to the last one, and Down from the last goes to
   the card's own button (Back or Close).
+- When the game that was started from here ends (or a restore or backup under way finishes), the focus goes back to the
+  page's first control, Play on a game's page, instead of being lost.
 - On a game's page the focus starts on its first button (Play, Install...), and Tab also stops on the cover. In the
   library, a cover is drawn selected only while the grid has the focus: it is remembered when Tab goes to the search or the
   sidebar, and selected again when the focus returns to the grid.

@@ -316,6 +316,30 @@ def test_a_running_game_shows_the_message_and_stop_closes_it(win, qapp, tmp_path
         game.kill()
 
 
+def test_the_games_page_gets_its_default_button_back_when_the_playing_message_goes(win, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    _activate(win, qapp)
+    _installed_game(win, qapp, tmp_path)
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    assert page.first.text() == "Play"
+
+    win.playing.show_game("Eta", None, "Playing")  # the message holds the focus (Stop)
+    pump(qapp)
+    assert qapp.focusWidget() is win.playing.stop_button
+    win.playing.end()
+    pump(qapp)
+    assert qapp.focusWidget() is page.first  # not nothing
+
+    win.message("still to read", "info")  # a message over the page keeps what it has
+    win.playing.show_game("Eta", None, "Playing")
+    win.playing.end()
+    pump(qapp)
+    assert win.overlay.showing and qapp.focusWidget() is not page.first
+
+
 def test_a_game_that_closes_by_itself_takes_the_message_down(win, qapp, tmp_path):
     rec = _installed(tmp_path)
     game = _game_process(tmp_path)

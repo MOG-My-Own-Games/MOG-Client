@@ -13,6 +13,7 @@ COVER_HEIGHT = 240
 
 class PlayingOverlay(QWidget):
     changed = Signal()  # shown or hidden, so the guide at the bottom can follow
+    ended = Signal()  # hidden: the window gives the focus back to its page
     stop_clicked = Signal()
 
     def __init__(self, parent: QWidget, suspended: Callable[[], bool] = lambda: False) -> None:
@@ -80,6 +81,7 @@ class PlayingOverlay(QWidget):
         if self.isVisible():
             self.hide()
             self.changed.emit()
+            self.ended.emit()
 
     def fit_to_parent(self) -> None:
         if self.parentWidget() is not None:

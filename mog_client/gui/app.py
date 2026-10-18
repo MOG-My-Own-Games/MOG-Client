@@ -6121,6 +6121,8 @@ class MainWindow(QMainWindow):
         self.playing.stop_clicked.connect(self.stop_playing)
         self.busy = BusyOverlay(central, suspended=lambda: self.overlay.isVisible())
         self.busy.changed.connect(self.refresh_legend)
+        self.playing.ended.connect(self.refocus_page)
+        self.busy.ended.connect(self.refocus_page)
         QApplication.instance().focusChanged.connect(lambda *_: self.refresh_legend())  # Options shows once the grid has a game
         self.modal = ModalHost(central)  # a modal page's card, under any message
         self.modal.dismissed.connect(self.back)
@@ -6627,6 +6629,13 @@ class MainWindow(QMainWindow):
             )
         else:
             self.close()
+
+    def refocus_page(self) -> None:
+        """An overlay that held the focus is gone (the game ended, the backup is done): the page gets its default
+        control back, Play on a game's page, instead of nothing having the focus."""
+        if self.overlay.showing or self.playing.showing or self.busy.showing:
+            return  # what is still over the page has the focus
+        self.current_page().focus_default()
 
     def on_pad_event(self, name: str) -> None:
         """What the pad reader reports. It reads the device whatever window has the focus, so while a
