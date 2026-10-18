@@ -5262,3 +5262,35 @@ def test_declining_to_make_the_cache_again_checks_nothing(win, qapp, monkeypatch
     pump(qapp)
 
     assert len(asked) == 2 and ran == [] and rec.game_id not in win.library.repairs
+
+
+def test_a_on_a_game_in_the_library_opens_its_page_and_does_not_press_play(win, qapp, tmp_path, monkeypatch):
+    """Regression test: the A that opens a game's page must only leave the focus on Play, not press it."""
+    from mog_client.gui import gamepad
+
+    _activate(win, qapp)
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    _installed_game(win, qapp, tmp_path)
+    played = []
+    monkeypatch.setattr(gui.GamePage, "play", lambda self: played.append(1))
+    enter = gui.ActivateOnEnter()  # installed on the application as the real start does
+    qapp.installEventFilter(enter)
+    win.library.grid.setCurrentRow(0)
+    win.library.grid.setFocus()
+    pump(qapp)
+
+    win.on_pad_event(gamepad.ACCEPT)
+    pump(qapp)
+
+    assert isinstance(win.current_page(), gui.GamePage) and played == []
+    assert qapp.focusWidget() is win.current_page().first
+
+    # An Enter right behind the one that opened the page (Steam Input types the pad's A as a key as well) is not a press of
+    # Play either; one after the grace is.
+    QTest.keyClick(qapp.focusWidget(), Qt.Key_Return)
+    assert played == []
+    monkeypatch.setattr(gui.ActivateOnEnter, "entered_at", float("-inf"))
+    QTest.keyClick(qapp.focusWidget(), Qt.Key_Return)
+    assert played == [1]
+    qapp.removeEventFilter(enter)

@@ -907,11 +907,23 @@ class App:
 
 class ActivateOnEnter(QObject):
     """Outside a QDialog Qt only presses a button on Space; Enter and the
-    gamepad's A must activate the focused button too."""
+    gamepad's A must activate the focused button too.
+
+    The press that opens a game's page must only leave the focus on Play: a second Enter that comes right behind it (Steam
+    Input also types the pad's A as a key, next to the pad reader's own) is not meant for the button it lands on."""
+
+    GRACE = 0.4  # seconds after a game's page is shown during which Enter does not press a button
+    entered_at = float("-inf")
+
+    @classmethod
+    def page_entered(cls) -> None:
+        cls.entered_at = time.monotonic()
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if isinstance(obj, QAbstractButton) and obj.isEnabled():
+                if time.monotonic() - self.entered_at < self.GRACE:
+                    return True
                 obj.click()
                 return True
         return False
@@ -6297,6 +6309,8 @@ class MainWindow(QMainWindow):
         self.title.setVisible(not on_library)
         self.title.setText(page.title)
         self.refresh_legend()
+        if isinstance(shown, GamePage):
+            ActivateOnEnter.page_entered()
         shown.focus_default()
 
     def push(self, page: Page) -> None:
