@@ -2,7 +2,7 @@
 
 CLI client for [MOG-Server](https://github.com/MOG-My-Own-Games/MOG-Server).
 Stdlib-only Python today (`mog_client/cli.py`); a multi-platform GUI client
-(Linux/Windows) is the planned Phase 2 (see `docs/TODO.md`), along with
+(Linux/Windows/macOS) is the planned Phase 2 (see `docs/TODO.md`), along with
 GameNative/Playnite integration research.
 
 Read `CLAUDE.local.md` (gitignored, not committed) before writing any
@@ -78,8 +78,8 @@ mog_client/
     playing.py  the "Playing" message over the window while a game started here runs (cover, name, Stop)
     menu.py     the settings menu: OptionRow (title, description, control), MenuView, controls the arrows do not change
 packaging/      PyInstaller entry point, .desktop file and icon
-scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows), release_notes.py (the release body and the bundled changelog from the commits)
-.github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe -> release v<version>
+scripts/        build-appimage.sh (Linux), build-exe.ps1 (Windows) and build-macos.sh (macOS dmg), release_notes.py (the release body and the bundled changelog from the commits)
+.github/workflows/release.yml  push to main -> scripts/version.py -> AppImage + exe + dmg -> release v<version>
 mcp/
   server.py     Dev-loop MCP wrapping the CLI's own commands
 ```
@@ -92,7 +92,7 @@ lives in the `gui` extra.
 
 - **README stays short and public.** It is an overview with links. Behaviour is documented by topic in `docs/GUI.md`, `docs/INSTALLING.md`, `docs/SAVES.md` and `docs/STEAM.md`, as headings and bullets, never as one long paragraph; update those when behaviour changes.
 
-- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
+- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order (on a Mac only CrossOver, Game Porting Toolkit, Wine and Sikarugir, `launcher.MAC_PRIORITY`, found by `launcher.mac_wine`). PortProton is not supported yet (see `docs/TODO.md`).
 - **No status line.** What the user must see is `MainWindow.message(text, level, game_id, action)` (an overlay with OK and, when given, the option to act on it; also logged and listed in the notifications, `keep=False` to leave it out); what is only worth keeping is `MainWindow.notify(text, level)` (the log only). Do not add messages to the page layouts. Errors and the result of something the user asked for are messages; ambient information ("N games", "Starting X...") is not. Worker threads use `Bridge.error`, `Bridge.message` or `Bridge.note`.
 - Steam rewrites `shortcuts.vdf` from memory when it quits, so a shortcut is never changed while it runs (`manager._sync_steam_entries` marks `steam_pending` and `settle_steam_shortcuts` finishes it at the next start); keys are matched without regard to case.
 - The pad reader reports whatever window has the focus: `MainWindow.on_pad_event` drops events when none of ours is active.

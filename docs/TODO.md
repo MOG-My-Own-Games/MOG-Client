@@ -43,6 +43,13 @@ Still open:
 
 ## Launchers and the game folder
 
+- macOS (the build is new and has never run on a Mac): the paths where `launcher.mac_wine` looks for CrossOver, Game Porting
+  Toolkit, Gcenx's Wine and Sikarugir's engines are from their documentation and need checking on a Mac. Still Linux-only
+  there: the self-update (the dmg is replaced by hand), the `mog://` link (`protocol.py`), a game's end found through `/proc`
+  (`saves/watcher.py`, `steam.steam_running`: with no `/proc` a started game is not followed to its end, so saves are not
+  synced after it), the pad reader (`gui/gamepad.py`), Steam's folders under `~/Library/Application Support/Steam`, and the
+  `.desktop` entries (a Mac needs `.command` or `.app` launchers). The dmg is signed ad hoc, not notarized.
+
 - PortProton: it unsets `WINEPREFIX` and keeps its prefixes in `data/prefixes/<name>`, chosen with `PW_PREFIX_NAME`, so
   it cannot be handed `<game>/pfx` directly. The plan is a symlink `data/prefixes/mog-<id>` to `<game>/pfx` and
   that variable; it needs a machine with PortProton to check (here `~/PortProton` is a dead link). It belongs between

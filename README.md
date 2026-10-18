@@ -12,16 +12,17 @@ ready) needs the `gui` extra.
 yourself too, apart from MOG. The development team takes no responsibility for any loss or
 damage: the software is provided as is, without warranty of any kind.
 
-**Windows is untested.** The Windows exe is built with every release, but nobody has tried it
-yet. If you run MOG Client on Windows, please [tell us how it went](https://github.com/MOG-My-Own-Games/MOG-Client/issues):
-we are looking for testers.
+**macOS and Windows are untested.** The Windows exe is built with every release, but nobody has tried it
+yet; the macOS app is new and has not been tried on a Mac either. If you run MOG Client on Windows or macOS, please
+[tell us how it went](https://github.com/MOG-My-Own-Games/MOG-Client/issues): we are looking for testers.
 
 ## What it does
 
 - Lists the games on your MOG-Server, installs them (resumable, streamed while the server installs) and keeps them up to date
   with a repair check.
 - Makes a desktop entry and a Steam shortcut for each game, with the server's artwork. They run the game straight through
-  Faugus Launcher, umu, Proton or Wine (or directly on Windows) and keep working without the client.
+  Faugus Launcher, umu, Proton or Wine (or directly on Windows; on a Mac through CrossOver, Game Porting Toolkit, Wine or
+  Sikarugir) and keep working without the client.
 - Backs your saves up to the server and brings them to your other machines.
 - Runs a game's installers and patches in a chosen order, and sends or takes the mods, patches and DLC of a game as addons kept
   on the server, never mistaken for saves. It is not a mod manager: for load order and conflicts use dedicated software such
@@ -34,7 +35,7 @@ we are looking for testers.
 pip install -e '.[gui]'   # or plain `pip install -e .` for the CLI only
 ```
 
-Or take the AppImage (Linux) or the exe (Windows) from the releases page.
+Or take the AppImage (Linux), the exe (Windows) or the dmg (macOS, Apple silicon) from the releases page.
 
 ## GUI
 
@@ -65,7 +66,7 @@ need to wait for the install to finish. Run `mog --help` for every option (`--au
 
 Every push to `main` runs `.github/workflows/release.yml`. It computes the
 version with `scripts/version.py` (from conventional commits and the branch name), builds
-a Linux AppImage and a Windows exe and attaches them (plus `SHA256SUMS.txt`)
+a Linux AppImage, a Windows exe and a macOS dmg and attaches them (plus `SHA256SUMS.txt`)
 to a release tagged `v<version>` (a pre-release on a branch other than `main`). The version is embedded in the
 build (shown in Settings) but not in the file names. The body of the release lists what changed since the previous one,
 under *Changes* and *Fixes* (see [docs/RELEASING.md](docs/RELEASING.md)); the same notes are bundled into the build, and the
@@ -81,7 +82,7 @@ swapped in for the running one and the app restarts. Set `MOG_NO_UPDATE_CHECK=1`
 Self-update is a build flag: the build scripts write `UPDATE_METHOD`
 (`appimage` or `exe`) into the build, and `MOG_UPDATE_METHOD=none` builds
 without it, which is what a Flatpak or a distro package should use. Dev runs and
-pip installs never self-update.
+pip installs never self-update. The macOS build has no self-update yet: download the new dmg.
 
 ## Build it yourself
 
@@ -110,6 +111,31 @@ powershell -ExecutionPolicy Bypass -File scripts\build-exe.ps1 -Version 1.2.3
 This produces `dist\MOG-Client.exe`, a windowed single file: the GUI
 opens on double click. Its CLI flags work too, but output is not shown in a
 console; use `pip install -e .` and `mog` when you need the CLI's output.
+
+**macOS (dmg)**, needs a Mac with Python 3.10+; it builds for the architecture it runs on (Apple silicon on the
+workflow's `macos-14` runner):
+
+```bash
+scripts/build-macos.sh               # dist/MOG-Client-macos-arm64.dmg
+scripts/build-macos.sh 1.2.3
+```
+
+The app is signed ad hoc, not notarized: the first time, right-click it and choose Open, or run
+`xattr -dr com.apple.quarantine "/Applications/MOG Client.app"`.
+
+### Windows games on a Mac
+
+Proton, umu and Faugus exist only on Linux. On a Mac MOG Client looks for these Wine-based runners (it never installs or
+bundles them), best first, and gives every game a Wine prefix of its own in its folder (`pfx`):
+
+- **CrossOver** (paid, the most compatible), in `/Applications`.
+- **Game Porting Toolkit** (Apple's D3DMetal with Wine, free, for DirectX 11 and 12), for example from Gcenx's Homebrew tap.
+- **Wine** by [Gcenx](https://github.com/Gcenx/macOS_Wine_builds) (`brew install --cask --no-quarantine gcenx/wine/wine-crossover`),
+  or any `wine` on `PATH`.
+- **Sikarugir** (the former Kegworks), through the Wine engine it keeps.
+
+All of them are x86_64 programs, so an Apple silicon Mac needs Rosetta 2 (`softwareupdate --install-rosetta`). Settings >
+Scan for launchers looks again after installing one.
 
 ## Troubleshooting
 
