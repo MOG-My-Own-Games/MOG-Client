@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import shlex
@@ -112,6 +113,9 @@ LAUNCHER_LABELS = {
     "umu": "umu-launcher",
     "proton": "Proton (system)",
     "wine": "Wine (system)",
+    "crossover": "CrossOver",
+    "gptk": "Game Porting Toolkit",
+    "sikarugir": "Sikarugir",
     "native": "Run directly",
 }
 
@@ -208,7 +212,7 @@ def resolve_proton(name: str | None, engine: str) -> tuple[str | None, str | Non
     so. Faugus only checks that the build is there and shows a message when it is not, so it is never told one that is not."""
     if not name:
         return None, None
-    if engine in ("wine", "native"):
+    if engine in ("wine", "native", *MAC_ENGINES):
         return None, f"{LAUNCHER_LABELS[engine]} has no Proton builds; {name} is not used"
     local = list_proton_builds().get(name)
     if local is not None:
@@ -236,9 +240,51 @@ def wine_runners() -> dict[str, Path]:
     return {name: found[name] for name in sorted(found, key=_natural)}
 
 
+# The Wine-based runners of macOS, each with where its `wine` program is kept (globs below the home folder or `/`). Proton, umu
+# and Faugus are Linux-only; these are only found, never bundled (the D3DMetal in Game Porting Toolkit is under Apple's license).
+# An engine's first program that exists is used; Homebrew's Wine is also looked for on PATH (see mac_wine).
+MAC_ENGINES = ("crossover", "gptk", "sikarugir")
+_MAC_WINE_PATHS = {
+    "crossover": (
+        "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine",
+        "~/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine",
+    ),
+    "gptk": (
+        "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64",
+        "/usr/local/opt/game-porting-toolkit/bin/wine64",
+        "/opt/homebrew/opt/game-porting-toolkit/bin/wine64",
+    ),
+    "sikarugir": (
+        "~/Library/Application Support/Sikarugir/Engines/*/wswine.bundle/bin/wine64",
+        "~/Library/Application Support/Kegworks/Engines/*/wswine.bundle/bin/wine64",
+    ),
+    "wine": (  # the apps Gcenx's casks install
+        "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine64",
+        "/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine64",
+        "/Applications/Wine Devel.app/Contents/Resources/wine/bin/wine64",
+        "/Applications/Wine Crossover.app/Contents/Resources/wine/bin/wine64",
+    ),
+}
+# Wine on a Mac gets esync from the environment; the others set what they need themselves.
+_MAC_WINE_ENV = {"gptk": {"WINEESYNC": "1"}, "wine": {"WINEESYNC": "1"}}
+
+
+def mac_wine(engine: str) -> Path | None:
+    """The `wine` program of a macOS engine (`MAC_ENGINES` or "wine"), or None when it is not installed."""
+    for pattern in _MAC_WINE_PATHS.get(engine, ()):
+        expanded = os.path.expanduser(pattern)
+        for found in sorted(glob.glob(expanded), key=_natural, reverse=True):
+            if os.path.isfile(found) and os.access(found, os.X_OK):
+                return Path(found)
+    if engine == "wine":
+        on_path = shutil.which("wine") or shutil.which("wine64")
+        return Path(on_path) if on_path else None
+    return None
+
+
 def system_wine_version() -> str | None:
     """What `wine --version` says (wine-9.0), or None when there is none or it does not answer."""
-    program = shutil.which("wine")
+    program = shutil.which("wine") or (str(mac_wine("wine") or "") if sys.platform == "darwin" else "")
     if not program:
         return None
     try:
@@ -326,6 +372,8 @@ def selection_problems(game: InstalledGame, preference: str = "auto") -> list[st
 # Faugus first, then umu, Proton and Wine. PortProton (between Faugus and umu in the intended
 # order) is not supported yet: it picks its own prefix by name and ignores a given path.
 LAUNCHER_PRIORITY = ("faugus", "umu", "proton", "wine")
+# On a Mac only Wine-based runners exist: CrossOver is the most compatible, then Game Porting Toolkit (D3DMetal), then a plain Wine.
+MAC_PRIORITY = ("crossover", "gptk", "wine", "sikarugir")
 
 _known: list[str] | None = None  # the saved scan, once loaded (see ensure_scanned)
 
@@ -334,6 +382,8 @@ def scan_launchers() -> list[str]:
     """The launchers present on this machine, in order of preference."""
     if sys.platform == "win32":
         return ["native"]
+    if sys.platform == "darwin":
+        return [name for name in MAC_PRIORITY if mac_wine(name)]
     present = {
         "faugus": bool(faugus_command()),
         "umu": bool(shutil.which("umu-run")),
@@ -467,6 +517,11 @@ def launch_command(
         return [game.executable, *args], {}  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
+        if sys.platform == "darwin":
+            raise RuntimeError(
+                "no launcher found: install Wine (brew install --cask --no-quarantine gcenx/wine/wine-crossover), "
+                "Game Porting Toolkit or CrossOver"
+            )
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
         return [exe, *args], {}
@@ -479,11 +534,22 @@ def launch_command(
     build, _problem = resolve_proton(game.proton, launcher)
     if offline and launcher == "umu" and not (build and Path(build).is_dir()):
         build = local_ge_proton() or build  # "GE-Proton" or a release not here would send umu looking for it online
-    if program == "winetricks" and launcher in ("wine", "proton"):
+    if program == "winetricks" and launcher in ("wine", "proton", *MAC_ENGINES):
         return _winetricks_command(game, launcher, prefix, build, args)
+    if launcher in MAC_ENGINES:
+        wine = mac_wine(launcher)
+        if wine is None:
+            raise RuntimeError(f"{LAUNCHER_LABELS[launcher]} is not installed any more: rescan the launchers in Settings")
+        return [str(wine), exe, *args], {"WINEPREFIX": str(prefix), **_MAC_WINE_ENV.get(launcher, {}), **language}
     if launcher == "wine":
         program, _problem = resolve_wine(game.wine)
-        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix), **language}
+        if program is None and sys.platform == "darwin":
+            program = mac_wine("wine")  # in an app Gcenx's cask installed, so not on PATH
+        return [str(program or "wine"), exe, *args], {
+            "WINEPREFIX": str(prefix),
+            **(_MAC_WINE_ENV["wine"] if sys.platform == "darwin" else {}),
+            **language,
+        }
     if launcher == "proton":
         proton = Path(build) if build else find_proton()
         steam_root = next(
@@ -524,8 +590,13 @@ def _winetricks_command(
     down (what protontricks does). umu and Faugus take `winetricks` as the program like any other, so they do not come here."""
     if not shutil.which("winetricks"):
         raise RuntimeError("winetricks is not installed: install it from your distribution, then try again")
-    if launcher == "wine":
-        runner, _problem = resolve_wine(game.wine)
+    if launcher in ("wine", *MAC_ENGINES):
+        if launcher in MAC_ENGINES:
+            runner = mac_wine(launcher)
+        else:
+            runner, _problem = resolve_wine(game.wine)
+            if runner is None and sys.platform == "darwin":
+                runner = mac_wine("wine")
         env = {"WINEPREFIX": str(prefix)}
         if runner is not None:
             env["WINE"] = str(runner)
@@ -577,16 +648,17 @@ def _outside_bundle(path_list: str) -> str:
 def host_environ() -> dict[str, str]:
     """This process's environment as the host system's programs should see it."""
     env = dict(os.environ)
-    original = env.pop("LD_LIBRARY_PATH_ORIG", None)
-    if original is not None:
-        env["LD_LIBRARY_PATH"] = original
-    elif getattr(sys, "frozen", False):
-        env.pop("LD_LIBRARY_PATH", None)
-    # A restart after an update hands the old bundle's directories on as the "original" path.
-    if env.get("LD_LIBRARY_PATH"):
-        env["LD_LIBRARY_PATH"] = _outside_bundle(env["LD_LIBRARY_PATH"])
-    if not env.get("LD_LIBRARY_PATH"):
-        env.pop("LD_LIBRARY_PATH", None)
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):  # the second is macOS's
+        original = env.pop(f"{var}_ORIG", None)
+        if original is not None:
+            env[var] = original
+        elif getattr(sys, "frozen", False):
+            env.pop(var, None)
+        # A restart after an update hands the old bundle's directories on as the "original" path.
+        if env.get(var):
+            env[var] = _outside_bundle(env[var])
+        if not env.get(var):
+            env.pop(var, None)
     for key in _BUNDLE_ENV:
         env.pop(key, None)
     return env
