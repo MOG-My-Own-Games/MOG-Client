@@ -1573,6 +1573,28 @@ def test_the_sidebar_lists_never_scroll_sideways_and_their_rows_are_as_wide_as_w
     assert hint.width() == win.library.sorts.viewport().width()
 
 
+def test_the_library_chosen_in_the_sidebar_is_kept_for_the_next_visit_and_the_next_start(win, qapp):
+    libraries = [{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}]
+    win.library.set_libraries(libraries)
+    win.library.libs.setCurrentRow(2)  # Restricted
+    pump(qapp)
+    assert win.library.library_filter == 2 and load_settings().library_filter == 2
+
+    win.library.set_libraries(libraries)  # the server's list again (a refresh, going back): still the same one
+    assert win.library.library_filter == 2 and win.library.libs.currentRow() == 2
+
+    win.library.set_libraries([])  # nothing known yet (offline, an older server): the choice waits
+    assert win.library.library_filter == 2 and load_settings().library_filter == 2
+    win.library.set_libraries(libraries)
+    assert win.library.libs.currentRow() == 2
+
+    assert gui.LibraryPage(win).library_filter == 2  # the next start
+
+    win.library.set_libraries([{"id": 1, "name": "Games"}])  # the library was deleted
+    assert win.library.library_filter is None and load_settings().library_filter is None
+    assert win.library.libs.currentRow() == 0
+
+
 def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_alone(win, qapp, monkeypatch):
     from mog_client.gui import legend
 
@@ -1597,28 +1619,6 @@ def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_al
 
     library.toggle_sidebar()
     QTest.keyClick(library.grid, Qt.Key_Escape)  # Esc is the same key
-def test_the_library_chosen_in_the_sidebar_is_kept_for_the_next_visit_and_the_next_start(win, qapp):
-    libraries = [{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}]
-    win.library.set_libraries(libraries)
-    win.library.libs.setCurrentRow(2)  # Restricted
-    pump(qapp)
-    assert win.library.library_filter == 2 and load_settings().library_filter == 2
-
-    win.library.set_libraries(libraries)  # the server's list again (a refresh, going back): still the same one
-    assert win.library.library_filter == 2 and win.library.libs.currentRow() == 2
-
-    win.library.set_libraries([])  # nothing known yet (offline, an older server): the choice waits
-    assert win.library.library_filter == 2 and load_settings().library_filter == 2
-    win.library.set_libraries(libraries)
-    assert win.library.libs.currentRow() == 2
-
-    assert gui.LibraryPage(win).library_filter == 2  # the next start
-
-    win.library.set_libraries([{"id": 1, "name": "Games"}])  # the library was deleted
-    assert win.library.library_filter is None and load_settings().library_filter is None
-    assert win.library.libs.currentRow() == 0
-
-
     pump(qapp)
     assert not library.sidebar.isVisibleTo(library)
 
