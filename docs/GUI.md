@@ -10,6 +10,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - The sidebar's sections (active installs, libraries, sort and filter) fold with a click, Enter or A on their heading, and
   stay folded between runs. Where the sidebar is too short for all of them the active installs keep their room first, then
   the libraries, then the sort and filter list.
+- The library chosen in the sidebar is remembered, for the next visit to the library and the next start, instead of
+  going back to All games. A library that is gone from the server is forgotten.
 - "Sort and filter" in the sidebar has switches (last played first, installed first, cached first: the games the server
   holds a finished install of) and two filters (got saves, got mods: only the games that have them), then the order:
   by release date, name, size, or when the server first saw the game (recently added, earliest added).

@@ -5501,7 +5501,7 @@ class LibraryPage(Page):
         self.grid.setContextMenuPolicy(Qt.CustomContextMenu)  # a right click on a game is its Options, from the list too
         self.grid.customContextMenuRequested.connect(self._grid_menu)
         self.items: dict[int, QListWidgetItem] = {}
-        self.library_filter: int | None = None
+        self.library_filter: int | None = win.app.settings.library_filter  # the last one chosen, until the server's list says it is gone
         self.libraries: list[dict] = []
 
         # The sidebar sits on the left, beside the grid, not inside it, so scrolling the games leaves it where it is.
@@ -5594,9 +5594,10 @@ class LibraryPage(Page):
         for lib in self.libraries:
             self.libs.addItem(lib["name"])
         row = 0
-        if self.library_filter is not None:
+        if self.library_filter is not None and self.libraries:  # no list yet (offline, an older server): the choice waits
             row = next((i + 1 for i, lib in enumerate(self.libraries) if lib["id"] == self.library_filter), 0)
             self.library_filter = self.libraries[row - 1]["id"] if row else None
+            self._remember_library()
         self.libs.setCurrentRow(row)
         self.libs.blockSignals(False)
         # At least a few rows tall and as tall as its rows up to a limit, so "Sort and filter" sits right under it and the space left is at the bottom.
@@ -5677,7 +5678,14 @@ class LibraryPage(Page):
 
     def _library_chosen(self, row: int) -> None:
         self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
+        self._remember_library()
         self.populate(self.win.search.text().lower())
+
+    def _remember_library(self) -> None:
+        settings = self.win.app.settings
+        if settings.library_filter != self.library_filter:
+            settings.library_filter = self.library_filter
+            logstore.best_effort("Could not save the chosen library", save_settings, settings)
 
     def show_loading(self, loading: bool) -> None:
         self.shelf.setCurrentWidget(self.loading if loading else self.grid)
@@ -5990,7 +5998,7 @@ class LibraryPage(Page):
             g
             for g in self.win.app.games.values()
             if (not needle or needle in g["name"].lower())
-            and (self.library_filter is None or g.get("library_id") == self.library_filter)
+            and (self.library_filter is None or not self.libraries or g.get("library_id") == self.library_filter)
             and (not self.win.app.settings.filter_saves or ordering.has_saves(self.win.app.group_of[g["id"]]))
             and (not self.win.app.settings.filter_mods or ordering.has_mods(self.win.app.group_of[g["id"]]))
         ]

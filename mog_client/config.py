@@ -70,6 +70,8 @@ class Settings:
     sort_installed_first: bool = True
     sort_order: str = "newest"
     # Games the server holds an install cache for first (after the installed ones), and the two filters.
+    # The library chosen in the sidebar (None is every game), kept for the next visit and the next start.
+    library_filter: int | None = None
     sort_cached_first: bool = False
     filter_saves: bool = False
     filter_mods: bool = False
