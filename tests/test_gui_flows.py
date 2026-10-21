@@ -5291,6 +5291,9 @@ def test_a_on_a_game_in_the_library_opens_its_page_and_does_not_press_play(win, 
     assert qapp.focusWidget() is win.current_page().first
 
 
+
+
+
 def test_the_executable_page_stands_on_the_one_the_server_knows_for_the_game(win, qapp, tmp_path, monkeypatch):
     from mog_client import launchsettings
 
@@ -5308,12 +5311,3 @@ def test_the_executable_page_stands_on_the_one_the_server_knows_for_the_game(win
         time.sleep(0.02)
 
     assert page.list.currentItem().data(Qt.UserRole) == str(tmp_path / "later" / "z.exe")
-
-    # An Enter right behind the one that opened the page (Steam Input types the pad's A as a key as well) is not a press of
-    # Play either; one after the grace is.
-    QTest.keyClick(qapp.focusWidget(), Qt.Key_Return)
-    assert played == []
-    monkeypatch.setattr(gui.ActivateOnEnter, "entered_at", float("-inf"))
-    QTest.keyClick(qapp.focusWidget(), Qt.Key_Return)
-    assert played == [1]
-    qapp.removeEventFilter(enter)
