@@ -180,6 +180,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
     the server cache** and **Delete server cache only**. Uninstalling asks before deleting `pfx/`, which may hold save
     files; if you keep it, everything else in the folder goes. For a game that is not installed here, Options shows
     **Delete server cache only** directly.
+- **The executable is kept too.** Confirming "Use this executable" also keeps the choice on the server, as a path from the game's
+  folder: for this device, and for all of them when you are an administrator. The next install of the game (after an uninstall,
+  or on another device) opens the executable page with that file already selected, so "Use this executable" is enough; it is
+  only offered when the file is there, and you can still pick another.
 - **When the server cannot be reached**, what is changed in a game's Linux Options (the Proton version, what winecfg and
   winetricks did) is not lost: it is written to `launch-outbox.json` in the data folder and kept there until the server
   answers that it has it. It is sent again every 15 seconds while the client is open and before a game starts. A later change
@@ -197,10 +201,6 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   ready. Picking a mod that is being fetched offers to cancel it.
 - The install folders keep no empty folders: deleting a mod (or stopping its download) removes the empty `mods` folder,
   and for a game that is not installed its folder as well. The install folders themselves are never removed.
-- **The executable is kept too.** Confirming "Use this executable" also keeps the choice on the server, as a path from the game's
-  folder: for this device, and for all of them when you are an administrator. The next install of the game (after an uninstall,
-  or on another device) opens the executable page with that file already selected, so "Use this executable" is enough; it is
-  only offered when the file is there, and you can still pick another.
 
 ## The game's entries and folder
 
