@@ -88,6 +88,11 @@ class BusyOverlay(QWidget):
             self.bar.setValue(min(done, total))
         self.detail.setText(size_text(done, total) if detail is None else detail)
 
+    def set_waiting(self, detail: str) -> None:
+        """No figure to show (the server is working): the bar moves again."""
+        self.bar.setRange(0, 0)
+        self.detail.setText(detail)
+
     def set_detail(self, text: str) -> None:
         self.detail.setText(text)
 

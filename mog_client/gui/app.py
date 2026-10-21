@@ -118,7 +118,7 @@ from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
 from mog_client.gui.placeholder import cover_placeholder
 from mog_client.gui.about import AboutTab, ChangelogTab
-from mog_client.gui.busy import BusyOverlay
+from mog_client.gui.busy import BusyOverlay, size_text
 from mog_client.gui.headerart import HeaderArt
 from mog_client.gui.instance import Listener, send_to_running
 from mog_client.gui.loading import LoadingPanel
@@ -2512,6 +2512,56 @@ class InstallerPickerPage(Page):
         self._start(*picked)
 
 
+BYTE_STAGES = ("Sending", "Downloading")  # the addon stages counted in bytes; the others count files
+STOPPABLE_STAGES = ("Packing", "Sending", "Downloading")  # Cancel leaves nothing behind in these; later it is too late
+BUSY_EVERY = 0.1  # seconds between two moves of the bar
+
+
+def run_addon_job(win: "MainWindow", title: str, name: str, game_id: int, work, done_message, fail_text: str) -> None:
+    """Cover the window with a progress bar while `work(on_progress, cancelled)` runs on a worker thread (the addon
+    calls of addons.py), with Cancel while it can be stopped; then tell how it went (`done_message(result)`). Without this a send or an apply looks like nothing is
+    happening."""
+    app, cancel, last = win.app, threading.Event(), [0.0]
+    win.show_busy(title, name, game_id, cancel.set)
+
+    def show(stage: str, done: int, total: int) -> None:
+        if not total:
+            win.busy_waiting(f"{stage}...")
+        elif stage in BYTE_STAGES:
+            win.busy_progress(done, total, f"{stage}: {size_text(done, total)}")
+        else:
+            win.busy_progress(done, total, f"{stage}: {done} of {total} file{'s' if total != 1 else ''}")
+        if stage == "Sending" and done >= total:
+            win.busy_waiting("Waiting for the server...")  # the body is out; it is keeping it
+        if stage not in STOPPABLE_STAGES or (stage == "Sending" and done >= total):
+            win.busy.cancel_button.setEnabled(False)
+
+    def on_progress(stage: str, done: int, total: int) -> None:
+        if cancel.is_set() and stage in STOPPABLE_STAGES:
+            raise addons.AddonCancelled
+        now = time.monotonic()
+        if now - last[0] >= BUSY_EVERY or done >= total:
+            last[0] = now
+            app.bridge.call.emit(lambda: show(stage, done, total))
+
+    def over(finish) -> None:
+        win.hide_busy()
+        finish()
+
+    def run() -> None:
+        try:
+            result = work(on_progress, cancel.is_set)
+        except addons.AddonCancelled:
+            app.bridge.call.emit(lambda: over(lambda: win.notify(f"{title} cancelled")))
+            return
+        app.bridge.call.emit(lambda: over(lambda: win.message(done_message(result), "info")))
+
+    def failed(m: str) -> None:
+        app.bridge.call.emit(lambda: over(lambda: win.message(f"{fail_text}: {m}", "error")))
+
+    app.run_bg(run, on_error=failed)
+
+
 class SendLayerPage(Page):
     """What a mod, patch or DLC run on the game changed, to send to the server as one of the three or to keep here only.
     The files are already recorded as the game's own, so they are never taken for saves either way."""
@@ -2554,13 +2604,15 @@ class SendLayerPage(Page):
             return
         app, game, install_dir, changed = self.win.app, self.game, self.install_dir, self.changed
 
-        def work() -> None:
+        def work(on_progress, _cancelled) -> None:
             with tempfile.TemporaryDirectory() as scratch:
-                addons.upload_layer(app.client(), game["id"], install_dir, changed, category, name, Path(scratch))
-            app.bridge.call.emit(lambda: self.win.message(f"Sent {name} to the server as a {category}.", "info"))
+                addons.upload_layer(app.client(), game["id"], install_dir, changed, category, name, Path(scratch), on_progress)
 
         self.win.back()
-        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not send {name}: {m}", "error")))
+        run_addon_job(
+            self.win, f"Sending a {category}", name, game["id"], work,
+            lambda _: f"Sent {name} to the server as a {category}.", f"Could not send {name}",
+        )
 
 
 class AddonsPage(Page):
@@ -2647,12 +2699,15 @@ class AddonsPage(Page):
     def _apply(self, addon: dict) -> None:
         app = self.win.app
 
-        def work() -> None:
+        def work(on_progress, cancelled) -> int:
             with tempfile.TemporaryDirectory() as scratch:
-                count = addons.apply_addon(app.client(), self.game["id"], self.install_dir, addon, Path(scratch))
-            app.bridge.call.emit(lambda: self.win.message(f"{addon['name']}: {count} file{'s' if count != 1 else ''} put over the game.", "info"))
+                return addons.apply_addon(app.client(), self.game["id"], self.install_dir, addon, Path(scratch), on_progress, cancelled)
 
-        app.run_bg(work, on_error=lambda m: app.bridge.call.emit(lambda: self.win.message(f"Could not apply {addon['name']}: {m}", "error")))
+        run_addon_job(
+            self.win, f"Applying a {addon['category']}", addon["name"], self.game["id"], work,
+            lambda count: f"{addon['name']}: {count} file{'s' if count != 1 else ''} put over the game.",
+            f"Could not apply {addon['name']}",
+        )
 
     def delete(self) -> None:
         addon = self._current()
@@ -6455,6 +6510,9 @@ class MainWindow(QMainWindow):
 
     def busy_progress(self, done: int, total: int, detail: str | None = None) -> None:
         self.busy.set_progress(done, total, detail)
+
+    def busy_waiting(self, detail: str) -> None:
+        self.busy.set_waiting(detail)
 
     def hide_busy(self) -> None:
         self.busy.end()

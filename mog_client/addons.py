@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import stat
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 from mog_client.saves import installed as ledger
@@ -20,6 +21,15 @@ ADDON_CATEGORIES = ("mod", "patch", "dlc")
 
 class AddonError(RuntimeError):
     pass
+
+
+class AddonCancelled(Exception):
+    """The user stopped a send or an apply; nothing is left half done (an apply is only stoppable before it writes)."""
+
+
+# on_progress(stage, done, total): the stage is what is going on, the count is files or bytes (total 0 = not known,
+# waiting for the server). `cancelled()` is polled where stopping leaves nothing behind.
+Progress = Callable[[str, int, int], None]
 
 
 def open_layer(game_id: int, install_dir: Path) -> Snapshot:
@@ -46,26 +56,41 @@ def close_layer(game_id: int, install_dir: Path, before: Snapshot) -> list[tuple
     return sorted(changed)
 
 
-def zip_files(files: list[tuple[str, Path]], dest: Path) -> Path:
-    """Zip the files under their relative paths, to send to the server as an addon."""
+def zip_files(files: list[tuple[str, Path]], dest: Path, on_progress: Progress | None = None) -> Path:
+    """Zip the files under their relative paths, to send to the server as an addon. `on_progress` is told the stage
+    "Packing" with the files done of all (whatever it raises stops the zipping)."""
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-        for member, source in files:
+        for done, (member, source) in enumerate(files):
+            if on_progress:
+                on_progress("Packing", done, len(files))
             zf.write(source, member)
+        if on_progress:
+            on_progress("Packing", len(files), len(files))
     return dest
 
 
 def upload_layer(
-    client, game_id: int, install_dir: Path, changed: list[tuple[str, Path]], category: str, name: str, scratch: Path
+    client,
+    game_id: int,
+    install_dir: Path,
+    changed: list[tuple[str, Path]],
+    category: str,
+    name: str,
+    scratch: Path,
+    on_progress: Progress | None = None,
 ) -> dict:
     """Send the layer's files to the server as a mod, patch or DLC of the game. The zip is kept in `scratch` only as
-    long as the upload takes."""
+    long as the upload takes. `on_progress` hears "Packing" (files) then "Sending" (bytes); whatever it raises stops
+    the send and nothing is kept."""
     if category not in ADDON_CATEGORIES:
         raise AddonError(f"Unknown kind of addon: {category}")
     if not changed:
         raise AddonError("The layer changed no files: nothing to send")
-    archive = zip_files(changed, scratch / "layer.zip")
+    archive = scratch / "layer.zip"
     try:
-        return client.upload_addon(game_id, category, name, archive)
+        zip_files(changed, archive, on_progress)
+        sending = (lambda done, total: on_progress("Sending", done, total)) if on_progress else None
+        return client.upload_addon(game_id, category, name, archive, on_progress=sending)
     finally:
         archive.unlink(missing_ok=True)
 
@@ -82,11 +107,28 @@ def _member_path(name: str) -> Path:
     return member
 
 
-def apply_addon(client, game_id: int, install_dir: Path, addon: dict, scratch: Path) -> int:
+def apply_addon(
+    client,
+    game_id: int,
+    install_dir: Path,
+    addon: dict,
+    scratch: Path,
+    on_progress: Progress | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> int:
     """Download an addon the server kept and extract it over the game's folder, as a ledger layer. Returns how many
-    files it wrote. The whole archive is checked before anything is written (the server is not trusted to have)."""
+    files it wrote. The whole archive is checked before anything is written (the server is not trusted to have).
+    `on_progress` hears "Downloading" (bytes) then "Putting the files over the game" (files); `cancelled` is polled
+    while downloading and right before the first write, after which the apply runs to its end."""
     archive = scratch / f"addon-{addon['id']}.zip"
-    client.download_addon(game_id, addon["id"], archive)
+
+    def downloading(done: int, total: int) -> None:
+        if cancelled():
+            raise AddonCancelled
+        if on_progress:
+            on_progress("Downloading", done, total)
+
+    client.download_addon(game_id, addon["id"], archive, on_progress=downloading)
     try:
         with zipfile.ZipFile(archive) as zf:
             infos = zf.infolist()
@@ -97,11 +139,17 @@ def apply_addon(client, game_id: int, install_dir: Path, addon: dict, scratch: P
                     raise AddonError(f"A link in the addon: {info.filename}")
             members = [info for info in infos if not info.is_dir()]
             targets = [(info, install_dir / _member_path(info.filename)) for info in members]
+            if cancelled():
+                raise AddonCancelled
             before = open_layer(game_id, install_dir)
-            for info, target in targets:
+            for done, (info, target) in enumerate(targets):
+                if on_progress:
+                    on_progress("Putting the files over the game", done, len(targets))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+            if on_progress:
+                on_progress("Putting the files over the game", len(targets), len(targets))
         close_layer(game_id, install_dir, before)
     finally:
         archive.unlink(missing_ok=True)

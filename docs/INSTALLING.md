@@ -116,6 +116,9 @@ use dedicated software such as Amethyst Mod Manager.
   manifest, so they are never taken for saves. You can then send what changed to the server as a mod, patch or DLC.
 - An addon the server kept (made by an install on the server, or sent from another machine) is downloaded and extracted over
   the game, again recorded in the manifest. Nothing is run: it already is the files.
+- Sending and applying cover the window with a progress bar (packing the files, bytes sent or downloaded, files put over
+  the game, "Waiting for the server..." once everything is sent). Cancel stops a send or an apply that has not started to
+  write; once files are going over the game it is greyed out, so the game is never left half patched.
 - The files of an addon use the same paths as the install's own files; one that points outside the game's folder is refused.
 
 ## Installing from the web UI

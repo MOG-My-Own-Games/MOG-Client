@@ -26,7 +26,7 @@ class FakeWire:
         status, data = self._answer((method, path), (200, {}))
         return status, json.dumps(data).encode(), {}
 
-    def post_file(self, path, file_path, timeout=600.0, fields=None):
+    def post_file(self, path, file_path, timeout=600.0, fields=None, on_progress=None):
         self.calls.append(("POST_FILE", path, file_path.name, fields))
         return self._answer(("POST_FILE", path), (201, {"id": 7, "name": fields["name"]}))
 
@@ -106,3 +106,18 @@ def test_a_start_with_steps_sends_them_in_the_body(api, wire):
 
     body = [c for c in wire.calls if c[0] == "POST" and c[1] == "/api/games/5/install"][-1][2]
     assert body["steps"] == [{"path": "setup.exe", "source_path": None}]
+
+
+def test_the_upload_body_tells_how_much_has_gone_out(tmp_path):
+    from mog_client.api import _MultipartBody
+
+    path = tmp_path / "a.zip"
+    path.write_bytes(b"x" * 100)
+    heard = []
+    with path.open("rb") as f:
+        body = _MultipartBody(b"head", f, b"tail", lambda sent, total: heard.append((sent, total)))
+        while body.read(40):
+            pass
+
+    assert heard[0] == (4, 108) and heard[-1] == (108, 108)
+    assert [s for s, _ in heard] == sorted(s for s, _ in heard)

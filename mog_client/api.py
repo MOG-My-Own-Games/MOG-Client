@@ -6,6 +6,7 @@ import base64
 import glob
 import http.client
 import json
+import os
 import re
 import ssl
 import sys
@@ -128,9 +129,15 @@ class Client:
             return status, {"_raw": content.decode(errors="replace")}
 
     def post_file(
-        self, path: str, file_path: Path, timeout: float = 600.0, fields: dict[str, str] | None = None
+        self,
+        path: str,
+        file_path: Path,
+        timeout: float = 600.0,
+        fields: dict[str, str] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> tuple[int, dict]:
-        """POST a file as multipart form data under the field name `file`, after the text `fields` if any. Never retried."""
+        """POST a file as multipart form data under the field name `file`, after the text `fields` if any. Never retried.
+        `on_progress(sent, total)` is called as the body goes out; whatever it raises stops the upload."""
         if self.offline_aware and connectivity.is_offline():
             raise RuntimeError(OFFLINE)
         boundary = uuid.uuid4().hex
@@ -149,7 +156,7 @@ class Client:
             with file_path.open("rb") as f:
                 req = urllib.request.Request(
                     self.base + path,
-                    data=_MultipartBody(head, f, tail),
+                    data=_MultipartBody(head, f, tail, on_progress),
                     method="POST",
                     headers=self._headers(
                         {"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(length)}
@@ -282,10 +289,20 @@ class _CutShort(Exception):
 class _MultipartBody:
     """A multipart/form-data body (head, the file, tail) read in pieces, so a big file is never held in memory."""
 
-    def __init__(self, head: bytes, f, tail: bytes):
+    def __init__(self, head: bytes, f, tail: bytes, on_progress: Callable[[int, int], None] | None = None):
         self._parts = [head, f, tail]
+        self._total = len(head) + len(tail) + os.fstat(f.fileno()).st_size
+        self._sent = 0
+        self._on_progress = on_progress
 
     def read(self, n: int = -1) -> bytes:
+        chunk = self._next(n)
+        if chunk and self._on_progress:
+            self._sent += len(chunk)
+            self._on_progress(self._sent, self._total)  # what it raises stops the upload
+        return chunk
+
+    def _next(self, n: int) -> bytes:
         while self._parts:
             part = self._parts[0]
             if isinstance(part, bytes):
@@ -590,10 +607,12 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
-    def upload_addon(self, game_id: int, category: str, name: str, archive: Path) -> dict:
+    def upload_addon(
+        self, game_id: int, category: str, name: str, archive: Path, on_progress: Callable[[int, int], None] | None = None
+    ) -> dict:
         """Keep a zip of the files an install added as a mod, patch or DLC of the game (the server answers 201)."""
         status, data = self.c.post_file(
-            f"/api/games/{game_id}/addons", archive, fields={"category": category, "name": name}
+            f"/api/games/{game_id}/addons", archive, fields={"category": category, "name": name}, on_progress=on_progress
         )
         if status != 201:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))

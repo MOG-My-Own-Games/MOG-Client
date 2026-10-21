@@ -4245,15 +4245,19 @@ class AddonServer:
         return self.addons
 
     def download_addon(self, game_id, addon_id, dest, on_progress=None):
+        self.busy_during_download = self.win_busy() if hasattr(self, "win_busy") else None
         dest.write_bytes(self.zips[addon_id])
 
     def delete_addon(self, game_id, addon_id):
         self.deleted.append(addon_id)
         self.addons = [a for a in self.addons if a["id"] != addon_id]
 
-    def upload_addon(self, game_id, category, name, archive):
+    def upload_addon(self, game_id, category, name, archive, on_progress=None):
         import zipfile as _zip
 
+        self.busy_during_upload = self.win_busy() if hasattr(self, "win_busy") else None
+        if on_progress:
+            on_progress(5, 10)
         with _zip.ZipFile(archive) as zf:
             self.uploads.append((category, name, sorted(zf.namelist())))
         return {"id": 1}
@@ -4349,6 +4353,38 @@ def test_a_patch_run_by_hand_is_recorded_then_sent_with_a_name(win, qapp, monkey
     pump(qapp)
     assert server.uploads == [("patch", "Patch 1.1", ["Metroid.exe", "extra.dat"])]
     assert said[-1] == ("info", "Sent Patch 1.1 to the server as a patch.")
+    assert not win.busy.showing  # and the bar that covered the window while it went is gone
+
+
+def test_a_send_covers_the_window_with_a_bar_while_it_goes(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer()
+    server.win_busy = lambda: (win.busy.showing, win.busy.heading.text(), win.busy.name.text())
+    page, folder, _said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+    page.record()
+    (folder / "extra.dat").write_bytes(b"x")
+    page.record()
+    pump(qapp)
+    send = win.current_page()
+    send.name.setText("Patch 1.1")
+
+    send.send("patch")
+
+    assert server.busy_during_upload == (True, "Sending a patch", "Patch 1.1")
+    pump(qapp)
+    assert not win.busy.showing
+
+
+def test_an_apply_covers_the_window_with_a_bar_and_a_failed_one_takes_it_away(win, qapp, monkeypatch, tmp_path):
+    server = AddonServer([ADDON], {3: _zip_of({"../escape": b"x"})})
+    server.win_busy = lambda: (win.busy.showing, win.busy.heading.text(), win.busy.name.text())
+    page, _folder, said = _addons_page(win, qapp, monkeypatch, tmp_path, server)
+
+    page.apply()
+    pump(qapp)
+
+    assert server.busy_during_download == (True, "Applying a patch", "Patch 2.0")
+
+    assert not win.busy.showing and said[-1][0] == "error"
 
 
 def test_a_layer_that_changed_nothing_says_so_and_sends_nothing(win, qapp, monkeypatch, tmp_path):

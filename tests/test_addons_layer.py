@@ -18,10 +18,16 @@ class FakeClient:
 
     def download_addon(self, game_id, addon_id, dest, on_progress=None):
         dest.write_bytes(self.served[addon_id])
+        if on_progress:
+            on_progress(len(self.served[addon_id]), len(self.served[addon_id]))
 
-    def upload_addon(self, game_id, category, name, archive):
+    def upload_addon(self, game_id, category, name, archive, on_progress=None):
         with zipfile.ZipFile(archive) as zf:
             self.uploads.append((category, name, sorted(zf.namelist())))
+        if on_progress:
+            size = archive.stat().st_size
+            on_progress(size // 2, size)
+            on_progress(size, size)
         return {"id": 9}
 
 
@@ -231,3 +237,47 @@ def test_just_copy_is_a_step_like_an_installer_that_goes_first_and_is_sent_as_th
         {"path": "patch.exe", "source_path": None},
     ]
     assert addons.role_of(0) == "Game"
+
+
+def test_a_send_tells_the_files_packed_then_the_bytes_sent(game, tmp_path):
+    changed = [("Game.exe", game / "Game.exe"), ("data/level.pak", game / "data" / "level.pak")]
+    heard = []
+
+    addons.upload_layer(FakeClient(), 4, game, changed, "patch", "P", tmp_path, lambda *a: heard.append(a))
+
+    assert heard[0] == ("Packing", 0, 2) and ("Packing", 2, 2) in heard
+    sending = [h for h in heard if h[0] == "Sending"]
+    assert sending and sending[-1][1] == sending[-1][2]
+    assert heard.index(("Packing", 2, 2)) < heard.index(sending[0])
+
+
+def test_a_send_stopped_while_packing_uploads_nothing(game, tmp_path):
+    client = FakeClient()
+
+    def stop(*_):
+        raise addons.AddonCancelled
+
+    with pytest.raises(addons.AddonCancelled):
+        addons.upload_layer(client, 4, game, [("Game.exe", game / "Game.exe")], "mod", "M", tmp_path, stop)
+
+    assert client.uploads == [] and not (tmp_path / "layer.zip").exists()
+
+
+def test_an_apply_tells_the_download_then_the_files_put_over_the_game(game, tmp_path):
+    served = _zip_bytes({"data/new.pak": b"new", "data/more.pak": b"more"})
+    heard = []
+
+    addons.apply_addon(FakeClient({3: served}), 4, game, {"id": 3}, tmp_path, lambda *a: heard.append(a))
+
+    stages = [h[0] for h in heard]
+    assert stages[0] == "Downloading" and stages[-1] == "Putting the files over the game"
+    assert heard[-1][1:] == (2, 2)
+
+
+def test_an_apply_stopped_before_it_writes_leaves_the_game_alone(game, tmp_path):
+    served = _zip_bytes({"data/new.pak": b"new"})
+
+    with pytest.raises(addons.AddonCancelled):
+        addons.apply_addon(FakeClient({3: served}), 4, game, {"id": 3}, tmp_path, cancelled=lambda: True)
+
+    assert not (game / "data" / "new.pak").exists() and not addons.layer_is_open(4)
