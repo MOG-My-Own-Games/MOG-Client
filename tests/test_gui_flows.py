@@ -5235,7 +5235,7 @@ def _repair_page(win, monkeypatch, tmp_path, holds):
     monkeypatch.setattr(page.app, "client", lambda: "client")
     monkeypatch.setattr(manager, "holds_install", lambda client, gid: holds)
     monkeypatch.setattr(manager, "regenerate_cache", lambda r, client, stop, log, *a: ran.append("regenerate") or True)
-    monkeypatch.setattr(manager, "repair", lambda r, client, stop, log, progress: ran.append("repair") or SimpleNamespace(failed=[], repaired=0, checked=3))
+    monkeypatch.setattr(manager, "repair", lambda r, client, stop, log, progress: ran.append("repair") or SimpleNamespace(failed=[], kept=[], repaired=0, checked=3))
     return page, rec, asked, ran
 
 
@@ -5266,6 +5266,46 @@ def test_declining_to_make_the_cache_again_checks_nothing(win, qapp, monkeypatch
     pump(qapp)
 
     assert len(asked) == 2 and ran == [] and rec.game_id not in win.library.repairs
+
+
+def test_while_the_files_are_checked_repairing_takes_the_place_of_play_and_the_bar_follows_the_check(win, qapp, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+
+    page, rec, asked, ran = _repair_page(win, monkeypatch, tmp_path, holds=True)
+    seen = []
+
+    def shown() -> list[str]:  # the buttons now in the page's row, not the old ones waiting to be deleted
+        items = [page.buttons.itemAt(i).widget() for i in range(page.buttons.count())]
+        return [w.text() for w in items if w is not None]
+
+    def repair(r, client, stop, log, progress):
+        pump(qapp)
+        seen.append((shown(), page.bar.maximum()))  # before the first figure: the bar moves
+        progress(1, 2)
+        pump(qapp)
+        seen.append((shown(), page.bar.maximum(), page.bar.value()))
+        return SimpleNamespace(failed=[], kept=[], repaired=0, checked=2)
+
+    monkeypatch.setattr(manager, "repair", repair)
+    assert shown()[0] == "Play"
+
+    page.repair(rec)
+    pump(qapp)
+
+    assert seen == [(["Repairing..."], 0), (["Repairing..."], 100, 50)]  # no Play, nor anything else, while it runs
+    assert shown()[0] == "Play" and rec.game_id not in win.app.jobs  # and Play is back when it is done
+
+
+def test_a_game_with_a_job_is_not_checked_at_the_same_time(win, qapp, monkeypatch, tmp_path):
+    page, rec, asked, ran = _repair_page(win, monkeypatch, tmp_path, holds=True)
+    win.app.jobs[rec.game_id] = "winecfg"
+
+    page.repair(rec)
+    pump(qapp)
+
+    assert asked == [] and ran == [] and win.app.jobs[rec.game_id] == "winecfg"
 
 
 def test_a_on_a_game_in_the_library_opens_its_page_and_does_not_press_play(win, qapp, tmp_path, monkeypatch):

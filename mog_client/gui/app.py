@@ -3530,6 +3530,7 @@ JOB_TEXT = {
     "rebuild": "Rebuilding the prefix...",
     "tool": "A program is open in the prefix...",
     "nuke": "Clearing custom settings...",
+    "repair": "Repairing...",
 }
 # Wine's own programs offered by Launch executable: (label, (program, arguments...)).
 PREFIX_TOOLS = (
@@ -4263,6 +4264,8 @@ class GamePage(Page):
             doing = JOB_TEXT[job]
             self.status.setText(doing)
             self.bar.setRange(0, 0)  # the bar moves too: no figure, but it is going on
+            if job == "repair":
+                self.show_repair()
             busy = self._button(doing, lambda: None, True)
             busy.setEnabled(False)
             self.play_ring = SpinRing(busy)
@@ -4375,6 +4378,18 @@ class GamePage(Page):
             danger=True,
             game=self.game["id"],
         )
+
+    def show_repair(self) -> None:
+        """The install's bar is the repair's while the files are checked: it fills as the files are looked at (it only moves
+        back and forth until the first figure, when the server is still making the install again)."""
+        percent = self.win.library.repairs.get(self.game["id"])
+        if not percent:
+            self.bar.setRange(0, 0)
+            return
+        self.bar.setRange(0, 100)
+        self.bar.setValue(percent)
+        self.bar.setFormat("%p%")
+        self.status.setText(f"Repairing... checking the files, {percent}%")
 
     def update_transfer(self) -> None:
         """While this game's saves are being downloaded or uploaded: a pie on the cover (how far a download is) and a ring
@@ -4564,13 +4579,27 @@ class GamePage(Page):
         if gid in library.repairs:
             self.win.message(f"The files of {rec.name} are already being checked", "info")
             return
+        if gid in self.app.jobs:
+            self.win.message(f"{rec.name} is busy; try again when it is done", "info")
+            return
 
         def listed(percent: int | None) -> None:
+            # The game's page shows it as a job: Repairing... in place of Play, and the bar following the check.
             if percent is None:
                 library.repairs.pop(gid, None)
+                if self.app.jobs.get(gid) == "repair":
+                    self.app.jobs.pop(gid)
             else:
                 library.repairs[gid] = percent
+                self.app.jobs.setdefault(gid, "repair")
             self.win.refresh_tasks()
+            if self.app.jobs.get(gid) == "repair":
+                if self._built and self._buttons_key() != self._shown_key:
+                    self.rebuild()  # Play gives way to Repairing...
+                else:
+                    self.show_repair()
+            elif percent is None:
+                self.rebuild()  # and comes back
 
         def check(regenerate: bool) -> None:
             last = [-1]
