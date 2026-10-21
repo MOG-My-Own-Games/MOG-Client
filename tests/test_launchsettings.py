@@ -45,9 +45,9 @@ def _row(proton=None, reg=None, verbs=None):
 def test_a_device_takes_its_own_value_first_and_the_shared_one_for_what_that_lacks():
     answer = {"shared": _row("GE-Proton9-1", REG), "device": _row("GE-Proton10-1", None)}
 
-    assert launchsettings.effective(answer) == {"proton": "GE-Proton10-1", "winecfg_reg": REG, "launch_args": None, "winetricks": []}
-    assert launchsettings.effective(None) == {"proton": None, "winecfg_reg": None, "launch_args": None, "winetricks": []}
-    assert launchsettings.effective({"shared": None, "device": None}) == {"proton": None, "winecfg_reg": None, "launch_args": None, "winetricks": []}
+    assert launchsettings.effective(answer) == {"proton": "GE-Proton10-1", "winecfg_reg": REG, "launch_args": None, "executable": None, "winetricks": []}
+    assert launchsettings.effective(None) == {"proton": None, "winecfg_reg": None, "launch_args": None, "executable": None, "winetricks": []}
+    assert launchsettings.effective({"shared": None, "device": None}) == {"proton": None, "winecfg_reg": None, "launch_args": None, "executable": None, "winetricks": []}
 
 
 def test_the_winetricks_verbs_of_all_devices_and_of_this_one_add_up_and_a_bad_verb_is_dropped():
@@ -1007,3 +1007,38 @@ def test_a_umu_proton_build_a_game_is_pinned_to_is_fetched_too(monkeypatch, game
     _ge_game(game, monkeypatch, tmp_path, "umu", have=(name,))
     game.proton = name
     assert launchsettings.needs_download(game, "auto") is False
+
+
+def test_the_chosen_executable_is_kept_as_a_path_from_the_games_folder_for_this_device_and_for_all(game):
+    server = Server()
+
+    launchsettings.remember_executable(server, game)
+
+    assert server.put == [(7, 3, {"executable": "game.exe"}), (7, None, {"executable": "game.exe"})]
+
+
+def test_an_executable_outside_the_games_folder_is_not_kept(game, tmp_path):
+    server = Server()
+    game.executable = str(tmp_path / "elsewhere" / "x.exe")
+
+    launchsettings.remember_executable(server, game)
+
+    assert server.put == []
+
+
+def test_a_user_who_may_not_set_it_for_all_still_keeps_it_for_the_device(game):
+    server = Server(statuses=[200, 403])
+
+    launchsettings.remember_executable(server, game)  # the refusal for all devices is not an error
+
+    assert server.put[0] == (7, 3, {"executable": "game.exe"}) and launchsettings.waiting(7) == []
+
+
+def test_a_new_install_is_told_which_executable_the_server_knows(game, tmp_path):
+    fresh = InstalledGame(game_id=7, name="G", install_dir=str(tmp_path / "Game"), state="awaiting_executable")
+
+    assert launchsettings.remembered_executable(Server({"shared": {"executable": "game.exe"}, "device": None}), fresh) == tmp_path / "Game" / "game.exe"
+    assert launchsettings.remembered_executable(Server({"shared": {"executable": "gone.exe"}, "device": None}), fresh) is None  # not in this install
+    assert launchsettings.remembered_executable(Server({"shared": {"executable": "../x.exe"}, "device": None}), fresh) is None
+    assert launchsettings.remembered_executable(Server({"shared": None, "device": {"executable": "game.exe"}}), fresh) == tmp_path / "Game" / "game.exe"
+    assert launchsettings.remembered_executable(Server(None), fresh) is None  # an older server

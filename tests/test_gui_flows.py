@@ -1504,7 +1504,7 @@ def test_the_update_question_starts_on_yes_and_no_is_red_while_other_questions_s
 def test_the_saves_of_other_machines_are_offered_after_an_install_but_not_when_only_the_shortcuts_change(
     win, qapp, monkeypatch, tmp_path, state, offered
 ):
-    from mog_client import manager
+    from mog_client import launchsettings, manager
 
     folder = tmp_path / "Eta"
     folder.mkdir()
@@ -1513,6 +1513,9 @@ def test_the_saves_of_other_machines_are_offered_after_an_install_but_not_when_o
     rec = config.InstalledGame(41, "Eta", str(folder), state=state, executable=str(folder / "game.exe"))
     monkeypatch.setattr(manager, "finish_setup", lambda *a, **k: None)
     monkeypatch.setattr(win.app, "client", lambda: None)
+    kept = []
+    monkeypatch.setattr(launchsettings, "remember_executable", lambda client, r: kept.append(r.executable))  # for the server
+    monkeypatch.setattr(launchsettings, "remembered_executable", lambda client, r: None)
     monkeypatch.setattr(win.app.settings, "steam_decided", True)  # no Steam question over the page
     asked = []
     monkeypatch.setattr(win.saves, "offer_after_install", lambda r: asked.append(r.game_id))
@@ -1528,6 +1531,7 @@ def test_the_saves_of_other_machines_are_offered_after_an_install_but_not_when_o
     pump(qapp)
 
     assert (asked == [41]) is offered
+    assert kept == [str(folder / "game.exe")]  # whichever way it was reached, the choice is kept on the server
 
 
 @pytest.mark.parametrize("room", [480, 700, 946, 1232, 1598, 1872])
@@ -5285,6 +5289,25 @@ def test_a_on_a_game_in_the_library_opens_its_page_and_does_not_press_play(win, 
 
     assert isinstance(win.current_page(), gui.GamePage) and played == []
     assert qapp.focusWidget() is win.current_page().first
+
+
+def test_the_executable_page_stands_on_the_one_the_server_knows_for_the_game(win, qapp, tmp_path, monkeypatch):
+    from mog_client import launchsettings
+
+    (tmp_path / "a.exe").write_bytes(b"x")
+    (tmp_path / "later").mkdir()
+    (tmp_path / "later" / "z.exe").write_bytes(b"x")
+    monkeypatch.setattr(launchsettings, "remembered_executable", lambda client, rec: tmp_path / "later" / "z.exe")
+    monkeypatch.setattr(win.app, "client", lambda: None)
+    page = gui.ExecutablePage(win, config.InstalledGame(9, "G", str(tmp_path)), lambda *a: None)
+    win.push(page)
+    for _ in range(100):  # the scan runs on a thread of its own
+        pump(qapp)
+        if page.list.currentItem() is not None and page.list.currentItem().data(Qt.UserRole):
+            break
+        time.sleep(0.02)
+
+    assert page.list.currentItem().data(Qt.UserRole) == str(tmp_path / "later" / "z.exe")
 
     # An Enter right behind the one that opened the page (Steam Input types the pad's A as a key as well) is not a press of
     # Play either; one after the grace is.

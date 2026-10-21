@@ -3451,9 +3451,7 @@ class ExecutablePage(Page):
     def _scanned(self, found: list[tuple[Path, int]], error: str = "") -> None:
         self.list.clear()
         for exe, size in found:
-            item = QListWidgetItem(f"{exe.relative_to(self.root)}   ({fmt_bytes(size)})")
-            item.setData(Qt.UserRole, str(exe))
-            self.list.addItem(item)
+            self._add(exe, size)
         if error:
             self.list.addItem(f"Could not look: {error}")
         if found:
@@ -3502,6 +3500,10 @@ SHOT_SIZE = QSize(224, 126)
 JOB_TEXT = {
     "setup": "Setting up...",
     "uninstall": "Uninstalling...",
+        # The server may be slow or out of reach: the list is on screen first and the one it knows is picked when it answers.
+        known = logstore.best_effort("Could not ask the server for the executable", launchsettings.remembered_executable, self.win.app.client(), self.rec)
+        if known is not None:
+            self.win.app.bridge.call.emit(lambda: self._stand_on(known))
     "winecfg": "winecfg is open...",
     "proton": "Downloading Proton...",
     "winetricks": "winetricks is running...",
@@ -3514,6 +3516,26 @@ PREFIX_TOOLS = (
     ("Registry editor (regedit)", ("regedit",)),
     ("Command prompt (cmd)", ("wineconsole", "cmd")),
     ("File manager (winefile)", ("winefile",)),
+    def _add(self, exe: Path, size: int, row: int | None = None) -> None:
+        item = QListWidgetItem(f"{exe.relative_to(self.root)}   ({fmt_bytes(size)})")
+        item.setData(Qt.UserRole, str(exe))
+        self.list.addItem(item) if row is None else self.list.insertItem(row, item)
+
+    def _stand_on(self, known: Path) -> None:
+        """The executable the server kept for the game (the last time it was chosen) becomes the one the list stands on, so Use
+        this executable is enough; it is added at the top when the scan did not find it. A row the person already moved to is left."""
+        if self.list.currentRow() > 0:
+            return
+        for row in range(self.list.count()):
+            if self.list.item(row).data(Qt.UserRole) == str(known):
+                self.list.setCurrentRow(row)
+                return
+        try:
+            self._add(known, known.stat().st_size, row=0)
+        except (OSError, ValueError):
+            return
+        self.list.setCurrentRow(0)
+
     ("Control panel (control)", ("control",)),
     ("Task manager (taskmgr)", ("taskmgr",)),
     ("Uninstall programs (uninstaller)", ("uninstaller",)),
@@ -5218,6 +5240,10 @@ def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
     left, top), violet with a puzzle piece (only add-ons, bottom)."""
     left, top, bottom = cover.left(), cover.top(), cover.bottom() + 1
     saves = state == SAVES_ONLY
+                try:  # the game is set up: not being able to tell the server must not keep the rest from happening
+                    launchsettings.remember_executable(self.app.client(), rec)
+                except (OSError, RuntimeError) as e:
+                    logstore.warning(f"Could not keep the executable of {rec.name} on the server: {e}")
     if saves:
         corner = QPolygonF([QPointF(left, top), QPointF(left + BADGE_SIZE, top), QPointF(left, top + BADGE_SIZE)])
     else:

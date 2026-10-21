@@ -29,10 +29,10 @@ def digest(reg_text: str) -> str:
 
 
 def effective(answer: dict | None) -> dict:
-    """{"proton", "winecfg_reg", "launch_args", "winetricks"} from the server's answer: the device's own value, else the shared one, else None;
+    """{"proton", "winecfg_reg", "launch_args", "executable", "winetricks"} from the server's answer: the device's own value, else the shared one, else None;
     the winetricks entries of both rows together (a device adds to what all of them have), one for each key: for a setting both
     set, the device's value wins."""
-    out: dict = {"proton": None, "winecfg_reg": None, "launch_args": None}
+    out: dict = {"proton": None, "winecfg_reg": None, "launch_args": None, "executable": None}
     verbs: list = []
     for row in ((answer or {}).get("shared"), (answer or {}).get("device")):  # the device's last: it wins
         for field in out:
@@ -168,6 +168,45 @@ def _sync_args(client: MogClient, rec: InstalledGame, answer: dict | None, prefe
             return
         _mark_synced(rec.game_id)
     manager.set_launch_args_agreed(rec, merged)
+
+
+def executable_key(rec: InstalledGame) -> str | None:
+    """The game's executable as the server keeps it: a path with "/" from the folder of the game's own files (paths from the
+    install differ between machines). None when there is no executable or it is not inside that folder."""
+    if not rec.executable:
+        return None
+    try:
+        return Path(rec.executable).relative_to(rec.files_dir or rec.install_dir).as_posix()
+    except ValueError:
+        return None
+
+
+def remember_executable(client: MogClient, rec: InstalledGame) -> None:
+    """Keep the chosen executable on the server, for this device (sent as soon as the server can take it, like the other launch
+    settings) and, when this is an admin, for all of them: a new install of the game, here or on another device, then knows
+    which one to offer. Only an admin may set what all devices share, so another user's try for it is quietly left out."""
+    key = executable_key(rec)
+    if key is None:
+        return
+    push(client, rec, {"executable": key}, everywhere=False)
+    client.put_launch_settings(rec.game_id, None, {"executable": key})
+
+
+def remembered_executable(client: MogClient, rec: InstalledGame) -> Path | None:
+    """The executable the server knows for the game, as a file below this install, or None: nothing kept, an older server,
+    no server to ask, or a file that is not there in this install."""
+    if connectivity.is_offline():
+        return None
+    try:
+        key = effective(client.launch_settings(rec.game_id, device_id(client)))["executable"]
+    except RuntimeError:
+        return None
+    if not key:
+        return None
+    if ".." in key.split("/") or key.startswith("/") or "\\" in key:  # a path that leaves the game's folder is not ours to run
+        return None
+    path = Path(rec.files_dir or rec.install_dir) / key
+    return path if path.is_file() else None
 
 
 def pull_args(client: MogClient, rec: InstalledGame, preference: str) -> None:
