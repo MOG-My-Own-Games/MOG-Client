@@ -1343,6 +1343,8 @@ class LinuxOptionsPage(Page):
 
     def __init__(self, win: "MainWindow", page: "GamePage", rec: InstalledGame):
         super().__init__()
+        if sys.platform == "darwin":
+            self.title = "Runner Options"
         self.win, self.rec = win, rec
         self.first: QPushButton | None = None
         self.engine_button: QPushButton | None = None
@@ -1501,8 +1503,12 @@ class OptionsPage(Page):
         if (rec is None or rec.state in ("installed", "awaiting_executable")) and gid not in win.app.installs:
             add("Find game...", lambda: page.find_game(rec))  # any game: it may be renamed, or brought from another disk or machine
         if rec and rec.state == "installed" and installdirs.present(rec):
-            if sys.platform.startswith("linux"):
-                add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
+            if sys.platform.startswith("linux") or sys.platform == "darwin":
+                add(
+                    "Runner Options" if sys.platform == "darwin" else "Linux Options",
+                    lambda: win.push(LinuxOptionsPage(win, page, rec)),
+                    pop=0,
+                )
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
             add("Repair: check the installed files", lambda: page.repair(rec))
@@ -2960,8 +2966,13 @@ class SettingsPage(Page):
         menu.add(
             OptionRow(
                 "Launcher",
-                "What starts the games: the first of Faugus, umu, Proton and Wine that is installed, unless you pick "
-                "another. Each game gets a prefix of its own in its folder (pfx), which the launcher fills."
+                (
+                    "What starts the games: the first of CrossOver, Game Porting Toolkit, Wine and Sikarugir that is "
+                    "installed, unless you pick another. Each game gets a Wine prefix of its own in its folder (pfx)."
+                    if sys.platform == "darwin"
+                    else "What starts the games: the first of Faugus, umu, Proton and Wine that is installed, unless you pick "
+                    "another. Each game gets a prefix of its own in its folder (pfx), which the launcher fills."
+                )
                 if sys.platform != "win32"
                 else "Games run directly.",
                 self.launcher,

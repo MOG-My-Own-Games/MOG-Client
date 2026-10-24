@@ -3386,6 +3386,12 @@ def test_the_linux_button_is_only_on_linux(win, tmp_path, monkeypatch, platform)
     assert "Linux Options" not in _texts(_options(win, _game_record(tmp_path, "g.exe")))
 
 
+def test_a_mac_gets_the_runner_button(win, tmp_path, monkeypatch):
+    monkeypatch.setattr(gui.sys, "platform", "darwin")
+
+    assert "Runner Options" in _texts(_options(win, _game_record(tmp_path, "g.exe")))
+
+
 def test_choosing_linux_opens_its_page(win, qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(gui.sys, "platform", "linux")
     rec = _game_record(tmp_path, "g.exe")

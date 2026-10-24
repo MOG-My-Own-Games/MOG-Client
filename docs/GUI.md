@@ -43,7 +43,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
 - Options:
-  - **Linux Options** (only on Linux; not shown on Windows or other systems) opens a menu on top of this one, with a
+  - **Linux Options** (only on Linux; on a Mac it is called **Runner Options** and lists CrossOver, Game Porting Toolkit,
+    Wine and Sikarugir as engines, which have no versions to pick; not shown on Windows) opens a menu on top of this one, with a
     Back button (not Close) that returns here; the engine and Proton lists it opens say Back too, and return to it:
     - **Engine: ..., version** (shown as `Engine: umu-launcher, GE-Proton9-27`; in the second, violet gradient when the
       engine or its version is not the default): one page with the **engine** on the left (Default, Faugus, umu, Proton,
