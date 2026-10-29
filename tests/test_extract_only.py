@@ -44,6 +44,14 @@ def test_an_archive_with_an_installer_is_not_named():
     assert client({"candidates": [{"path": "setup.exe"}], "extract_suggested": False}).portable_archive(3) is None
 
 
+def test_a_game_whose_saved_order_is_a_copy_is_not_asked_again():
+    """The server's Install section can say once that the archive holds the installed game (a `mog:copy` first step):
+    the server then extracts it by itself, and the question would only ask again what was answered."""
+    copy = {"path": "mog:copy", "source_path": ARCHIVE["path"]}
+    mog = MogClient(Posts({DEFAULT: {"candidates": [ARCHIVE], "order": [copy]}}))
+    assert mog.portable_archive(3) is None and mog.c.calls == [("GET", DEFAULT)]
+
+
 def test_an_older_server_that_does_not_say_is_taken_as_not():
     assert client({"candidates": []}).portable_archive(3) is None
 

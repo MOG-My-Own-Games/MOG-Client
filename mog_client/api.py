@@ -372,11 +372,15 @@ class MogClient:
     def portable_archive(self, game_id: int, installer: dict | None = None) -> str | None:
         """The name of the archive that would be installed when it holds a game with no installer in it, so that
         the user can be asked about extracting it as it is. None when it is not an archive, has an installer, or
-        the server cannot say (an older one, or an error: asking is a nicety, never a reason to stop)."""
+        the server cannot say (an older one, or an error: asking is a nicety, never a reason to stop). Nor is it asked
+        when the game's saved order starts with a copy: that is the answer already given, and the server follows it."""
         try:
             pick = installer
             if pick is None:
-                found = self.candidates(game_id).get("candidates", [])
+                listed = self.candidates(game_id)
+                if any(step.get("path") == "mog:copy" for step in listed.get("order") or []):
+                    return None
+                found = listed.get("candidates", [])
                 pick = next((c for c in found if c.get("category", "game") == "game"), None)
             if not pick or pick.get("kind") not in ("disc image", "archive"):
                 return None
