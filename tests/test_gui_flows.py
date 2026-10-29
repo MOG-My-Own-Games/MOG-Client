@@ -1087,6 +1087,15 @@ def test_a_game_that_was_extracted_on_purpose_is_not_asked_again(win, qapp, monk
     assert started == [None] and server.asked == []  # it resumes; its record remembers the choice
 
 
+def test_a_game_the_server_already_has_installed_is_not_asked_about_an_archive(win, qapp, monkeypatch):
+    """Its cache is only streamed: there is no installer to run, so nothing to ask even for an archive that looks like a game."""
+    server = FakeServer()
+    started = _extraction_win(win, monkeypatch, server)
+    win.install_game({"id": 7, "name": "Game", "installed": True})
+    assert _wait_for(qapp, lambda: started)
+    assert started == [None] and server.asked == [] and not isinstance(win.current_page(), gui.ConfirmPage)
+
+
 def test_a_game_whose_first_attempt_failed_is_asked_again(win, qapp, monkeypatch, tmp_path):
     server = FakeServer(session={"state": "failed", "error": "Nothing recognizable as an installer inside Game.rar"})
     started = _extraction_win(win, monkeypatch, server)
@@ -4420,7 +4429,7 @@ class CandidatesServer:
         return self.data
 
 
-def _install_click(win, qapp, monkeypatch, server):
+def _install_click(win, qapp, monkeypatch, server, installed=False):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
     monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
@@ -4436,7 +4445,7 @@ def _install_click(win, qapp, monkeypatch, server):
     monkeypatch.setattr(win.app, "run_bg", run_now)
     started = []
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, steps)))
-    win.app.set_games([{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None}])
+    win.app.set_games([{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None, "installed": installed}])
     win.show_game(41)
     pump(qapp)
     page = win.current_page()
@@ -4450,6 +4459,14 @@ def test_installing_a_game_with_patches_opens_the_picker_by_itself(win, qapp, mo
     _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP, PATCH1, PATCH2]))
 
     assert isinstance(win.current_page(), gui.InstallerPickerPage) and started == []
+
+
+def test_a_game_the_server_has_installed_starts_at_once_whatever_installers_it_has(win, qapp, monkeypatch):
+    """The server's finished install is only streamed: asking which installer to run would be asking about what ran already."""
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP, PATCH1, PATCH2]), installed=True)
+
+    assert not isinstance(win.current_page(), gui.InstallerPickerPage) and started == [(None, None)]
 
 
 def test_installing_a_game_with_one_installer_starts_at_once(win, qapp, monkeypatch):

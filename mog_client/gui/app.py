@@ -4368,6 +4368,10 @@ class GamePage(Page):
             self._button("Mods", self.open_mods)
 
     def install(self) -> None:
+        if self.game.get("installed"):
+            # The server holds the finished install: it is only streamed, so there is no installer to choose or archive to ask about.
+            self.win.install_game(self.game, None, self._installing)
+            return
         group = self._group()
         local = load_library()
         fresh = group is not None and not any(m["id"] in local for m in group.members)
@@ -4386,6 +4390,9 @@ class GamePage(Page):
         gid = self.game["id"]
         app = self.win.app
         group = self._group()
+        if self.game.get("installed"):  # a finished install on the server has no installer left to choose
+            self._start_plain()
+            return
 
         def work() -> None:
             client = app.client()
@@ -6592,9 +6599,13 @@ class MainWindow(QMainWindow):
         if steps:  # a chain of installers chosen in the picker: nothing to extract, nothing left to ask
             go(None, False) if rec else size_then_place(False)
             return
+        proceed = (lambda extract: go(None, extract)) if rec else size_then_place
+        if game.get("installed"):  # the server's finished install is streamed as it is: nothing to ask
+            proceed(None)
+            return
         # A game that was begun is asked too when its session is not running (an attempt that failed
         # leaves its record behind, and starting it again would only fail the same way).
-        self._ask_extraction(game, installer, (lambda extract: go(None, extract)) if rec else size_then_place)
+        self._ask_extraction(game, installer, proceed)
 
     def _ask_extraction(self, game: dict, installer: dict | None, proceed) -> None:
         """A game that is an archive with no installer in it (one that needs none) can be extracted as it is and

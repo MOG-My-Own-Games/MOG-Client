@@ -96,6 +96,9 @@ a flag on the left:
   server would run by itself; not offered when it already could not choose) is a button on a row of its own above
   Install; **Cancel** closes the picker. The arrows walk between the buttons as they are laid out (Right from Install is
   Cancel).
+- **A game the server already holds the install of** (its cache is still there, the game shows as cached) is never asked
+  anything: **Install** only downloads it, with no picker and no "extract it?" question. Delete the install cache on the
+  server to be asked again.
 - **Just copy the files, run nothing** is the first row of every version and works like an installer. Ticked alone, it
   takes the files as they are (an archive is unpacked). Ticked with others it is always number 1, the game, and the
   installers ticked after it are its patches: the server puts the files in the install's Wine prefix and runs those on
