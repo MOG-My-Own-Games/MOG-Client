@@ -99,10 +99,14 @@ def wait_for_game(
     log: Callable[[str], None] | None = None,
     on_started: Callable[[], None] | None = None,
     on_wait: Callable[[], None] | None = None,
+    on_session: Callable[[float, float], None] | None = None,
+    wall: Callable[[], float] = time.time,
 ) -> bool:
     """Block until the game has started and then ended. Returns False when it never started.
 
     `on_started` is called once when the game's first process shows up; `on_wait` at every look until then.
+    `on_session(started_at, seconds)` is called once the game has run, with when its first process showed up (epoch
+    seconds) and how long it was there: until its processes were gone, or until the wait was stopped (the person closed it).
 
     `log` is told what is seen: the processes that make the game, when they are gone, why the wait gave up and,
     every few minutes, that the game is still there (a process that never ends keeps everything after it waiting).
@@ -117,6 +121,7 @@ def wait_for_game(
     reported = False
     said = log or (lambda _text: None)
     last_said = waited_from
+    first_seen = first_wall = 0.0
     while not stop():
         pids = running_pids(install_dir, proc_root, me, native)
         now = clock()
@@ -124,6 +129,7 @@ def wait_for_game(
             if not started:
                 said(f"game seen after {now - waited_from:.0f}s: {describe_pids(pids, proc_root)}")
                 last_said = now
+                first_seen, first_wall = now, wall()
                 if on_started:
                     on_started()
             elif gone_since is not None:
@@ -144,6 +150,8 @@ def wait_for_game(
                 gone_since = now
             if now - gone_since >= linger:
                 said(f"game ended, {now - waited_from:.0f}s after the watch began")
+                if on_session:
+                    on_session(first_wall, gone_since - first_seen)
                 return True
         elif now - waited_from >= appear_timeout or abort_before_start():
             said(f"no game process in {now - waited_from:.0f}s ({'launcher failed' if now - waited_from < appear_timeout else 'timeout'}): giving up")
@@ -152,6 +160,8 @@ def wait_for_game(
             on_wait()
         sleep(poll)
     said("watch stopped" + (" while the game was running" if started else " before the game showed up"))
+    if started and on_session:
+        on_session(first_wall, clock() - first_seen)
     return started
 
 

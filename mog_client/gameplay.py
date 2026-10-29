@@ -31,7 +31,10 @@ def watch(
     if sys.platform == "win32" and proc is not None:
         if started := timing.get("on_started"):
             started()
+        began, began_wall = time.monotonic(), time.time()
         proc.wait()
+        if session := timing.get("on_session"):
+            session(began_wall, time.monotonic() - began)
         return True
 
     def launcher_failed() -> bool:

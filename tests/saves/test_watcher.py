@@ -84,6 +84,48 @@ def test_it_waits_for_the_game_to_start_and_then_to_end(tmp_path):
     assert 66 <= clock.now <= 70  # ended at 60, plus the linger
 
 
+def test_the_run_is_told_from_when_the_game_showed_up_to_when_it_was_gone_not_counting_the_linger(tmp_path):
+    clock = Clock()
+    clock.script[10] = lambda: _proc(tmp_path, 100, WIN_CMD.replace("\0", " "), "WINEPREFIX=/pfx/g")
+    clock.script[60] = lambda: _gone(tmp_path, 100)
+    runs = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=100, linger=6, poll=2, sleep=clock.sleep, clock=clock.time,
+        wall=lambda: 1000 + clock.now, on_session=lambda began, seconds: runs.append((began, seconds)),
+    )  # fmt: skip
+
+    assert len(runs) == 1
+    began, seconds = runs[0]
+    assert 1010 <= began <= 1012  # when it was first seen, in the wall clock
+    assert 48 <= seconds <= 52  # 10 to 60: the wait for it to start and the linger after it are not play time
+
+
+def test_a_game_stopped_while_it_runs_has_played_until_then(tmp_path):
+    clock = Clock()
+    clock.script[2] = lambda: _proc(tmp_path, 100, WIN_CMD.replace("\0", " "), "WINEPREFIX=/pfx/g")
+    runs = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=100, poll=2, sleep=clock.sleep, clock=clock.time,
+        wall=lambda: 1000 + clock.now, stop=lambda: clock.now >= 40, on_session=lambda *run: runs.append(run),
+    )  # fmt: skip
+
+    assert len(runs) == 1 and 36 <= runs[0][1] <= 40
+
+
+def test_a_game_that_never_showed_up_has_no_run(tmp_path):
+    clock = Clock()
+    runs = []
+
+    watcher.wait_for_game(
+        INSTALL, proc_root=tmp_path, appear_timeout=30, poll=5, sleep=clock.sleep, clock=clock.time,
+        on_session=lambda *run: runs.append(run),
+    )  # fmt: skip
+
+    assert runs == []
+
+
 def test_a_launcher_handing_over_to_the_game_is_not_the_end(tmp_path):
     clock = Clock()
     clock.script[2] = lambda: _proc(tmp_path, 100, "faugus-run Z:\\home\\x\\mog-installed\\Some Game\\game.exe")

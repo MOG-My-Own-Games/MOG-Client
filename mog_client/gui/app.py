@@ -102,6 +102,7 @@ from mog_client import (
 )
 from mog_client import mods as mods_download
 from mog_client import played as played_at
+from mog_client import playtime
 from mog_client.api import fetch_url, fmt_bytes, safe_dirname
 from mog_client.config import (
     InstalledGame,
@@ -431,6 +432,8 @@ class App:
                 client = self.client()
                 if launchsettings.has_waiting():  # launch settings the server has not taken yet: sent as soon as it can
                     launchsettings.flush_all(client, lambda m: self.bridge.note.emit(m))
+                if playtime.waiting():  # runs of games the server was not told of when they closed (offline then)
+                    playtime.flush(client, say=lambda m: self.bridge.note.emit(m))
                 self.bridge.notifications.emit(client.notifications())
             except Exception:  # noqa: BLE001, S110 - the inbox is best effort, a failed poll just retries
                 pass
@@ -3939,6 +3942,8 @@ class GamePage(Page):
         row("Size on server", self.size_label)
         self.played_label = QLabel()
         row("Last played", self.played_label)
+        self.playtime_label = QLabel()
+        row("Time played", self.playtime_label)
         self.sync_label = ParagraphLabel(max_lines=2, min_lines=1)
         row("Last save sync", self.sync_label)
         self.sync_key = form.labelForField(self.sync_label)
@@ -4088,6 +4093,7 @@ class GamePage(Page):
         )
         text = sync_ui.when_epoch(played) if played else "Never"
         self.played_label.setText(f"{text} on {machine}" if played and machine else text)
+        self.playtime_label.setText(playtime.describe(ordering.playtime(Group(members=members, versions=members))))
         rec = load_library().get(gid)
         enabled = bool(rec) and sync.enabled(rec, self.app.settings)
         self.sync_key.setVisible(enabled)
@@ -7102,9 +7108,20 @@ class MainWindow(QMainWindow):
                 runner.restore_when_made(ctx, lambda text: self.app.bridge.message.emit("info", text), stop.is_set)
             say = lambda text: logstore.info(f"{rec.name}: {text}")  # noqa: E731
             say("started, watching it until it ends")
+            client = self.app.client()
+
+            def ran(began: float, seconds: float) -> None:
+                """The game has closed: its time is kept and sent at once, before the saves are backed up (which is not play time)."""
+                if playtime.record(rec.game_id, began, seconds):
+                    say(f"played for {seconds / 60:.0f} min")
+                    known = self.app.games.get(rec.game_id)
+                    if known is not None:  # the page shows it at once; the server's figure comes with the next list of games
+                        known["playtime_seconds"] = (known.get("playtime_seconds") or 0) + int(seconds)
+                    playtime.send_in_background(client, say=say)
+
             started = gameplay.watch(
                 Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, log=say,
-                on_started=lambda: status("Playing"), on_wait=waiting, **timing,
+                on_started=lambda: status("Playing"), on_wait=waiting, on_session=ran, **timing,
             )
             if not stop.is_set() and (not started or (time.time_ns() - started_ns) / 1e9 < SHORT_RUN):
                 say("the game ended within moments: sending the log, if that is allowed")

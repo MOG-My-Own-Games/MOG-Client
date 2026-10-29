@@ -722,6 +722,18 @@ class MogClient:
             return None
         return status
 
+    def add_playtime(self, game_id: int, started_at: str, seconds: int, device_id: int | None = None) -> int | None:
+        """Tell the server one run of the game: when it started (ISO 8601, UTC) and how many seconds it lasted. The server's status
+        (200: it has it, also when it had it already), or None when it could not be reached."""
+        body = {"started_at": started_at, "seconds": seconds}
+        if device_id is not None:
+            body["device_id"] = device_id
+        try:
+            status, _content, _headers = self.c.request("POST", f"/api/games/{game_id}/playtime", body=body)
+        except RuntimeError:
+            return None
+        return status
+
     def games_revision(self) -> str | None:
         """A value that changes when the server's library does, or None (an older server)."""
         try:

@@ -61,6 +61,7 @@ mog_client/
   winetricks.py The winetricks verbs offered, the check of one from the server, and which are still to install (Qt-free)
   protondl.py   Downloads a Proton-GE release (SHA-512 checked, safely unpacked) into compatibilitytools.d (Qt-free)
   protonge.py   The last Proton-GE release of each major, from GitHub with a day's cache (Qt-free)
+  playtime.py   How long each game was played from here: the runs `saves.watcher.wait_for_game` reports (`on_session`), kept in playtime-outbox.json until the server has them (Qt-free)
   launchsettings.py  The game's Proton build, winecfg settings and winetricks verbs on the server: pull before play, push after a change (kept in launch-outbox.json until the server says 200, see `flush_all`), run winecfg/regedit/winetricks
   videos.py     The server's video list for a game (Qt-free): entries, thumbnail and watch URLs
   gui/          PySide6 app (app.py) and stdlib gamepad reader (gamepad.py)

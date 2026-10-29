@@ -316,6 +316,31 @@ def test_a_running_game_shows_the_message_and_stop_closes_it(win, qapp, tmp_path
         game.kill()
 
 
+def test_a_game_played_from_here_has_its_time_sent_when_it_closes(win, qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import playtime
+    from mog_client.saves import watcher
+
+    sent = []
+    fake = SimpleNamespace(add_playtime=lambda game_id, started_at, seconds, device_id=None: sent.append((game_id, seconds)) or 200)
+    monkeypatch.setattr(win.app, "client", lambda: fake)
+    monkeypatch.setattr(playtime, "MIN_SECONDS", 0)  # the game here runs for a moment
+    win.app.games[1] = {"id": 1, "name": "Jazz Jackrabbit 2", "playtime_seconds": 100}
+    rec = _installed(tmp_path)
+    game = _game_process(tmp_path)
+    try:
+        win.begin_play(rec, game, poll=0.05, linger=0.2, appear_timeout=10)
+        assert _wait(lambda: watcher.running_pids(tmp_path))
+        assert not _wait(lambda: False, timeout=1.2)  # it plays for a moment
+        win.on_pad(gamepad.ACCEPT)  # Stop
+        assert _wait(lambda: sent, qapp=qapp)
+        assert [g for g, _s in sent] == [1] and playtime.waiting() == []  # told, and no longer kept
+        assert win.app.games[1]["playtime_seconds"] >= 100  # the page shows it before the server's list comes again
+    finally:
+        game.kill()
+
+
 def test_the_games_page_gets_its_default_button_back_when_the_playing_message_goes(win, qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)

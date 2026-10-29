@@ -42,6 +42,13 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   still starts, and the winecfg settings (DLL overrides among them) are put in even when a verb failed. While a game started from MOG runs, a message over the window shows its
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
+- **Time played** on the game's page is how long you have played the title (all its versions), as the server counts it for you:
+  the sum of the runs your clients reported. A run is from the moment the game's first process shows up to the moment its
+  processes are gone, so the wait for the prefix, the restore of saves before and the save sync after it are not in it
+  (a run under 10 seconds is not counted, and Stop ends the run where it is). It is sent to the server as soon as the game
+  closes; when the server cannot be reached it is kept in `playtime-outbox.json` in the client's data folder and sent at the
+  next start (the server counts a run once, whatever the number of times it is sent). A game started from a Steam or
+  desktop shortcut is counted when its save watch runs, that is, when saves are synced for it.
 - Options:
   - **Linux Options** (only on Linux; not shown on Windows or other systems) opens a menu on top of this one, with a
     Back button (not Close) that returns here; the engine and Proton lists it opens say Back too, and return to it:

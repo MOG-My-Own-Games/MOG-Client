@@ -62,6 +62,11 @@ def added(group: Group) -> float | None:
     return min(known, default=None)
 
 
+def playtime(group: Group) -> int:
+    """What this user has played of the title, over all its versions (the server's figure, in seconds)."""
+    return sum(m.get("playtime_seconds") or 0 for m in group.members)
+
+
 def cached(group: Group) -> bool:
     """The server holds a finished install of a version of the title for this user."""
     return any(m.get("installed") for m in group.members)
