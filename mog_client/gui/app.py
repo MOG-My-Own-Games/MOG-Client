@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -96,6 +97,7 @@ from mog_client import (
     selfsteam,
     snapshot,
     steam,
+    timeago,
     trace,
     umudb,
     updater,
@@ -124,6 +126,7 @@ from mog_client.gui.headerart import HeaderArt
 from mog_client.gui.instance import Listener, send_to_running
 from mog_client.gui.loading import LoadingPanel
 from mog_client.gui.logview import LogView
+from mog_client.gui.notifyrow import ROLE_AGE, ROLE_BODY, NotificationDelegate
 from mog_client.gui.menu import MenuCombo, MenuLineEdit, MenuView, OptionRow
 from mog_client.gui.modal import FitScrollArea, ModalHost
 from mog_client.gui.overlay import MessageOverlay
@@ -211,6 +214,7 @@ REPORT_EVERY = 0.25  # seconds between the progress reports of a download that r
 LABELS_EVERY_MS = 250  # the library redraws what a download changed this often, however many reports came
 ACTIVE_ICON = QSize(32, 32)
 NOTIFICATION_ICON = QSize(64, 64)
+AGE_REFRESH_MS = 60_000
 # What the server records about something the client did itself; every other kind comes from the server.
 CLIENT_KINDS = frozenset({"save_synced", "save_restored", "mod_downloaded", "client_info", "client_warning", "client_error"})
 ROLE_MOD_ROW = Qt.UserRole + 30  # on a sidebar row: the name of the mod it is fetching (None for an install, a sync or a restore)
@@ -1099,10 +1103,16 @@ class NotificationsPage(Page):
         self.win = win
         self.list = QListWidget()
         self.list.setIconSize(NOTIFICATION_ICON)
+        self.list.setItemDelegate(NotificationDelegate(self.list, NOTIFICATION_ICON))
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # rows wrap to the width
+        self.list.setResizeMode(QListView.Adjust)
         self.list.itemActivated.connect(self.open_item)
         win.app.bridge.icon.connect(self._icon_arrived)  # a game's icon that was fetched for this list
         self.empty = QLabel("No notifications.")
         self.empty.setAlignment(Qt.AlignCenter)
+        self.age_timer = QTimer(self)  # "5 minutes ago" moves on while the list stays open
+        self.age_timer.timeout.connect(self.populate)
+        self.age_timer.start(AGE_REFRESH_MS)
         mark_all = QPushButton("Mark all read")
         mark_all.clicked.connect(self.mark_all_read)
         clear = QPushButton("Clear all")
@@ -1146,10 +1156,12 @@ class NotificationsPage(Page):
         row = self.list.currentRow()
         self.list.clear()
         for n in self.win.notifications:
-            text = n["title"]
-            if n.get("body"):
-                text += "\n" + n["body"]
-            item = QListWidgetItem(text)
+            item = QListWidgetItem(n["title"])
+            item.setData(ROLE_BODY, n.get("body") or "")
+            when = timeago.parse(n.get("created_at"))
+            if when is not None:
+                item.setData(ROLE_AGE, timeago.ago(when))
+                item.setToolTip(timeago.full(when))  # hovering is for the mouse; the pad sees the words only
             if not n["read"]:
                 bold = item.font()
                 bold.setBold(True)
@@ -7376,7 +7388,16 @@ class MainWindow(QMainWindow):
     ) -> None:
         """A notice this client keeps itself, in the list beside the server's, when the server cannot keep it."""
         self.local_notifications.insert(
-            0, {"id": -(len(self.local_notifications) + 1), "kind": kind, "title": title, "body": body, "game_id": game_id, "read": False}
+            0,
+            {
+                "id": -(len(self.local_notifications) + 1),
+                "kind": kind,
+                "title": title,
+                "body": body,
+                "game_id": game_id,
+                "read": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
         )
         if log:
             self.notify(f"Notification: {title}")

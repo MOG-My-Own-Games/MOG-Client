@@ -320,6 +320,9 @@ The server tells you when something needs attention, for now an auto mode instal
 "Notifications" (the bell next to Settings, with the unread count) and in the log when a new one arrives. Open one to jump
 to its game, delete it from the list or with X.
 
+Each one says how long ago it was ("10 minutes ago", "last week", "a year ago") at the right end of its title line, kept up to date while the list is open;
+with the mouse over it, the full date shows ("Wednesday 28 October 2026, 13:06"). The pad sees only the words. Long texts wrap to the window, so the list never scrolls sideways.
+
 ## If it freezes or crashes
 
 When the window stops answering for five seconds, or the client is killed by a signal (SIGABRT, SIGSEGV), the Python stack

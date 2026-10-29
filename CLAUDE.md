@@ -77,6 +77,7 @@ mog_client/
     about.py    the About page's tabs (About, Changelog); legend.py builds the guide at the bottom per page, with button and key icons
     sounds.py   menu sounds (QSoundEffect; silent when the setting is off or there is no audio)
     playing.py  the "Playing" message over the window while a game started here runs (cover, name, Stop)
+    notifyrow.py how a Notifications row is drawn (icon, title with its age at the right end, wrapped body); the list never scrolls sideways
     menu.py     the settings menu: OptionRow (title, description, control), MenuView, controls the arrows do not change
 packaging/      PyInstaller entry point, .desktop file and icon
 scripts/        build-appimage.sh (Linux) and build-exe.ps1 (Windows), release_notes.py (the release body and the bundled changelog from the commits)

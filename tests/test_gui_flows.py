@@ -2732,6 +2732,28 @@ def test_a_notification_shows_the_game_icon_else_the_icon_of_who_wrote_it(win, q
     assert image(3) == server  # a game this library does not have: the server's
 
 
+def test_a_notification_says_how_long_ago_it_was_and_the_full_date_on_hover(win, qapp):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    win.notifications = [
+        {"id": 1, "kind": "save_synced", "title": "Recent", "body": "text", "game_id": None, "read": True,
+         "created_at": (now - timedelta(hours=5)).isoformat().replace("+00:00", "Z")},
+        {"id": 2, "kind": "save_synced", "title": "Undated", "body": None, "game_id": None, "read": True},
+    ]
+    page = gui.NotificationsPage(win)
+    first, second = page.list.item(0), page.list.item(1)
+    assert (first.text(), first.data(gui.ROLE_BODY), first.data(gui.ROLE_AGE)) == ("Recent", "text", "5 hours ago")
+    assert str((now - timedelta(hours=5)).astimezone().year) in first.toolTip()
+    assert second.text() == "Undated" and second.toolTip() == "" and not second.data(gui.ROLE_AGE)  # an older server's notice
+
+
+def test_a_notice_the_client_keeps_itself_has_a_time(win, qapp):
+    win.add_local_notification("client_info", "Done", None, log=False)
+    assert win.notifications[0]["created_at"]
+    assert gui.NotificationsPage(win).list.item(0).data(gui.ROLE_AGE) == "just now"
+
+
 def test_questions_and_pickers_are_cards_over_the_page_they_came_from(win, qapp, monkeypatch, tmp_path):
     game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
     answers = []
@@ -5435,3 +5457,24 @@ def test_the_executable_page_stands_on_the_one_the_server_knows_for_the_game(win
         time.sleep(0.02)
 
     assert page.list.currentItem().data(Qt.UserRole) == str(tmp_path / "later" / "z.exe")
+
+
+def test_notification_rows_wrap_to_the_list_and_never_scroll_sideways(win, qapp):
+    long_body = "word " * 80
+    win.notifications = [
+        {"id": 1, "kind": "save_synced", "title": "A title", "body": long_body, "game_id": None, "read": False, "created_at": "2026-10-01T10:00:00Z"},
+        {"id": 2, "kind": "save_synced", "title": "Short", "body": None, "game_id": None, "read": True},
+    ]
+    page = gui.NotificationsPage(win)
+    page.resize(700, 500)
+    page.show()
+    pump(qapp)
+    assert not page.list.horizontalScrollBar().isVisible()
+    width = page.list.viewport().width()
+    tall, short = (page.list.visualItemRect(page.list.item(i)) for i in (0, 1))
+    assert tall.width() <= width and short.width() <= width
+    assert tall.height() > short.height()  # the body wrapped under the title
+    page.resize(380, 500)
+    pump(qapp)
+    assert not page.list.horizontalScrollBar().isVisible()
+    assert page.list.visualItemRect(page.list.item(0)).height() > tall.height()  # narrower: more lines
