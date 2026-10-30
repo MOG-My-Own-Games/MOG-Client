@@ -21,7 +21,7 @@ from mog_client.saves.runner import make_context
 from mog_client.saves.state import load_state
 
 NEW_ENTRY, BROWSE, NEW_PREFIX, ANOTHER_FOLDER = "*new*", "*browse*", "*new-prefix*", "*another*"
-NEW_LIBRARY, NO_LIBRARY = "*new-library*", "*no-library*"
+NEW_LIBRARY = "*new-library*"
 IN_GAME_FOLDER = "*in-game-folder*"
 
 PREFIX_NOTE = (
@@ -175,14 +175,11 @@ class ImportFlow:
 
     def show_libraries(self, draft: Draft, libraries: list[dict]) -> None:
         options = [(f"{lib['name']}   ({lib['root_path']})", lib["id"]) for lib in libraries]
-        options += [("New Library...", NEW_LIBRARY), ("No library: only its saves are kept", NO_LIBRARY)]
+        options += [("New Library...", NEW_LIBRARY)]
 
         def chosen(answer) -> None:
             if answer == NEW_LIBRARY:
                 self.new_library(draft, libraries)
-            elif answer == NO_LIBRARY:
-                draft.library_id = None
-                self.create_entry(draft)
             elif answer is not None:
                 draft.library_id = answer
                 self.create_entry(draft)

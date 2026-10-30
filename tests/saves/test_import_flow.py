@@ -151,7 +151,7 @@ def test_adding_a_linux_game_asks_target_name_and_folders_and_sends_every_save(u
     ui.win.texts[-1][2]("Lost Ruins")
     title, _text, options, answer = ui.win.choices[-1]
     assert title == "Which library is Lost Ruins in?"
-    assert [v for _l, v in options] == [1, importing.NEW_LIBRARY, importing.NO_LIBRARY]
+    assert [v for _l, v in options] == [1, importing.NEW_LIBRARY]
     answer(1)
 
     assert ui.server.entries[0]["name"] == "Lost Ruins" and ui.win.games_signal  # no like-named game: a new entry, listed at once
@@ -327,15 +327,6 @@ def test_a_library_the_server_refuses_is_told_and_the_choice_comes_back(ui):
 
     assert "only an administrator" in ui.win.messages[-1][1]
     assert ui.win.choices[-1][0] == "Which library is Lost Ruins in?" and ui.server.entries == []
-
-
-def test_a_game_can_be_added_under_no_library(ui):
-    ui.flow.folder_chosen(str(ui.folder))
-    ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
-    ui.win.choices[-1][3](importing.NO_LIBRARY)
-
-    assert ui.server.entries[0]["library_id"] is None
 
 
 def test_the_executable_is_asked_for_once_the_game_is_added_as_after_an_install(ui):

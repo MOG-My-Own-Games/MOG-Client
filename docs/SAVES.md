@@ -72,7 +72,7 @@ icon are kept in MOG's data folder (`imports/<game id>`), never in the game's fo
   joins the first one's saves instead of making a copy) or add a new one; the new entry is shown on the server with a green
   corner and a floppy disk until files for it are added, and a scan that finds a folder named like it takes the entry over.
 - **The library**: for a new entry you pick which library of MOG Server it is listed under, or **New Library...** (a name and the
-  folder as the server sees it; administrators only), or no library. It is only a label: MOG never writes into a library's
+  folder as the server sees it; administrators only). It is only a label: MOG never writes into a library's
   folder, and a scan that finds the game's folder there makes it an ordinary game.
 - **The executable**: once it is added you are asked which file starts the game, with the same shortcuts questions as after an
   install; Back leaves it for later (**Add a launcher...** on the game's page).
