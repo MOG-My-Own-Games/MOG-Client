@@ -173,3 +173,58 @@ def test_a_native_game_is_given_its_permissions_once_when_it_is_launched(tmp_pat
     binary.chmod(0o644)
     launcher.launch_command(game)  # the folder is not walked again
     assert not binary.stat().st_mode & 0o111
+
+
+ELF = b"\x7fELF" + b"\x02\x01\x01" + b"\x00" * 60
+
+
+def make_elf(root: Path, name: str, size: int = 0, mode: int = 0o755) -> Path:
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(ELF + b"\x00" * size)
+    path.chmod(mode)
+    return path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_a_game_with_no_exe_and_no_script_offers_its_binary_not_its_libraries(tmp_path):
+    """An itch.io Unity game (`Game.x86_64` beside `GameAssembly.so` and `UnityPlayer.so`, all marked executable) had nothing to
+    pick: the programs are found by their header as the last resort, shared libraries left out."""
+    game = tmp_path / "My Dystopian Robot Girlfriend"
+    make_elf(game, "My Dystopian Robot Girlfriend.x86_64", 1000)
+    make_elf(game, "GameAssembly.so", 90000)
+    make_elf(game, "UnityPlayer.so", 40000)
+    make_elf(game, "libdecor-0.so.0", 100)
+    make_elf(game, "UnityCrashHandler64", 500)
+    make(game, "README.html", "CHANGELOG.html")
+    (game / "unity.lock").write_text("lock")
+
+    assert names(game) == ["My Dystopian Robot Girlfriend.x86_64"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_the_binary_named_like_the_game_comes_before_the_others_and_a_file_without_the_mode_is_no_program(tmp_path):
+    game = tmp_path / "Lost Ruins"
+    make_elf(game, "tools/editor", 9000)
+    make_elf(game, "LostRuins", 100)
+    make_elf(game, "other", 5000)
+    make_elf(game, "notmarked", 100, mode=0o644)
+
+    assert names(game) == ["LostRuins", "other", "tools/editor"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_the_fallback_is_only_for_a_game_with_nothing_else_to_offer(tmp_path):
+    make_elf(tmp_path, "helper", 100)
+    make(tmp_path, "game.exe")
+
+    assert names(tmp_path) == ["game.exe"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_a_chosen_binary_makes_the_game_native(tmp_path):
+    binary = make_elf(tmp_path, "Game.x86_64")
+    make(tmp_path, "setup.exe")
+
+    assert is_native_executable(binary) and not is_native_executable(tmp_path / "setup.exe")
+    assert not is_native_executable(tmp_path / "missing.x86_64")

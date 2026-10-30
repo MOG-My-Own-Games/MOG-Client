@@ -142,7 +142,22 @@ def save_settings(s: Settings) -> None:
 def is_native_executable(path: str | Path | None) -> bool:
     """Whether an executable is a Linux program (a script, as GOG's Linux games start with one) that runs as it is,
     not a Windows .exe that needs Proton or Wine."""
-    return bool(path) and str(path).lower().endswith(".sh")
+    if not path:
+        return False
+    if str(path).lower().endswith(".sh"):
+        return True
+    return sys.platform != "win32" and _is_elf(str(path))
+
+
+def _is_elf(path: str) -> bool:
+    """A program of the game's own that Linux runs (itch.io's `Game.x86_64`), not a .exe: told by its first bytes."""
+    if path.lower().endswith((".exe", ".lnk", ".bat", ".cmd")):
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
 
 
 @dataclass

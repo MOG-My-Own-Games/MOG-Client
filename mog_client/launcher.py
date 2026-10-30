@@ -92,7 +92,52 @@ def list_executables(install_dir: Path) -> list[Path]:
         return 1, len(rel.parts), 0
 
     found.sort(key=lambda p: (*rank(p), p.name.lower()))
-    return found
+    return found or _native_programs(install_dir)
+
+
+# How far down a folder with no .exe and no script is looked at for the program: a game's binary sits at its top (Unity's
+# `Game.x86_64`) or one folder down; further is plugins and tools.
+NATIVE_DEPTH = 3
+
+
+def _native_programs(install_dir: Path) -> list[Path]:
+    """The last resort, for a Linux game with neither a .exe nor a start script (itch.io's, an engine's own binary): the
+    programs in it, found by their ELF header, the shallowest first and the one named like the game before the others."""
+    if sys.platform == "win32":
+        return []
+    game = _squash(install_dir.name)
+    found = []
+    for dirpath, dirnames, filenames in os.walk(install_dir):
+        here = Path(dirpath)
+        depth = len(here.relative_to(install_dir).parts)
+        dirnames[:] = [d for d in dirnames if d not in (PREFIX_DIR, OLD_PREFIX_DIR, *_INSTALLER_DATA_DIRS)]
+        if depth + 1 >= NATIVE_DEPTH:
+            dirnames[:] = []
+        for name in filenames:
+            path = here / name
+            if _NOT_A_GAME.search(path.stem) or not is_elf_program(path) or is_mog_script(path):
+                continue
+            found.append((depth, game not in _squash(path.stem), -path.stat().st_size, path))
+    return [p for *_key, p in sorted(found, key=lambda f: (f[0], f[1], f[2], f[3].name.lower()))]
+
+
+def _squash(text: str) -> str:
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
+def is_elf_program(path: Path) -> bool:
+    """A Linux program the game starts: an executable file with an ELF header that is not a shared library (`libx.so`,
+    `libx.so.0`: those carry the same mode and header)."""
+    name = path.name.lower()
+    if name.endswith((".so", ".dll", ".exe")) or ".so." in name:
+        return False
+    try:
+        if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        with path.open("rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
 
 
 def all_executables(install_dir: Path) -> list[Path]:

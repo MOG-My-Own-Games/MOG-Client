@@ -67,7 +67,9 @@ A game installed from a native Linux installer is not run through Faugus, umu, P
 
 - "Choose executable" lists `start.sh` first, then any `.exe`, then other scripts. The installer's own leftovers
   (`gog-system-report.sh`, `postinst.sh`, `preuninst.sh`, `reuninst.sh`, `yad.sh`, `uninstall-*.sh`, the `.mojosetup`
-  folder) are never offered.
+  folder) are never offered. A folder with neither a `.exe` nor a script (an itch.io or engine game, `Game.x86_64`) offers
+  its Linux programs as the last resort, found by their ELF header: the shallowest first, the one named like the game before
+  the others, shared libraries (`*.so`) never.
 - The script is made executable and started as it is, by the launch script, the desktop entry and the Steam shortcut.
 - Save sync finds saves through the Wine prefix, so it leaves such a game alone.
 
