@@ -18,6 +18,7 @@ from mog_client.saves import importer, native, sync
 from mog_client.saves import prefix as prefixes
 from mog_client.saves.locations import GAME_KEY, native_key, sandbox_of
 from mog_client.saves.runner import make_context
+from mog_client.gui.saves_ui import saves_folder_note
 from mog_client.saves.state import load_state
 
 NEW_ENTRY, BROWSE, NEW_PREFIX, ANOTHER_FOLDER = "*new*", "*browse*", "*new-prefix*", "*another*"
@@ -74,8 +75,9 @@ class ImportFlow:
         if connectivity.is_offline():
             self.win.message("MOG Server is not reachable (offline mode): a game cannot be added now", "warning")
             return
-        self.win.message("Pick the folder of the game you already have on this computer", "info")
-        self.win.browse_folder(Path.home(), self.folder_chosen)
+        self.win.browse_folder(
+            Path.home(), self.folder_chosen, text="Pick the folder of the game you already have on this computer"
+        )
 
     def folder_chosen(self, folder: str) -> None:
         path = Path(folder)
@@ -391,8 +393,7 @@ class ImportFlow:
                 return
             self.show_saves(rec, found, sorted({*ticked, importer.choice_token(key, sandbox)}), then)
 
-        self.win.message(f"Pick the folder {rec.name} keeps its saves in, usually below ~/.config or ~/.local/share", "info")
-        self.win.browse_folder(Path.home(), picked)
+        self.win.browse_folder(Path.home(), picked, text=saves_folder_note(rec.name))
 
     def choose_saves(self, rec: InstalledGame, then: Callable[[], None] | None = None) -> None:
         """Change which folders are the saves of a game added from outside MOG (its Saves options)."""

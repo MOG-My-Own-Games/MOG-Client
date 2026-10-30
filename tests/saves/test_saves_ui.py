@@ -34,6 +34,7 @@ class FakeWin:
         self.checklists: list[tuple] = []
         self.asks: list[tuple] = []
         self.browsed: list[Path] = []
+        self.browse_texts: list[str] = []
         self.errors: list[str] = []
         self.busy = None
         self.task_refreshes = 0
@@ -82,8 +83,9 @@ class FakeWin:
     def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None):
         self.asks.append((text, on_yes, on_no))
 
-    def browse_folder(self, start, on_pick):
+    def browse_folder(self, start, on_pick, text=""):
         self.browsed.append(start)
+        self.browse_texts.append(text)
         self.on_pick = on_pick
 
 
@@ -493,7 +495,7 @@ def test_a_native_game_that_wrote_nothing_is_asked_for_its_folder_by_hand(native
     ui = native_ui
     ui.ui.backup_now(ui.rec)
     assert ui.win.checklists == [] and ui.win.browsed == [ui.home]
-    assert ui.win.messages and "Pick the folder" in ui.win.messages[0][1]
+    assert "Pick the folder" in ui.win.browse_texts[-1]
 
     ui.win.on_pick(str(ui.tmp / "elsewhere"))
     assert ui.win.messages[-1][0] == "error" and load_state(7).includes is None

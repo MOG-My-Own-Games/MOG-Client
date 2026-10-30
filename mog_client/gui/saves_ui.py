@@ -43,6 +43,11 @@ class RestoreJob:
 OTHER_FOLDER = "*other*"
 
 
+def saves_folder_note(name: str) -> str:
+    """What the folder picker says when the saves of a game are looked for by hand."""
+    return f"Pick the folder {name} keeps its saves in, usually below ~/.config or ~/.local/share"
+
+
 def when(iso: str) -> str:
     try:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -321,8 +326,7 @@ class SaveSync:
             if then:
                 then()
 
-        self.win.message(f"Pick the folder {rec.name} keeps its saves in, usually below ~/.config or ~/.local/share", "info")
-        self.win.browse_folder(Path.home(), store)
+        self.win.browse_folder(Path.home(), store, text=saves_folder_note(rec.name))
 
     # --- before the game starts ---
 

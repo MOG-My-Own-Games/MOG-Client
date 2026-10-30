@@ -176,7 +176,7 @@ class FakeWin:
     def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None):
         self.asks.append((text, on_yes))
 
-    def browse_folder(self, start, on_pick):
+    def browse_folder(self, start, on_pick, text=""):
         self.on_pick = on_pick
 
 

@@ -94,7 +94,7 @@ class FakeWin:
     def ask_text(self, title, text, default, on_done):
         self.texts.append((title, default, on_done))
 
-    def browse_folder(self, start, on_pick):
+    def browse_folder(self, start, on_pick, text=""):
         self.browsed.append(start)
         self.on_pick = on_pick
 

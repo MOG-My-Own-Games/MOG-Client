@@ -89,8 +89,11 @@ class ExternalSaves:
         self.win.choose("In which prefix are your old saves?", PREFIX_NOTE, options, chosen, game=rec.game_id)
 
     def ask_folder(self, rec: InstalledGame) -> None:
-        self.win.message(f"Pick the folder of the old install of {rec.name} (the one with its saves in it)", "info")
-        self.win.browse_folder(Path.home(), lambda picked: self.look(rec, folder=Path(picked)))
+        self.win.browse_folder(
+            Path.home(),
+            lambda picked: self.look(rec, folder=Path(picked)),
+            text=f"Pick the folder of the old install of {rec.name} (the one with its saves in it)",
+        )
 
     def look(self, rec: InstalledGame, prefix: Path | None = None, folder: Path | None = None) -> None:
         source = prefix or folder
