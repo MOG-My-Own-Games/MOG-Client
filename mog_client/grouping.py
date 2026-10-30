@@ -33,6 +33,12 @@ def group_games(games: list[dict]) -> list[Group]:
 SAVES_ONLY, SAVES_IMPORTED, ADDONS_ONLY = "saves-only", "saves-imported", "addons-only"
 
 
+def has_no_files(game: dict) -> bool:
+    """Whether the server has nothing to install the game from: one added by a client only to sync its saves (it never had files
+    there), or gone from disk with only its saves kept."""
+    return bool(game.get("imported") or game.get("saves_only"))
+
+
 def corner_state(game: dict) -> str | None:
     """What the server says is special about a game's files, for a badge on its cover: gone from
     disk but its saves are kept, only there to sync the saves of a game added from outside MOG (it never had files here),

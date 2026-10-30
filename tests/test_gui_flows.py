@@ -4629,6 +4629,48 @@ def test_a_game_not_installed_has_only_the_install_button_for_installers(win, qa
     assert "Install" in labels and not any("installers" in label.lower() for label in labels)
 
 
+@pytest.mark.parametrize("flag", ["imported", "saves_only"])
+def test_a_game_with_no_installation_files_on_the_server_has_no_install_button(win, qapp, monkeypatch, flag):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, *a, **k: started.append(game["id"]))
+    win.app.set_games([{"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": None, flag: True}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+
+    labels = [b.text() for b in page.findChildren(QPushButton)]
+    assert not {"Install", "Resume", "Options"} & set(labels)
+    assert page.status.text() == "No installation files on the server"
+    page.install()  # a link or a key could still ask for it
+    assert started == [] and "no installation files" in win.overlay.body.text()
+
+
+def test_the_version_picker_leaves_out_the_versions_with_no_files(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    started = []
+    monkeypatch.setattr(win, "install_game", lambda game, *a, **k: started.append(game["id"]))
+    monkeypatch.setattr(gui.GamePage, "_install_or_order", gui.GamePage._start_plain)
+    both = [
+        {"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": 9},
+        {"id": 42, "name": "Metroid (saves)", "fs_name": "Metroid (saves)", "library_id": None, "igdb_id": 9, "imported": True},
+    ]
+    win.app.set_games(both)
+    win.show_game(41)
+    pump(qapp)
+
+    win.current_page().install()  # one version with files: no question about which
+    pump(qapp)
+
+    assert started == [41] and not isinstance(win.current_page(), gui.ChoicePage)
+
+
 class CandidatesServer:
     def __init__(self, candidates, order=()):
         self.data = {"candidates": candidates, "order": list(order)}

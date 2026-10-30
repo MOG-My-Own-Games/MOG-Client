@@ -51,3 +51,10 @@ def test_the_server_state_that_gets_a_corner_badge():
     assert corner_state({"saves_only": True, "imported": True, "missing_from_fs": True}) == SAVES_IMPORTED  # never had files here
     assert corner_state({"imported": True, "missing_from_fs": True}) is None  # no saves yet: nothing to flag
     assert corner_state({}) is None
+
+
+def test_a_game_with_nothing_to_install_from_is_told_from_one_that_has_files():
+    from mog_client.grouping import has_no_files
+
+    assert has_no_files({"imported": True}) and has_no_files({"saves_only": True, "missing_from_fs": True})
+    assert not has_no_files({"library_id": None}) and not has_no_files({"missing_from_fs": True})  # still listed, maybe back soon

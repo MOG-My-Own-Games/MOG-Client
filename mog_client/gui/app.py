@@ -115,7 +115,7 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.grouping import SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, group_games
+from mog_client.grouping import SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, group_games, has_no_files
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
@@ -4539,6 +4539,10 @@ class GamePage(Page):
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
             self._button("Options", lambda: self.show_options(rec))
+        elif not rec and has_no_files(self.game):
+            self.status.setText("No installation files on the server")  # nothing to install from: no Install button
+            self.bar.setRange(0, 1)
+            self.bar.setValue(0)
         else:
             self.status.setText("Partially downloaded, can resume" if rec else "Not installed")
             self.bar.setRange(0, 1)
@@ -4549,6 +4553,9 @@ class GamePage(Page):
             self._button("Mods", self.open_mods)
 
     def install(self) -> None:
+        if has_no_files(self.game) and self.game["id"] not in load_library():
+            self.win.message(f"{self.game['name']} has no installation files on the server.", "info")
+            return
         if self.game.get("installed"):
             # The server holds the finished install: it is only streamed, so there is no installer to choose or archive to ask about.
             self.win.install_game(self.game, None, self._installing)
@@ -4556,7 +4563,7 @@ class GamePage(Page):
         group = self._group()
         local = load_library()
         fresh = group is not None and not any(m["id"] in local for m in group.members)
-        if group is not None and len(group.versions) > 1 and fresh:
+        if group is not None and len([v for v in group.versions if not has_no_files(v)]) > 1 and fresh:
             self._choose_version(group)
             return
         if self.game["id"] not in local:
@@ -4569,7 +4576,7 @@ class GamePage(Page):
         installer list opens only when it cannot, or when there are several to put in order)."""
         libraries = self.win.library.libraries
         current = self.game["id"]
-        versions = sorted(group.versions, key=lambda v: v["id"] != current)  # the page's own version first
+        versions = sorted((v for v in group.versions if not has_no_files(v)), key=lambda v: v["id"] != current)  # the page's own first
         options = [(version_label(v, libraries), v) for v in versions]
 
         def chosen(version: dict | None) -> None:

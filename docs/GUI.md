@@ -26,6 +26,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - A game waiting for its executable to be chosen has an orange corner with a gear (bottom right of its cover) and is listed
   right after the installs under way, before the installed ones. Choosing the executable, like uninstalling, shows on
   the game's main button ("Setting up...", "Uninstalling...") with the turning ring Play shows while saves are on the move.
+- A game the server has no installation files for (one added only to sync its saves, or gone from disk with its saves kept) has
+  no Install button: its page says "No installation files on the server", and a version picker leaves it out.
 - The arrow on a cover points down while saves are downloaded and up while they are uploaded (the server is above).
 - Everything the window tells you in a message is also in the notifications (a message about a game shows its icon at the
   left), and a message can carry an option (finishing
