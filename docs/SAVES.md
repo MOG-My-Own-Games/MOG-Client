@@ -83,7 +83,8 @@ icon are kept in MOG's data folder (`imports/<game id>`), never in the game's fo
   saves the game already has may be in the prefix it uses now, and the warning says so.
 - **The saves' folders**: the places that look like the game's saves, the ones named like the game first, ticked. They are in the
   prefix or the profile (Windows), below `~/.config`, `~/.local/share`, `~/Documents` (and `~/Library` on macOS) or inside the
-  game's own folder (a `saves` folder, `*.sav`). Change them later under Options > Saves... > **Choose the saves' folders...**.
+  game's own folder (a `saves` folder, `*.sav`). Your own name never counts as the game's: a folder named like you is not
+  taken for its saves, even when the game sits in your home folder. Change them later under Options > Saves... > **Choose the saves' folders...**.
 - **The first sync takes every file in those folders**, not only what the game writes while it runs: with eight saves of which one
   is touched, all eight are on the server and in every later version. When another computer already left saves, the one with
   the older ones is asked: use the server's (what is here is copied to a backup first) or keep this computer's and send it.

@@ -84,6 +84,15 @@ def test_a_game_is_known_by_its_title_folder_and_executable_but_not_by_generic_n
     assert "the" not in native.game_names(game(name="The Game of the Edition")).words
 
 
+def test_the_users_own_name_is_no_name_of_a_game_unless_it_is_the_title(monkeypatch):
+    """A game in the home folder (or in one named after the user) must not make every folder called like the user a save
+    folder of it. The title is what the user typed, so it is kept even when it is the same name."""
+    monkeypatch.setenv("USER", "xargon")
+    names = native.game_names(game(name="Lost Ruins", install="/home/xargon", exe="/home/xargon/xargon.x86_64"))
+    assert "xargon" not in names.whole and "xargon" not in names.words and "lostruins" in names.whole
+    assert "xargon" in native.game_names(game(name="Xargon", install="/g/x")).whole
+
+
 def test_a_folder_named_like_the_game_scores_high_a_word_in_common_scores_low():
     names = native.game_names(game())
     assert native.affinity("LostRuins", names) == 2

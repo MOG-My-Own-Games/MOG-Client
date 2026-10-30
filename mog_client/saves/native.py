@@ -78,19 +78,28 @@ def squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.casefold())
 
 
+def user_names() -> frozenset[str]:
+    """The login name and the home folder's name: a game folder that is the home (or is named after the user) says nothing
+    about the game, so these are no name for it."""
+    names = {os.environ.get("USER", ""), os.environ.get("USERNAME", ""), Path.home().name}
+    return frozenset(squash(n) for n in names if squash(n))
+
+
 def game_names(rec: InstalledGame) -> Names:
-    """The ways a folder may be named after this game: its title, install folder and executable, squashed."""
-    sources = [rec.name, Path(rec.install_dir).name]
+    """The ways a folder may be named after this game: its title, install folder and executable, squashed. The title is
+    what the user typed; the folder and the executable only count when they are not the user's own name."""
+    taken = user_names()
+    folders = [Path(rec.install_dir).name]
     if rec.executable:
-        sources.append(Path(rec.executable).name.split(".")[0])
+        folders.append(Path(rec.executable).name.split(".")[0])
     whole, words = [], []
-    for source in sources:
-        if squash(source) in GENERIC_STEMS:
+    for source, is_title in [(rec.name, True), *((f, False) for f in folders)]:
+        if squash(source) in GENERIC_STEMS or (not is_title and squash(source) in taken):
             continue
         if len(squash(source)) >= MIN_NAME_LEN:
             whole.append(squash(source))
         for word in re.split(r"[^A-Za-z0-9]+", source):
-            if len(word) >= MIN_NAME_LEN and word.casefold() not in STOP_WORDS:
+            if len(word) >= MIN_NAME_LEN and word.casefold() not in STOP_WORDS and (is_title or squash(word) not in taken):
                 words.append(squash(word))
     return Names(tuple(dict.fromkeys(whole)), tuple(dict.fromkeys(words)))
 
