@@ -256,6 +256,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   Enter, A or a double click) only selects it and moves on to the button; the button ("OK", "Use this executable",
   "Download") does it. A folder in the file picker is the exception: it opens. "Later" and "Skip" leave without choosing,
   so those cards have no Close button.
+- The file and folder pickers show their path in a field at the top: paste or type a path there and press Enter to go
+  straight to it (a folder is opened and "Use this folder" is what OK takes; in the file picker a file path is taken at once).
 - Errors and results that matter appear in a message over the window with an OK button (A or Enter); everything else goes
   to the log.
 - The window can be made as small as about 720x460 (800x600 and a small desktop mode included). A game's page then keeps

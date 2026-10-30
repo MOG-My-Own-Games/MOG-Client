@@ -3356,7 +3356,9 @@ class BrowsePage(Page):
         if folders:
             self.title = "Choose a folder"
         self.win, self.on_pick, self.cwd, self.folders = win, on_pick, start, folders
-        self.where = QLabel()
+        self.where = QLineEdit()  # a path can be pasted here: Enter goes there
+        self.where.setPlaceholderText("Paste a path and press Enter")
+        self.where.returnPressed.connect(self._go_typed)
         self.list = QListWidget()
         self.list.itemActivated.connect(self._activate)
         self.list.currentItemChanged.connect(lambda *_: self._sync_ok())
@@ -3376,6 +3378,7 @@ class BrowsePage(Page):
     def _load(self, path: Path) -> None:
         self.cwd = path
         self.where.setText(str(path))
+        self.where.setCursorPosition(0)
         self.list.clear()
         entries = [("[ Use this folder ]", path)] if self.folders else []
         entries += [("..", path.parent)] if path.parent != path else []
@@ -3395,6 +3398,20 @@ class BrowsePage(Page):
         if self.list.count():
             self.list.setCurrentRow(0)
         self._sync_ok()
+
+    def _go_typed(self) -> None:
+        """Enter in the path field: a folder is opened (and "Use this folder" is what OK takes); a file, where files are picked,
+        is taken as it is."""
+        text = self.where.text().strip().strip("\"'")
+        path = Path(text).expanduser() if text else self.cwd
+        if path.is_dir():
+            self._load(path)
+            self.list.setFocus()
+        elif not self.folders and path.is_file():
+            self.win.back()
+            self.on_pick(str(path))
+        else:
+            self.win.notify(f"{text} is not {'a folder' if self.folders else 'a folder or file'} on this computer", "warning")
 
     def _picks_here(self, item: QListWidgetItem | None) -> bool:
         """Whether OK would take what `item` is: the folder being browsed (folders mode, on its own entry), or a file."""

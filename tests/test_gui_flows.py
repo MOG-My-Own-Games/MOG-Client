@@ -4048,6 +4048,40 @@ def test_ok_on_the_file_picker_is_greyed_on_a_folder(win, qapp, tmp_path):
     assert not page.ok.isEnabled()
 
 
+def test_a_pasted_path_opens_that_folder_in_the_folder_picker(win, qapp, tmp_path):
+    (tmp_path / "games" / "one").mkdir(parents=True)
+    picked = []
+    win.push(gui.BrowsePage(win, tmp_path, picked.append, folders=True))
+    pump(qapp)
+    page = win.current_page()
+    page.where.setText(f'  "{tmp_path / "games" / "one"}"  ')
+    page.where.returnPressed.emit()
+    assert page.cwd == tmp_path / "games" / "one" and picked == []
+    assert page.ok.isEnabled()  # "Use this folder" is what the list stands on
+    page.ok.click()
+    assert picked == [str(tmp_path / "games" / "one")]
+
+
+def test_a_pasted_path_that_is_not_there_changes_nothing(win, qapp, tmp_path):
+    win.push(gui.BrowsePage(win, tmp_path, lambda _p: None, folders=True))
+    pump(qapp)
+    page = win.current_page()
+    page.where.setText(str(tmp_path / "missing"))
+    page.where.returnPressed.emit()
+    assert page.cwd == tmp_path
+
+
+def test_a_pasted_file_path_is_taken_by_the_file_picker(win, qapp, tmp_path):
+    (tmp_path / "game.exe").write_bytes(b"MZ")
+    picked = []
+    win.push(gui.BrowsePage(win, tmp_path, picked.append))
+    pump(qapp)
+    page = win.current_page()
+    page.where.setText(str(tmp_path / "game.exe"))
+    page.where.returnPressed.emit()
+    assert picked == [str(tmp_path / "game.exe")]
+
+
 def test_a_change_while_the_buttons_are_made_does_not_double_them(win, qapp, tmp_path, monkeypatch):
     """Regression test: starting an install sometimes showed the page's buttons twice (Pause and both Cancels, two sets), and
     they were right again on coming back to the page. Making the buttons reads the progress, which asks whether they are
