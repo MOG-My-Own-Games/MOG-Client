@@ -1376,7 +1376,7 @@ class LinuxOptionsPage(Page):
 
         if not rec.native:  # an engine is the layer a Windows game runs in: a Linux game on Linux has none
             self.engine_button = add("", lambda: page.choose_engine(rec), pop=0)
-        if rec.native and rec.imported:
+        if rec.native:
             self.sandbox = Toggle()
             self.sandbox.setChecked(bool(rec.sandbox and rec.sandbox_enabled))
             self.sandbox.toggled.connect(self._sandbox_toggled)
@@ -1494,8 +1494,8 @@ class LinuxOptionsPage(Page):
 
 def has_linux_options(rec: InstalledGame) -> bool:
     """Whether a game has anything in its Linux Options: a Windows game its engine and prefix (once it has an executable), and a Linux
-    game added from outside MOG the Flatpak switch. A Linux game MOG installed has nothing there: it runs as it is."""
-    return rec.imported if rec.native else bool(rec.executable or not rec.imported)
+    game, wherever it came from (installed by MOG, found in its folders, added from outside), the Flatpak switch."""
+    return True if rec.native else bool(rec.executable or not rec.imported)
 
 
 class SavesOptionsPage(Page):

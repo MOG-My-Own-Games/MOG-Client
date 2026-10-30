@@ -3446,10 +3446,13 @@ def test_every_local_linux_game_has_the_flatpak_switch_and_no_engine_or_prefix(w
     assert gui.has_linux_options(rec) and "Linux Options" in _texts(_options(win, rec))
 
 
-def test_a_linux_game_mog_installed_has_nothing_in_the_linux_options(win, tmp_path, monkeypatch):
-    rec = _game_record(tmp_path, "start.sh")
+def test_a_linux_game_mog_installed_has_the_flatpak_switch_too(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
 
-    assert not gui.has_linux_options(rec)
+    rec = _game_record(tmp_path, "start.sh")  # also what a folder found in an install folder becomes
+
+    assert gui.has_linux_options(rec)
+    assert gui.LinuxOptionsPage(win, SimpleNamespace(), rec).sandbox is not None
     assert gui.has_linux_options(_game_record(tmp_path, "g.exe"))
     assert not gui.has_linux_options(_windows_import_without_exe(tmp_path))  # no executable yet: no engine to choose
 
