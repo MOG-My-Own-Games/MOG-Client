@@ -778,6 +778,20 @@ class MogClient:
             body["name"] = name
         return self.c.post_json("/api/devices/register", body)
 
+    def import_game(self, name: str, library_id: int | None = None) -> dict:
+        """Add a game this person has outside MOG, so its saves can be synced; the same name gives the same entry back.
+        `library_id` lists it under that library (only a label: nothing is written into the library's folder).
+        Raises RuntimeError with the server's reason, and for a server too old to know games like this."""
+        body: dict = {"name": name}
+        if library_id is not None:
+            body["library_id"] = library_id
+        status, data = self.c.post_json("/api/games/import", body)
+        if status in (404, 405):
+            raise RuntimeError("this MOG Server is too old to add games from outside MOG: update it")
+        if status != 200 or not isinstance(data, dict):
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
     def list_saves(self, game_id: int) -> dict | None:
         """Every device's saved versions of a game, or None when the server cannot say (an older one)."""
         try:
@@ -858,6 +872,15 @@ class MogClient:
 
     def delete_notifications(self, notification_id: int | None = None) -> None:
         self.c.delete_json("/api/notifications" if notification_id is None else f"/api/notifications/{notification_id}")
+
+    def create_library(self, name: str, root_path: str) -> dict:
+        """Make a library on the server (administrators only); `root_path` is a folder as the server sees it."""
+        status, data = self.c.post_json("/api/libraries", {"name": name, "root_path": root_path})
+        if status == 403:
+            raise RuntimeError("only an administrator can make a library")
+        if status not in (200, 201) or not isinstance(data, dict):
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
 
     def list_libraries(self) -> list[dict]:
         status, data = self.c.get_json("/api/libraries")

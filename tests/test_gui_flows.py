@@ -1257,7 +1257,9 @@ def _menu_texts(win):
 
 
 def test_the_user_icon_is_the_last_thing_on_the_right_and_opens_a_menu(win, qapp):
-    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == ["Settings", "Notifications", "Refresh library", "Go offline", "About", "Sign out"]
+    assert win.user_btn.isVisibleTo(win) and _menu_texts(win) == [
+        "Settings", "Notifications", "Refresh library", "Add local game", "Go offline", "About", "Sign out",
+    ]
     assert win.user_btn.x() + win.user_btn.width() > win.search.x() + win.search.width()  # at the far right
 
     win.user_btn.click()  # looked at before events run: the offscreen display closes a popup that has no focus
@@ -1297,9 +1299,11 @@ def test_the_menu_rows_do_what_they_say(win, qapp, monkeypatch):
 
 def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_in_settings(win, qapp):
     kinds = ["-" if a.isSeparator() else a.text() for a in win.user_menu.actions()]
-    assert kinds == ["Settings", "Notifications", "Refresh library", "Go offline", "-", "About", "-", "Sign out"]
+    assert kinds == [
+        "Settings", "Notifications", "Refresh library", "Add local game", "Go offline", "-", "About", "-", "Sign out",
+    ]
 
-    win.user_menu.actions()[5].trigger()
+    win.user_menu.actions()[6].trigger()
     pump(qapp)
     page = win.current_page()
     assert isinstance(page, gui.AboutPage) and page.title == "About" and page.about.github.text() == "Open the GitHub page"
@@ -3425,14 +3429,134 @@ def test_the_linux_entries_are_in_one_linux_page_of_the_options(win, tmp_path, m
     assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "System language: default", "Launch executable...", "Prefix location"]
 
 
-def test_a_linux_game_has_no_winecfg_no_version_and_no_prefix_location_without_save_sync(win, tmp_path, monkeypatch):
+def _local_linux_game(tmp_path, **extra):
+    return _game_record(tmp_path, "Game.x86_64", imported=True, target="linux", **extra)
+
+
+def test_every_local_linux_game_has_the_flatpak_switch_and_no_engine_or_prefix(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: True)
+    rec = _local_linux_game(tmp_path)
+
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), rec)
+
+    assert page.sandbox is not None and not page.sandbox.isChecked()  # not found in an app yet: off
+    assert _texts(page) == []  # no engine and no prefix: it is a Linux game on Linux
+    assert gui.has_linux_options(rec) and "Linux Options" in _texts(_options(win, rec))
+
+
+def test_a_linux_game_mog_installed_has_nothing_in_the_linux_options(win, tmp_path, monkeypatch):
+    rec = _game_record(tmp_path, "start.sh")
+
+    assert not gui.has_linux_options(rec)
+    assert gui.has_linux_options(_game_record(tmp_path, "g.exe"))
+    assert not gui.has_linux_options(_windows_import_without_exe(tmp_path))  # no executable yet: no engine to choose
+
+
+def _windows_import_without_exe(tmp_path):
+    from mog_client.config import InstalledGame
+
+    return InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), state="installed", imported=True, target="windows")
+
+
+def test_the_switch_shows_the_app_a_game_is_tied_to_and_turns_it_off(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    rec = _local_linux_game(tmp_path, sandbox="io.itch.itch")
+    changed = []
+    monkeypatch.setattr(manager, "set_sandbox_enabled", lambda r, on, preference="auto": changed.append(on))
+
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), rec)
+
+    assert page.sandbox.isChecked()
+    assert any("Flatpak sandbox (io.itch.itch)" in label.text() for label in page.findChildren(QLabel))
+    page.sandbox.setChecked(False)
+    assert changed == [False]
+
+
+def test_turning_the_switch_on_ties_the_game_to_the_app_it_was_found_saving_in(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+    from mog_client.saves import importer
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    rec = _local_linux_game(tmp_path)
+    found = [importer.Suggestion("xdg-config/unity3d/Studio/G", 2, 3, 1, "io.itch.itch")]
+    monkeypatch.setattr(importer, "sandbox_suggestions", lambda r: found)
+    adopted = []
+    monkeypatch.setattr(manager, "adopt_sandbox", lambda r, app, keys, preference="auto": adopted.append((app, keys)))
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), rec)
+
+    page.sandbox.setChecked(True)
+
+    assert adopted == [("io.itch.itch", ["xdg-config/unity3d/Studio/G"])] and page.sandbox.isChecked()
+
+
+def test_turning_the_switch_on_with_no_app_folder_found_says_how_and_stays_off(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client.saves import importer
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    monkeypatch.setattr(importer, "sandbox_suggestions", lambda r: [])
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), _local_linux_game(tmp_path))
+    messages = []
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: messages.append(text))
+
+    page.sandbox.setChecked(True)
+
+    assert not page.sandbox.isChecked() and "Start the game from the app" in messages[0]
+
+
+def test_turning_the_switch_on_with_several_apps_asks_which(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mog_client import manager
+    from mog_client.saves import importer
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    found = [
+        importer.Suggestion("xdg-config/unity3d/Studio/G", 2, 3, 1, "io.itch.itch"),
+        importer.Suggestion("xdg-data/G", 2, 2, 1, "com.valvesoftware.Steam"),
+    ]
+    monkeypatch.setattr(importer, "sandbox_suggestions", lambda r: found)
+    adopted, asked = [], []
+    monkeypatch.setattr(manager, "adopt_sandbox", lambda r, app, keys, preference="auto": adopted.append((app, keys)))
+    monkeypatch.setattr(win, "choose", lambda title, text, options, on_choose, skip=None, game=None: asked.append((options, on_choose)))
+    page = gui.LinuxOptionsPage(win, SimpleNamespace(), _local_linux_game(tmp_path))
+
+    page.sandbox.setChecked(True)
+    options, on_choose = asked[0]
+    assert [v for _l, v in options] == ["io.itch.itch", "com.valvesoftware.Steam"] and adopted == []
+    on_choose("com.valvesoftware.Steam")
+
+    assert adopted == [("com.valvesoftware.Steam", ["xdg-data/G"])]
+
+
+def test_an_added_game_with_a_sandbox_and_no_executable_still_has_the_linux_options(win, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
+    rec = _local_linux_game(tmp_path, sandbox="io.itch.itch")
+    rec.executable = None
+
+    assert "Linux Options" in _texts(_options(win, rec))
+    assert gui.LinuxOptionsPage(win, SimpleNamespace(), rec).sandbox is not None
+
+
+def test_a_linux_game_has_no_engine_no_winecfg_and_no_prefix_location(win, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(gui, "sync_enabled", lambda rec, settings: False)
 
     linux = _texts(gui.LinuxOptionsPage(win, SimpleNamespace(), _game_record(tmp_path, "start.sh", proton="X")))
 
-    assert linux == ["Engine: default"]
+    assert linux == []  # a Linux game runs as it is: no engine, no winecfg, no prefix
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])

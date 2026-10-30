@@ -210,6 +210,21 @@ class InstalledGame:
     steam_users: list[str] = field(default_factory=list)
     # A change to the shortcut waited for Steam to be closed: it rewrites its shortcuts file when it quits.
     steam_pending: bool = False
+    # A game MOG did not install: the user added a folder that was already on this machine to keep its saves in sync (see
+    # saves/importer.py). Its folder and prefix stay where they are, MOG's launch files live in the data folder, and removing
+    # it from MOG never deletes either.
+    imported: bool = False
+    # What an imported game is made for: "windows" (a Wine prefix on Linux and macOS, the real profile on Windows) or "linux" or "macos".
+    target: str | None = None
+    # The prefix was made for this game alone (New Prefix), so everything in it is the game's.
+    prefix_dedicated: bool = False
+    # The prefix is shared with other programs even though it sits in the game's folder (it was moved there): only the folders
+    # the user confirmed are the game's saves.
+    prefix_shared: bool = False
+    # A native game that runs in a Flatpak app (itch's, say) keeps its `xdg-*` saves below `~/.var/app/<id>/`: the app's id.
+    sandbox: str | None = None
+    # The person can switch it off (Linux Options): the app is remembered, and the real home is used meanwhile.
+    sandbox_enabled: bool = True
 
     def __post_init__(self) -> None:
         # An earlier version kept the arguments as one text: they become tags the first time the record is read.
@@ -218,8 +233,16 @@ class InstalledGame:
             self.launch_args_synced = launchargs.as_tags(self.launch_args_synced)
 
     @property
+    def in_sandbox(self) -> str | None:
+        """The Flatpak app whose own folders this game's `xdg-*` saves are in, while that is switched on."""
+        return self.sandbox if self.sandbox and self.sandbox_enabled else None
+
+    @property
     def native(self) -> bool:
-        """The chosen executable runs as it is: no launcher, no Wine prefix, no save sync (which reads the prefix)."""
+        """The game runs as it is: no launcher, no Wine prefix. A game added from outside MOG says so itself (`target`); any
+        other is known by its executable."""
+        if self.target:
+            return self.target != "windows"
         return is_native_executable(self.executable)
 
 

@@ -52,6 +52,13 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - Options:
   - **Linux Options** (only on Linux; not shown on Windows or other systems) opens a menu on top of this one, with a
     Back button (not Close) that returns here; the engine and Proton lists it opens say Back too, and return to it:
+    - **Flatpak sandbox** (a switch, for every game added with Add local game that is made for Linux; a Linux game on Linux has no
+      engine and no prefix, so this is all it has in Linux Options, and a Linux game MOG installed has no Linux Options): for a game
+      started from a Flatpak app (itch's, say). On, its `xdg-*` saves are looked for in `~/.var/app/<id>/` and the game is started
+      with those folders (the launch script, desktop entry and Steam shortcut are written again); off, the usual `~/.config` and
+      `~/.local/share`. Switching it on for a game not tied to an app yet looks for a folder named like the game in the folders of
+      the Flatpak apps (and asks which app when there are several); with none found it says to start the game from the app and
+      save once.
     - **Engine: ..., version** (shown as `Engine: umu-launcher, GE-Proton9-27`; in the second, violet gradient when the
       engine or its version is not the default): one page with the **engine** on the left (Default, Faugus, umu, Proton,
       Wine; the ones this device has) and, beside it, the **versions** that engine can run, which change with the engine
@@ -272,7 +279,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 ## The user menu and Settings
 
 - The user menu (picture and name at the top right; Start or Ctrl+Comma, also Select or Ctrl+U) holds Settings,
-  Notifications (with the unread count), Refresh library, Go offline / Go online, About and Sign out.
+  Notifications (with the unread count), Refresh library, Add local game (see [SAVES.md](SAVES.md)), Go offline / Go online, About and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.
 - Four tabs, switched with L2 and R2 (Ctrl+Page Up/Down): General (saves, launcher, updates, sounds), Server, Library and

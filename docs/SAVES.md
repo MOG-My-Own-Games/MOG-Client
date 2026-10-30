@@ -19,7 +19,7 @@ Save sync can be switched off for all games in Settings or for one game in its O
 - What MOG itself puts in a game's folder is never taken for a save, whichever installer it came from (the game's own, a
   patch or DLC installed later, a reinstall). The client keeps the server's list of every install's files and also looks at
   the folder before and after an install. Mods you add by hand are not known to MOG and can be mistaken for saves.
-- On Windows only the files in the game's own folder are covered for now.
+- On Windows only the files in the game's own folder are covered for now (a game added from outside MOG is read from the real profile too).
 
 ## When it syncs
 
@@ -60,6 +60,67 @@ The shortcut finds the client through a file MOG writes in its config folder (`c
 renamed client is found again after one start from its new place. Without a client the game starts as usual. On Windows the
 shortcut runs a `.cmd` next to the game that starts it, waits for it and then backs the saves up.
 
+## Games from outside MOG
+
+A game that is already on this computer, from itch.io or anywhere else, can have its saves synced: user menu > **Add local game**.
+The game's folder and its prefix stay where they are; MOG only records them. Its launch script, `.desktop` file and
+icon are kept in MOG's data folder (`imports/<game id>`), never in the game's folder, which another program may rewrite.
+
+- **What it is made for**: Windows, Linux or macOS, found from the programs in the folder and confirmed by you. A Windows game
+  needs a Wine prefix everywhere but on Windows, where it is read from your real profile (Documents, Saved Games, AppData).
+- **The name**: filled in from the folder's name. If MOG Server has a game with a name like it, you pick it (so a second computer
+  joins the first one's saves instead of making a copy) or add a new one; the new entry is shown on the server with a green
+  corner and a floppy disk until files for it are added, and a scan that finds a folder named like it takes the entry over.
+- **The library**: for a new entry you pick which library of MOG Server it is listed under, or **New Library...** (a name and the
+  folder as the server sees it; administrators only), or no library. It is only a label: MOG never writes into a library's
+  folder, and a scan that finds the game's folder there makes it an ordinary game.
+- **The executable**: once it is added you are asked which file starts the game, with the same shortcuts questions as after an
+  install; Back leaves it for later (**Add a launcher...** on the game's page).
+- **The prefix of a Windows game** (not on Windows): **Browse Prefix** picks the one the game runs in, **New Prefix** makes one
+  for it (in the game's folder, or where you say; the launcher creates it the first time the game starts, so you pick the
+  game's executable too). Do not pick a Default prefix (`~/.wine`, umu's `umu-default`, a folder called `default`): other games
+  run in it and their saves are in it too, so such a prefix is marked in the list and asks again. A new prefix starts empty: the
+  saves the game already has may be in the prefix it uses now, and the warning says so.
+- **The saves' folders**: the places that look like the game's saves, the ones named like the game first, ticked. They are in the
+  prefix or the profile (Windows), below `~/.config`, `~/.local/share`, `~/Documents` (and `~/Library` on macOS) or inside the
+  game's own folder (a `saves` folder, `*.sav`). Change them later under Options > Saves... > **Choose the saves' folders...**.
+- **The first sync takes every file in those folders**, not only what the game writes while it runs: with eight saves of which one
+  is touched, all eight are on the server and in every later version. When another computer already left saves, the one with
+  the older ones is asked: use the server's (what is here is copied to a backup first) or keep this computer's and send it.
+- **Playing**: choose the executable (**Add a launcher...**) and the game gets its Play button, desktop entry and Steam
+  shortcut like any MOG game, with the saves restored before it starts and backed up when it ends. Without one, the saves are
+  looked over when MOG starts and with Options > Saves... > Back up saves now.
+- **Remove from MOG** forgets the game on this computer (after a last backup); it never deletes the folder or the prefix, and the
+  saves stay on the server. **Move into MOG...** is the other way: it moves the folder, and the prefix if you say so, into the
+  install folder and makes it an ordinary MOG game. It deletes them from where they were, which breaks whatever else started
+  the game from there, and moving a prefix that is a Default or shared one takes the other games' data with it: it asks twice.
+- **Games started from a Flatpak app** (itch's, for one): Flatpak moves a game's `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` to
+  `~/.var/app/<app id>/config`, `.../data` and `.../.local/state`, so its saves are not in `~/.config`. A folder named like the game in
+  the folders of an app is offered with "(Flatpak: app id)", and ticking it records the app for the game. The saves keep the usual keys
+  (`xdg-config/...`), so another computer where the game runs outside Flatpak finds them in its `~/.config`. A game cannot save in two
+  places: ticking folders of the real home and of an app together is refused. While it is on, MOG starts the game (Play, the desktop
+  entry, the Steam shortcut) with the app's folders, so it finds the saves and settings it left under the app; Linux Options >
+  **Flatpak sandbox** switches this off.
+- macOS is implemented but has not been tried on a Mac.
+
+## Import external saves
+
+A game installed by MOG that you also had outside MOG (itch.io, a Wine prefix of its own) can take your old progress in place of
+the fresh saves it starts with: Options > Saves... > **Import external saves...**.
+
+- It works once the game has saved from here at least once: that is how MOG learns which folders the game writes its saves to.
+  Before that the button only says so (start the game, save, close it, come back).
+- You say where the old saves are: **another Wine prefix** (the list of prefixes MOG knows, with Default ones marked, or any
+  folder) for the saves the game keeps in its prefix, or **the old game folder** for those it keeps next to itself. A game that
+  uses both is done in two steps. A native game that keeps its saves below `~/.config` or `~/.local/share` has nothing to
+  import: an older install wrote to the same places.
+- MOG looks in the other place for the same folders (never a whole Documents folder: the game's own subfolder, or the one file)
+  and lists what is not the same as here. If some of those files are older than the ones the game has now, you choose between
+  all of them and only the new and newer ones.
+- What is put in replaces the fresh files, which are first copied to a backup archive (the same one a restore makes), and the result
+  is backed up to the server as a new version. A game added with **Add local game** does not have the button: its saves are the
+  old ones already.
+
 ## Mods, patches and DLC are not saves
 
 Files a mod, a patch or a DLC adds are written into the game's install manifest when MOG installs or applies them (the same
@@ -93,5 +154,6 @@ server keeps the newest one per device under Profile > My devices > Log.
 
 ## The library marks
 
-A game whose files are gone from the server but whose saves are kept has an amber corner and a floppy disk. One that has only
+A game whose files are gone from the server but whose saves are kept has an amber corner and a floppy disk; a game added from
+outside MOG that the server never had files for has the same floppy on a green corner. One that has only
 mods or DLC and nothing that installs it has a violet corner and a puzzle piece.

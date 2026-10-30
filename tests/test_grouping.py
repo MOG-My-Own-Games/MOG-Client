@@ -41,11 +41,13 @@ def test_start_session_sends_the_chosen_installer_or_archive():
 
 
 def test_the_server_state_that_gets_a_corner_badge():
-    from mog_client.grouping import ADDONS_ONLY, SAVES_ONLY, corner_state
+    from mog_client.grouping import ADDONS_ONLY, SAVES_IMPORTED, SAVES_ONLY, corner_state
 
     assert corner_state({"saves_only": True, "missing_from_fs": True}) == SAVES_ONLY
     assert corner_state({"addons_only": True}) == ADDONS_ONLY
     assert corner_state({"addons_only": True, "missing_from_fs": True}) is None  # gone: nothing to flag
     assert corner_state({"missing_from_fs": True}) is None
     assert corner_state({"saves_only": True, "addons_only": True}) == SAVES_ONLY
+    assert corner_state({"saves_only": True, "imported": True, "missing_from_fs": True}) == SAVES_IMPORTED  # never had files here
+    assert corner_state({"imported": True, "missing_from_fs": True}) is None  # no saves yet: nothing to flag
     assert corner_state({}) is None

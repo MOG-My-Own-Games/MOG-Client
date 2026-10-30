@@ -115,7 +115,7 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.grouping import SAVES_ONLY, Group, corner_state, group_games
+from mog_client.grouping import SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, group_games
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
@@ -132,6 +132,8 @@ from mog_client.gui.modal import FitScrollArea, ModalHost
 from mog_client.gui.overlay import MessageOverlay
 from mog_client.gui.pictures import largest_pixmap, with_play_badge
 from mog_client.gui.playing import PlayingOverlay
+from mog_client.gui.extsaves import ExternalSaves
+from mog_client.gui.importing import ImportFlow
 from mog_client.gui.saves_ui import SaveSync
 from mog_client.gui.sounds import NAVIGATE, PLAY, NavigationSounds, SoundPlayer
 from mog_client.gui.theme import STYLE
@@ -171,7 +173,7 @@ from mog_client.launcher import (
     start_tool,
 )
 from mog_client.progress import RateMeter, format_eta
-from mog_client.saves import devices, runner, sync, watcher
+from mog_client.saves import devices, importer, runner, sync, watcher
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
 from mog_client import launchargs, launchsettings, logsend, protonge, videos, winetricks
@@ -1362,6 +1364,7 @@ class LinuxOptionsPage(Page):
         self.first: QPushButton | None = None
         self.engine_button: QPushButton | None = None
         self.language_button: QPushButton | None = None
+        self.sandbox: Toggle | None = None
         content = QWidget()
         lay = QVBoxLayout(content)
 
@@ -1371,19 +1374,98 @@ class LinuxOptionsPage(Page):
             self.first = self.first or button
             return button
 
-        self.engine_button = add("", lambda: page.choose_engine(rec), pop=0)
+        if not rec.native:  # an engine is the layer a Windows game runs in: a Linux game on Linux has none
+            self.engine_button = add("", lambda: page.choose_engine(rec), pop=0)
+        if rec.native and rec.imported:
+            self.sandbox = Toggle()
+            self.sandbox.setChecked(bool(rec.sandbox and rec.sandbox_enabled))
+            self.sandbox.toggled.connect(self._sandbox_toggled)
+            row = OptionRow(
+                "Flatpak sandbox" + (f" ({rec.sandbox})" if rec.sandbox else ""),
+                "For a game started from a Flatpak app (itch's, say), which keeps its saves below ~/.var/app/<app>/. On: its saves are "
+                "looked for there and the game is started with those folders. Off: the usual ~/.config and ~/.local/share.",
+                self.sandbox,
+            )
+            row.setFixedWidth(OPTIONS_BUTTON_WIDTH)
+            lay.addWidget(row, 0, Qt.AlignHCenter)
         if not rec.native:
             add("Wine configuration (winecfg)", lambda: page.open_winecfg(rec))
             add("Winetricks", lambda: page.open_winetricks(rec), pop=0)
             self.language_button = add("", lambda: page.choose_language(rec), pop=0)
             add("Launch executable...", lambda: page.launch_in_prefix(rec), pop=0)
-        if sync_enabled(rec, win.app.settings):
+        if sync_enabled(rec, win.app.settings) and not rec.native:  # only a Wine prefix has a location
             add("Prefix location", lambda: win.saves.choose_prefix(rec))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(FitScrollArea(content))
         self.refresh()
         win.app.bridge.finished.connect(self._changed)  # a choice made in a list opened from here is applied in the background
+
+    def _sandbox_set(self, on: bool) -> None:
+        """The switch as it is, without it answering."""
+        if self.sandbox is not None:
+            self.sandbox.blockSignals(True)
+            self.sandbox.setChecked(on)
+            self.sandbox.blockSignals(False)
+
+    def _sandbox_toggled(self, wanted: bool) -> None:
+        rec, preference = self.rec, self.win.app.settings.launcher
+        if wanted and not rec.sandbox:
+            self._sandbox_found()
+            return
+        try:
+            manager.set_sandbox_enabled(rec, wanted, preference)
+        except (RuntimeError, OSError) as e:
+            self.win.message(f"Could not change it: {e}", "error")
+            self._sandbox_set(not wanted)
+            return
+        where = f"the folders of {rec.sandbox}" if wanted else "~/.config and ~/.local/share"
+        self.win.notify(f"Saves of {rec.name} are looked for in {where} from now on")
+
+    def _sandbox_found(self) -> None:
+        """The game is not tied to a Flatpak app yet: look for the one it was started from (a folder named like the game in the app's
+        own folders), and ask which when there are several."""
+        rec = self.rec
+        found = importer.sandbox_suggestions(rec)
+        if not found:
+            self._sandbox_set(False)
+            self.win.message(
+                f"No folder of {rec.name} was found in the folders of any Flatpak app. Start the game from the app, save once, "
+                "close it and switch this on again.",
+                "info",
+            )
+            return
+        apps = list(dict.fromkeys(s.sandbox for s in found))
+
+        def use(app: str) -> None:
+            keys = [s.key for s in found if s.sandbox == app]
+            try:
+                manager.adopt_sandbox(rec, app, keys, self.win.app.settings.launcher)
+            except (RuntimeError, OSError) as e:
+                self.win.message(f"Could not change it: {e}", "error")
+                self._sandbox_set(False)
+                return
+            self._sandbox_set(True)
+            self.win.notify(f"Saves of {rec.name} are looked for in the folders of {app} from now on")
+
+        if len(apps) == 1:
+            use(apps[0])
+            return
+
+        def chosen(answer) -> None:
+            if answer is None:
+                self._sandbox_set(False)
+            else:
+                use(answer)
+
+        self._sandbox_set(False)
+        self.win.choose(
+            "Which Flatpak app started the game?",
+            f"{rec.name} has a folder in the sandbox of each of these.",
+            [(f"{app}   ({sum(s.files for s in found if s.sandbox == app)} files)", app) for app in apps],
+            chosen,
+            game=rec.game_id,
+        )
 
     def _changed(self, game_id: int, _error: str) -> None:
         if game_id == self.rec.game_id:
@@ -1392,6 +1474,8 @@ class LinuxOptionsPage(Page):
     def refresh(self) -> None:
         """What the engine and its version are now; one that is not the default shows in the second gradient."""
         rec = self.rec
+        if self.engine_button is None:
+            return
         engine = launcher_label(rec.launcher) if rec.launcher != "auto" else "default"
         version = rec.wine if (detect_launcher(effective_launcher(rec, self.win.app.settings.launcher)) == "wine") else rec.proton
         text = f"Engine: {engine}" + (f", {version}" if version and not rec.native else "")
@@ -1404,6 +1488,14 @@ class LinuxOptionsPage(Page):
     def focus_default(self) -> None:
         if self.first:
             self.first.setFocus()
+        elif self.sandbox is not None:
+            self.sandbox.setFocus()
+
+
+def has_linux_options(rec: InstalledGame) -> bool:
+    """Whether a game has anything in its Linux Options: a Windows game its engine and prefix (once it has an executable), and a Linux
+    game added from outside MOG the Flatpak switch. A Linux game MOG installed has nothing there: it runs as it is."""
+    return rec.imported if rec.native else bool(rec.executable or not rec.imported)
 
 
 class SavesOptionsPage(Page):
@@ -1450,8 +1542,12 @@ class SavesOptionsPage(Page):
         if not sync_enabled(self.rec, self.win.app.settings):
             return
         rec, saves = self.rec, self.win.saves
+        if rec.imported:
+            add_option_button(self.win, self.actions, "Choose the saves' folders...", lambda: self.win.importing.choose_saves(rec), pop=2)
         add_option_button(self.win, self.actions, "Back up saves now", lambda: saves.backup_now(rec), pop=2)
         add_option_button(self.win, self.actions, "Restore a saved version...", lambda: saves.restore_pick(rec), pop=0)
+        if not rec.imported:  # an added game's saves are the old ones already
+            add_option_button(self.win, self.actions, "Import external saves...", lambda: self.win.external_saves.start(rec), pop=0)
         if rec.game_id in saves.restoring:
             add_option_button(self.win, self.actions, "Cancel restoring saves", lambda: saves.cancel_restore(rec.game_id), pop=2)
 
@@ -1516,14 +1612,20 @@ class OptionsPage(Page):
         if (rec is None or rec.state in ("installed", "awaiting_executable")) and gid not in win.app.installs:
             add("Find game...", lambda: page.find_game(rec))  # any game: it may be renamed, or brought from another disk or machine
         if rec and rec.state == "installed" and installdirs.present(rec):
-            if sys.platform.startswith("linux"):
+            if sys.platform.startswith("linux") and has_linux_options(rec):
                 add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
             add("Refresh metadata", lambda: page.refresh_metadata(rec))
-            add("Repair: check the installed files", lambda: page.repair(rec))
+            if not rec.imported:  # the files of a game from outside MOG are not the server's to check
+                add("Repair: check the installed files", lambda: page.repair(rec))
             add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
-            add("Nuke custom settings", lambda: page.nuke_settings(rec), True)
-        if rec:
+            if rec.imported:
+                add("Move into MOG...", lambda: win.importing.move_into_mog(rec, page.rebuild), True)
+            else:
+                add("Nuke custom settings", lambda: page.nuke_settings(rec), True)
+        if rec and rec.imported:
+            add("Remove from MOG...", lambda: win.importing.remove(rec, page.rebuild), True)
+        elif rec:
             add("Uninstall...", lambda: win.push(UninstallOptionsPage(win, page, rec)), True, pop=0)
         else:
             add("Delete server cache only", page.delete_server_cache, True)
@@ -1667,6 +1769,43 @@ class ChecklistPage(Page):
         ]
         self.win.back()
         self.on_done(picked)
+
+
+class NamePage(Page):
+    """One line of text to type, with the initial value selected: OK hands it over. Back leaves without."""
+
+    modal = True
+    compact = True
+    close_text = "Back"
+    close_danger = True
+
+    def __init__(self, win: "MainWindow", title: str, note: str, default: str, on_done):
+        super().__init__()
+        self.title, self.win, self.on_done = title, win, on_done
+        self.field = QLineEdit(default)
+        self.field.returnPressed.connect(self.accept)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        text = QLabel(note)
+        text.setWordWrap(True)
+        lay = QVBoxLayout(self)
+        lay.addWidget(text)
+        lay.addWidget(self.field)
+        self.button_row = _row(ok)  # the card's Back joins this row, after OK
+        lay.addLayout(self.button_row)
+
+    def focus_default(self) -> None:
+        self.field.setFocus()
+        self.field.selectAll()
+
+    def accept(self) -> None:
+        name = " ".join(self.field.text().split())
+        if not name:
+            self.win.notify("Type a name", "warning")
+            return
+        self.win.back()
+        self.on_done(name)
 
 
 class EntriesPage(Page):
@@ -3850,6 +3989,9 @@ def run_uninstall(win: "MainWindow", rec: InstalledGame, and_server_cache: bool 
     """Take a game off this device: the saves are backed up and questions asked first, then the files go. `on_change` runs
     whenever the state of the game's job changes (it began, ended or was called off), for the page that shows it."""
     app = win.app
+    if rec.imported:  # a game from outside MOG is taken out of MOG, never deleted
+        win.importing.remove(rec, on_change)
+        return
 
     def start() -> None:
         """From the first Yes the main button shows it: the saves are backed up and questions asked before the
@@ -4369,15 +4511,19 @@ class GamePage(Page):
             self.first = self._button("Check again", self._check_again, True)
             self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "installed":
-            self.status.setText("Installed")
+            self.status.setText("Added from outside MOG: its saves are synced" if rec.imported else "Installed")
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
-            self.first = self._button("Play", self.play, True)
-            self.play_ring = SpinRing(self.first)
-            if self._starting:  # the buttons were made again while the game is on its way
-                self.first.setText("Starting...")
+            if rec.imported and not rec.executable:  # only its saves are kept until a launcher is added
+                self.first = self._button("Add a launcher...", lambda: self.choose_executable(rec), True)
+            else:
+                self.first = self._button("Play", self.play, True)
+                self.play_ring = SpinRing(self.first)
+                if self._starting:  # the buttons were made again while the game is on its way
+                    self.first.setText("Starting...")
             self._button("Options", lambda: self.show_options(rec))
-            self._button("Addons", lambda: self.win.push(AddonsPage(self.win, self.game, rec)))
+            if not rec.imported:
+                self._button("Addons", lambda: self.win.push(AddonsPage(self.win, self.game, rec)))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
@@ -5372,15 +5518,16 @@ def paint_setup_badge(painter: QPainter, cover: QRect) -> None:
 
 def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
     """A colored corner on the left of the cover: amber with a floppy disk (only the saves are
-    left, top), violet with a puzzle piece (only add-ons, bottom)."""
+    left, top), green with a floppy disk (a game added from outside MOG, never had files here), violet with a puzzle piece
+    (only add-ons, bottom)."""
     left, top, bottom = cover.left(), cover.top(), cover.bottom() + 1
-    saves = state == SAVES_ONLY
+    saves = state in (SAVES_ONLY, SAVES_IMPORTED)
     if saves:
         corner = QPolygonF([QPointF(left, top), QPointF(left + BADGE_SIZE, top), QPointF(left, top + BADGE_SIZE)])
     else:
         corner = QPolygonF([QPointF(left, bottom - BADGE_SIZE), QPointF(left + BADGE_SIZE, bottom), QPointF(left, bottom)])
     painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor("#d9962b" if saves else "#8b5cf6"))
+    painter.setBrush(QColor("#3fb97a" if state == SAVES_IMPORTED else "#d9962b" if saves else "#8b5cf6"))
     painter.drawPolygon(corner)
     white = QColor("white")
     glyph = QPainterPath()
@@ -6245,6 +6392,7 @@ class MainWindow(QMainWindow):
         self.user_menu.addAction("Settings", self.open_settings)
         self.notifications_action = self.user_menu.addAction("Notifications", self.open_notifications)
         self.user_menu.addAction("Refresh library", lambda: self.app.refresh())
+        self.user_menu.addAction("Add local game", self.importing_start)
         self.offline_action = self.user_menu.addAction("Go offline", self.toggle_offline)
         self.user_menu.addSeparator()
         self.user_menu.addAction("About", self.open_about)
@@ -6308,6 +6456,8 @@ class MainWindow(QMainWindow):
         self._steam_settled = False
         self._playing = None
         self.saves = SaveSync(self)
+        self.importing = ImportFlow(self)
+        self.external_saves = ExternalSaves(self)
         self.sounds = SoundPlayer(lambda: app.settings.sounds)
         self.nav_sounds = NavigationSounds(self.sounds)
         QApplication.instance().installEventFilter(self.nav_sounds)
@@ -6574,6 +6724,12 @@ class MainWindow(QMainWindow):
 
     def browse_folder(self, start: Path, on_pick) -> None:
         self.push(BrowsePage(self, start, on_pick, folders=True))
+
+    def ask_text(self, title: str, text: str, default: str, on_done) -> None:
+        self.push(NamePage(self, title, text, default, on_done))
+
+    def importing_start(self) -> None:
+        self.importing.start()
 
     def ask(
         self, text: str, on_yes, on_no=None, danger: bool = False, yes_default: bool = False, game: int | None = None,

@@ -30,14 +30,15 @@ def group_games(games: list[dict]) -> list[Group]:
     return groups
 
 
-SAVES_ONLY, ADDONS_ONLY = "saves-only", "addons-only"
+SAVES_ONLY, SAVES_IMPORTED, ADDONS_ONLY = "saves-only", "saves-imported", "addons-only"
 
 
 def corner_state(game: dict) -> str | None:
     """What the server says is special about a game's files, for a badge on its cover: gone from
-    disk but its saves are kept, or only add-ons (mods, DLC) and nothing that installs the game."""
+    disk but its saves are kept, only there to sync the saves of a game added from outside MOG (it never had files here),
+    or only add-ons (mods, DLC) and nothing that installs the game."""
     if game.get("saves_only"):
-        return SAVES_ONLY
+        return SAVES_IMPORTED if game.get("imported") else SAVES_ONLY
     if game.get("addons_only") and not game.get("missing_from_fs"):
         return ADDONS_ONLY
     return None

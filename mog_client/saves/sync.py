@@ -27,12 +27,14 @@ from mog_client.saves.locations import (
     SHARED_DIRS,
     USER_KEY,
     USER_SUBDIRS,
+    WINDOWS_HOST,
     Candidate,
     install_candidates,
     is_native_key,
     native_key,
     profile_candidates,
     target_for_key,
+    windows_profile_candidates,
 )
 from mog_client.saves.scan import ScanResult, attribute, sha256_of
 from mog_client.saves.state import (
@@ -48,6 +50,7 @@ from mog_client.saves.state import (
 
 # What an upload is for; the server shows it next to each version.
 LAUNCH, QUIT, MANUAL, UNINSTALL, SYNC = "launch", "quit", "manual", "uninstall", "sync"
+IMPORT = "import"  # the first backup of a game just added from outside MOG
 
 # Prefixes that belong to one game only, so everything in them can be attributed to it.
 DEDICATED_SOURCES = (prefixes.FROM_GAME, prefixes.FROM_FAUGUS, prefixes.FROM_STEAM)
@@ -100,7 +103,7 @@ def find_prefix(ctx: Context, state: SaveState) -> prefixes.Found | None:
 
 def prefix_ready(ctx: Context, state: SaveState) -> bool:
     """The prefix is known and exists; one that is chosen but not made yet (the game never ran) is not."""
-    return _drive_c(find_prefix(ctx, state)) is not None
+    return _drive_c(find_prefix(ctx, state), ctx.rec) is not None
 
 
 def remember_prefix(game_id: int, prefix: Path, source: str) -> None:
@@ -113,8 +116,14 @@ def remember_prefix(game_id: int, prefix: Path, source: str) -> None:
     save_state(game_id, state)
 
 
-def _drive_c(found: prefixes.Found | None) -> Path | None:
-    return prefixes.drive_c_of(found.prefix) if found else None
+def _drive_c(found: prefixes.Found | None, rec: InstalledGame | None = None) -> Path | None:
+    """The `drive_c` of the prefix. On Windows there is none: a game added from outside MOG runs in the real profile, which
+    `locations.WINDOWS_HOST` stands for."""
+    if found:
+        return prefixes.drive_c_of(found.prefix)
+    if rec is not None and rec.imported and rec.target == "windows" and not prefixes.has_prefixes():
+        return WINDOWS_HOST
+    return None
 
 
 def _files_dir(rec: InstalledGame) -> Path | None:
@@ -132,11 +141,17 @@ def _install_folder_candidates(ctx: Context) -> list[Candidate]:
     return found
 
 
-def _candidates(ctx: Context, drive_c: Path | None) -> list[Candidate]:
+def _candidates(ctx: Context, drive_c: Path | None, includes: list[str] | None = None) -> list[Candidate]:
     found: list[Candidate] = []
-    if drive_c is not None:
+    if drive_c == WINDOWS_HOST:
+        found += list(windows_profile_candidates())
+    elif drive_c is not None:
         found += list(profile_candidates(drive_c))
     found += _install_folder_candidates(ctx)
+    if ctx.rec.imported:
+        # No manifest tells an imported game's own files from its saves: only the folders the user confirmed count.
+        inside = [k for k in includes or [] if k == GAME_KEY or k.startswith(f"{GAME_KEY}/")]
+        found += list(native.included_files(inside, Path(ctx.rec.install_dir)))
     return found
 
 
@@ -159,10 +174,10 @@ def confirm_folders(game_id: int, folders: list[str]) -> None:
     save_state(game_id, state)
 
 
-def add_folder(game_id: int, path: Path) -> str | None:
+def add_folder(game_id: int, path: Path, sandbox: str | None = None) -> str | None:
     """Add a folder the user picked to a native game's saves. Returns its key, or None when it is outside
     the home folder or is a whole root (the home folder, `~/.config`...), which holds far more than a game."""
-    key = native_key(path)
+    key = native_key(path, sandbox)
     if key is None or "/" not in key:
         return None
     state = load_state(game_id)
@@ -248,9 +263,9 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
     if ctx.rec.native:
         return _backup_native(ctx, state, trigger, since_ns, force, upload)
     found = find_prefix(ctx, state)
-    drive_c = _drive_c(found)
+    drive_c = _drive_c(found, ctx.rec)
     scan_began = time.monotonic()
-    candidates = _candidates(ctx, drive_c)
+    candidates = _candidates(ctx, drive_c, state.includes)
     if upload:
         logstore.info(
             f"Saves of {ctx.rec.name}: {len(candidates)} candidate files in {time.monotonic() - scan_began:.1f}s"
@@ -286,7 +301,7 @@ def _backup_native(
     # What the manifest names counts as confirmed, along with what the user confirmed.
     confirmed = sorted({*(state.includes or []), *known})
     candidates = _install_folder_candidates(ctx)
-    candidates += list(native.included_files(confirmed, install_dir))
+    candidates += list(native.included_files(confirmed, install_dir, rec.in_sandbox))
 
     def accept(key: str) -> bool:
         return key.startswith(f"{GAME_KEY}/") or any(key == p or key.startswith(p + "/") for p in confirmed)
@@ -295,7 +310,7 @@ def _backup_native(
     if state.includes is None and not result.tracked:
         if since_ns is not None and upload:
             # Only a session window tells the game's files from every other program's, so look now.
-            written = native.session_files(since_ns, [install_dir])
+            written = native.session_files(since_ns, [install_dir], rec.in_sandbox)
             state.pending_folders = [f.key for f in native.suggest_folders((c.key for c in written), native.game_names(rec))]
             save_state(rec.game_id, state)
         if state.pending_folders:
@@ -492,6 +507,12 @@ def restore(ctx: Context, version_id: int, on_progress: Callable[[int, int], Non
         return _apply(ctx, state, archive, version_id)
 
 
+def apply_archive(ctx: Context, archive: Path) -> RestoreResult:
+    """Put the files of a local archive in place, keeping what they replace in a backup archive (the old saves of `external`)."""
+    with _restore_lock(ctx.rec.game_id):
+        return _apply(ctx, load_state(ctx.rec.game_id), archive, None)
+
+
 def _apply(
     ctx: Context, state: SaveState, archive: Path, version_id: int | None, only_if_free: bool = False
 ) -> RestoreResult:
@@ -507,7 +528,7 @@ def _apply(
             save_state(rec.game_id, state)
         archive.unlink(missing_ok=True)
         return RestoreResult("incompatible")
-    drive_c = None if rec.native else _drive_c(find_prefix(ctx, state))
+    drive_c = None if rec.native else _drive_c(find_prefix(ctx, state), rec)
     if drive_c is None and not rec.native and any(not k.startswith(f"{GAME_KEY}/") for k in keys):
         state.pending_restore = str(archive)
         if version_id is not None:  # downloaded and kept: it is not "newer" any more, it only waits
@@ -516,10 +537,10 @@ def _apply(
         return RestoreResult("needs-prefix")
 
     install_dir = Path(rec.install_dir)
-    if only_if_free and any(target_for_key(k, drive_c, install_dir).exists() for k in keys):
+    if only_if_free and any(target_for_key(k, drive_c, install_dir, rec.in_sandbox).exists() for k in keys):
         return RestoreResult("conflict")
     backup_zip = saves_dir(rec.game_id) / "backups" / f"before-restore-{time.strftime('%Y%m%d-%H%M%S')}.zip"
-    written = extract_archive(archive, lambda key: target_for_key(key, drive_c, install_dir), backup=backup_zip)
+    written = extract_archive(archive, lambda key: target_for_key(key, drive_c, install_dir, rec.in_sandbox), backup=backup_zip)
     for key, path in written:
         try:
             stat = path.stat()

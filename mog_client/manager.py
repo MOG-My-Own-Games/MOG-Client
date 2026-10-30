@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import shlex
 import shutil
 import sys
@@ -16,10 +17,12 @@ from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
 from mog_client.installdirs import default_root, find_moved, present, prune_empty, rebase
 from mog_client.launcher import (
+    PREFIX_DIR,
     create_desktop_entry,
     create_desktop_shortcut,
     desktop_file_path,
     entry_command,
+    entries_dir,
     entry_stem,
     icon_path,
     launch_cmd_path,
@@ -33,7 +36,7 @@ from mog_client.launcher import (
     write_launch_script,
 )
 from mog_client.saves import installed as ledger
-from mog_client.saves.locations import GAME_KEY
+from mog_client.saves.locations import GAME_KEY, SANDBOX_DIRS
 from mog_client.saves.state import forget_game, load_state, save_install_manifest, save_state
 from mog_client.scrape import fetch_artwork
 from mog_client.transfer import RepairResult, download_all_files, poll_session, verify_and_repair
@@ -253,6 +256,7 @@ def finish_setup(
     # The folder's icon is kept when the server has none now, so a failed download never wipes it.
     picture = art.get("icon") or art.get("portrait")
     if picture:
+        icon_path(rec).parent.mkdir(parents=True, exist_ok=True)
         icon_path(rec).write_bytes(picture)
     write_directory_file(rec)
 
@@ -476,8 +480,8 @@ def relocate_moved(settings: Settings) -> list[str]:
     and the folder icon are written again, as they hold the old path. Local only, so it also works offline. Returns the names."""
     found = []
     for rec in load_library().values():
-        if rec.state not in ("installed", "awaiting_executable") or present(rec):
-            continue
+        if rec.imported or rec.state not in ("installed", "awaiting_executable") or present(rec):
+            continue  # a game added from outside MOG is where its owner put it: it is not looked for in the install folders
         new = find_moved(rec, settings.install_roots)
         if new is None:
             continue
@@ -671,6 +675,9 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
 
     The prefix lives in the game's folder and may hold save files, so it is only deleted when the
     caller got the user's consent; without it everything else in the folder goes and `pfx` stays."""
+    if rec.imported:  # its folder and prefix are not MOG's to delete
+        remove_import(rec)
+        return []
     remove_entries(rec)
     install = Path(rec.install_dir)
     keep = pfx_dir(rec)
@@ -693,3 +700,170 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
         prune_empty(install, load_settings().install_roots)  # a prefix kept with nothing in it, or a folder left empty
     return leftovers
 
+
+
+def import_game(
+    game: dict,
+    folder: Path,
+    target: str,
+    prefix: Path | None = None,
+    new_prefix: bool = False,
+    executable: str | None = None,
+    sandbox: str | None = None,
+) -> InstalledGame:
+    """Record a game that is already on this machine, outside MOG, so its saves are synced. `game` is the server's entry
+    (an existing game, or the one `MogClient.import_game` made); `folder` stays where it is and so does `prefix`.
+    `new_prefix` says the prefix is made for this game alone. Nothing is written into the folder."""
+    if game["id"] in load_library():
+        raise RuntimeError(f"{game['name']} is already in this library")
+    rec = InstalledGame(
+        game_id=game["id"],
+        name=game["name"],
+        install_dir=str(folder),
+        state="installed",
+        server_name=game.get("fs_name") or game["name"],
+        executable=executable,
+        prefix=str(prefix) if prefix else None,
+        imported=True,
+        target=target,
+        prefix_dedicated=new_prefix,
+        sandbox=sandbox,
+    )
+    _update(rec)
+    logstore.info(f"{rec.name} was added from {folder} to keep its saves in sync")
+    return rec
+
+
+def set_sandbox(rec: InstalledGame, sandbox: str | None) -> None:
+    """The Flatpak app a game runs in (its saves are below `~/.var/app/<id>/`), or None for the real home. Found by the saves'
+    folders being chosen, so it is on; Linux Options can switch it off (`set_sandbox_enabled`)."""
+    if rec.sandbox != sandbox or (sandbox and not rec.sandbox_enabled):
+        _update(rec, sandbox=sandbox, sandbox_enabled=True)
+
+
+def adopt_sandbox(rec: InstalledGame, sandbox: str, keys: list[str], preference: str = "auto") -> None:
+    """Tie a game to the Flatpak app it was found saving in: its `xdg-*` folders are taken from the app's, `keys` being the ones found
+    there. The folders the game's saves were taken from in the real home are replaced; the others (`game/...`) stay."""
+    state = load_state(rec.game_id)
+    kept = [k for k in state.includes or [] if k.partition("/")[0] not in SANDBOX_DIRS]
+    state.includes = sorted({*kept, *keys})
+    save_state(rec.game_id, state)
+    _update(rec, sandbox=sandbox, sandbox_enabled=True)
+    _rewrite_entries(rec, preference)
+
+
+def set_sandbox_enabled(rec: InstalledGame, enabled: bool, preference: str = "auto") -> None:
+    """Switch the game's Flatpak sandbox on or off: where its `xdg-*` saves are looked for and the folders it is started with. The
+    launch script, desktop entry and Steam shortcut are written again, since they carry the folders."""
+    if rec.sandbox_enabled == enabled:
+        return
+    _update(rec, sandbox_enabled=enabled)
+    _rewrite_entries(rec, preference)
+
+
+def remove_import(rec: InstalledGame) -> None:
+    """Take a game added from outside MOG out of MOG: its launch files, shortcuts and what is remembered about its saves go.
+    Its folder and prefix are never touched, and the server keeps its entry and saves."""
+    remove_entries(rec)
+    shutil.rmtree(entries_dir(rec), ignore_errors=True)
+    with _library_lock:
+        lib = load_library()
+        lib.pop(rec.game_id, None)
+        save_library(lib)
+    forget_game(rec.game_id)
+
+
+class MoveError(RuntimeError):
+    pass
+
+
+def _tree_stats(path: Path) -> tuple[int, int]:
+    """(files, bytes) under a path, symbolic links counted as the links they are."""
+    files = size = 0
+    for dirpath, _dirs, names in os.walk(path, followlinks=False):
+        for name in names:
+            files += 1
+            try:
+                size += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return files, size
+
+
+def _move_tree(src: Path, dst: Path) -> None:
+    """Move a folder. On the same disk it is a rename; across disks it is copied (links kept as links), checked against the
+    original by file count and size, and only then deleted. Raises MoveError and leaves `src` whole when it cannot."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise MoveError(f"could not move {src} to {dst}: {e}") from e
+    try:
+        shutil.copytree(src, dst, symlinks=True)
+        if _tree_stats(src) != _tree_stats(dst):
+            raise MoveError(f"the copy of {src} in {dst} is not the same as the original: nothing was deleted")
+    except (OSError, shutil.Error) as e:
+        shutil.rmtree(dst, ignore_errors=True)
+        raise MoveError(f"could not copy {src} to {dst}: {e}") from e
+    except MoveError:
+        shutil.rmtree(dst, ignore_errors=True)
+        raise
+    if not _rmtree(str(src)):
+        raise MoveError(f"{dst} is complete, but {src} could not be deleted: remove it by hand")
+
+
+def move_target(rec: InstalledGame, settings: Settings) -> Path:
+    """Where `move_into_mog` would put the game: its name, in the first install folder with room."""
+    return default_root(settings) / safe_dirname(rec.name)
+
+
+def move_into_mog(rec: InstalledGame, settings: Settings, move_prefix: bool = True, preference: str = "auto") -> list[str]:
+    """Move a game added from outside MOG, and its prefix, into the install folder, and make it an ordinary MOG game. This
+    deletes them from where they were. The prefix goes to `<game>/pfx`; one that sits inside the game's folder goes with it;
+    with `move_prefix` False an outside one stays where it is. Returns notes for the person (what could not be done).
+    Raises MoveError, with the record as it was, when the game's folder cannot be moved."""
+    if not rec.imported:
+        raise MoveError(f"{rec.name} is already a MOG game")
+    old_dir = Path(rec.install_dir)
+    dest = move_target(rec, settings)
+    if not old_dir.is_dir():
+        raise MoveError(f"{old_dir} is not there")
+    if dest.exists():
+        raise MoveError(f"{dest} already exists: nothing was moved")
+    if dest == old_dir or old_dir in dest.parents or dest in old_dir.parents:
+        raise MoveError(f"{dest} and {old_dir} are inside each other: nothing was moved")
+    old_prefix = Path(rec.prefix) if rec.prefix else None
+    inside = old_prefix is not None and old_prefix.is_relative_to(old_dir)
+    shared = bool(old_prefix) and not inside and not rec.prefix_dedicated
+    notes: list[str] = []
+
+    _move_tree(old_dir, dest)  # a failure here leaves everything as it was
+    old_prefix_text = rec.prefix
+    old_entries = entries_dir(rec)
+    # From here the folder is in its new place: the record follows it at once, so a failure later cannot lose the game.
+    changes = {k: rebase(getattr(rec, k), str(old_dir), str(dest)) for k in ("install_dir", "files_dir", "executable", "prefix")}
+    _update(rec, **changes)
+    if old_prefix is not None and not inside and move_prefix:
+        new_prefix = dest / PREFIX_DIR
+        try:
+            if new_prefix.exists():
+                raise MoveError(f"{new_prefix} already exists")
+            _move_tree(old_prefix, new_prefix)
+            changes["prefix"] = str(new_prefix)
+        except MoveError as e:
+            notes.append(f"The prefix stays where it was: {e}")
+    state = load_state(rec.game_id)
+    if state.prefix:
+        state.prefix = changes["prefix"] if state.prefix == old_prefix_text else rebase(state.prefix, str(old_dir), str(dest))
+        save_state(rec.game_id, state)
+    still_outside = bool(changes["prefix"]) and not Path(changes["prefix"]).is_relative_to(dest)
+    # A prefix other programs use stays "shared" even in the game's folder: only the folders the user confirmed are its saves.
+    _update(rec, prefix=changes["prefix"], imported=False, prefix_dedicated=False, prefix_shared=shared and not still_outside)
+    if (old_icon := old_entries / ".mog-icon").is_file():
+        shutil.copy2(old_icon, icon_path(rec))  # an ordinary MOG game keeps its icon in its folder
+    _rewrite_entries(rec, preference)
+    shutil.rmtree(old_entries, ignore_errors=True)
+    logstore.info(f"{rec.name} was moved from {old_dir} into {dest}")
+    return notes

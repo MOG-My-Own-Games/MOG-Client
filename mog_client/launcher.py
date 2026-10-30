@@ -430,7 +430,9 @@ def umu_id(game: InstalledGame) -> str:
 
 def pfx_dir(game: InstalledGame) -> Path:
     """The prefix MOG hands every engine: a `pfx` folder inside the game's own folder. What goes in
-    it, and how, is up to the engine."""
+    it, and how, is up to the engine. A game added from outside MOG keeps the prefix it was added with, wherever it is."""
+    if game.imported and game.prefix:
+        return Path(game.prefix)
     return Path(game.install_dir) / PREFIX_DIR
 
 
@@ -485,6 +487,20 @@ def ensure_native_permissions(install_dir: str) -> None:
         pass  # it is looked at again next time
 
 
+def sandbox_env(game: InstalledGame) -> dict[str, str]:
+    """For a game that runs in a Flatpak app's sandbox (itch's): the XDG folders of the app, so the game, started from here, finds
+    the saves and settings it left when the app started it. Nothing while the app's folder is not there."""
+    if not game.in_sandbox:
+        return {}
+    from mog_client.saves.locations import sandbox_roots  # locations imports this module
+
+    roots = sandbox_roots(game.in_sandbox)
+    if not roots or not next(iter(roots.values())).parent.is_dir():
+        return {}
+    variables = {"xdg-config": "XDG_CONFIG_HOME", "xdg-data": "XDG_DATA_HOME", "xdg-state": "XDG_STATE_HOME"}
+    return {variables[name]: str(path) for name, path in roots.items() if name in variables}
+
+
 def launch_command(
     game: InstalledGame,
     preference: str = "auto",
@@ -508,8 +524,9 @@ def launch_command(
         raise RuntimeError("a Linux game runs as it is: it has no Wine prefix")
     if game.native:
         ensure_executable(game.executable)
-        ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
-        return [game.executable, *args], {}  # a Linux program: no launcher, no prefix
+        if not game.imported:  # the folder of a game added from outside MOG is left as it is
+            ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
+        return [game.executable, *args], sandbox_env(game)  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
@@ -734,8 +751,14 @@ def entry_stem(game: InstalledGame) -> str:
     return safe_dirname(game.name)
 
 
+def entries_dir(game: InstalledGame) -> Path:
+    """Where the launch files of a game added from outside MOG are kept: its own folder belongs to another program, which
+    may rewrite or clean it."""
+    return data_dir() / "imports" / str(game.game_id)
+
+
 def _in_game_folder(game: InstalledGame, name: str) -> Path:
-    return Path(game.install_dir) / name
+    return (entries_dir(game) if game.imported else Path(game.install_dir)) / name
 
 
 def launch_script_path(game: InstalledGame) -> Path:
@@ -921,6 +944,7 @@ def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preferen
         )
         return str(shortcut_lnk_path(game))
     desktop = desktop_file_path(game)
+    desktop.parent.mkdir(parents=True, exist_ok=True)
     write_desktop_file(desktop, game, entry_command(game, preference), icon)
     menu = menu_entry_path(game)
     menu.parent.mkdir(parents=True, exist_ok=True)
@@ -932,7 +956,7 @@ def create_desktop_entry(game: InstalledGame, icon: Path | None = None, preferen
 
 def write_directory_file(game: InstalledGame) -> None:
     """Give the game's folder its icon in file managers that read `.directory` (KDE's); no icon, no file."""
-    if sys.platform == "win32":
+    if sys.platform == "win32" or game.imported:  # the folder of a game added from outside MOG is left as it is
         return
     path, icon = directory_file_path(game), icon_path(game)
     if icon.is_file():

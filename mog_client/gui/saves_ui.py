@@ -314,7 +314,7 @@ class SaveSync:
         """Ask for a folder a native game keeps its saves in (MOG found none, or not the right one)."""
 
         def store(picked: str) -> None:
-            if sync.add_folder(rec.game_id, Path(picked)) is None:
+            if sync.add_folder(rec.game_id, Path(picked), rec.in_sandbox) is None:
                 self.win.message(f"{picked} is not a folder below your home folder that can hold a game's saves", "error")
                 return
             self.win.notify(f"Saves of {rec.name} will be backed up from {picked}")
@@ -601,16 +601,18 @@ class SaveSync:
 
     # --- uninstalling, and looking over every game at startup ---
 
-    def final_backup(self, rec: InstalledGame, then: Callable[[], None], on_abort: Callable[[], None] | None = None) -> None:
+    def final_backup(
+        self, rec: InstalledGame, then: Callable[[], None], on_abort: Callable[[], None] | None = None, action: str = "Uninstall"
+    ) -> None:
         """Back the game's saves up one last time, then `then()`; if that cannot be done, ask first (`on_abort` runs
-        when the answer is not to go on)."""
+        when the answer is not to go on). `action` is what is about to be done, for the question."""
         if not self.enabled(rec):
             then()
             return
 
         def uneasy(reason: str | None) -> None:
             self.win.ask(
-                f"The saves of {rec.name} could not be backed up ({reason or 'no reason given'}). Uninstall anyway?",
+                f"The saves of {rec.name} could not be backed up ({reason or 'no reason given'}). {action} anyway?",
                 then,
                 danger=True,
                 game=rec.game_id,
@@ -644,7 +646,7 @@ class SaveSync:
         games = [
             r
             for r in load_library().values()
-            if r.state == "installed" and r.executable and installdirs.present(r) and self.enabled(r)
+            if r.state == "installed" and (r.executable or r.imported) and installdirs.present(r) and self.enabled(r)
             and (waiting or sync.deferred(r.game_id))
         ]
         if waiting or games:

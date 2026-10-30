@@ -123,11 +123,40 @@ def engine_default_prefix(engine: str) -> Path | None:
     return None
 
 
+def mac_bottle_roots() -> list[Path]:
+    """Where macOS keeps the bottles of CrossOver and Whisky: each folder in them is a Wine prefix."""
+    home = Path.home()
+    return [
+        home / "Library/Application Support/CrossOver/Bottles",
+        home / "Library/Containers/com.isaacmarovitz.Whisky/Bottles",
+    ]
+
+
+# Prefixes every program uses unless told otherwise: they hold the saves of whatever else ran there.
+DEFAULT_PREFIX_NAMES = frozenset({"default", "umu-default", "default-prefix", "default_prefix"})
+
+
+def is_default(prefix: Path) -> bool:
+    """Whether a prefix is one a launcher or Wine itself falls back to (`~/.wine`, umu's `umu-default`, a folder called
+    `default`), so more than one game, and the saves of each, are likely in it."""
+    home = Path.home()
+    try:
+        resolved = prefix.expanduser().resolve()
+    except OSError:
+        resolved = prefix
+    if resolved in {(home / ".wine").resolve(), (home / "Games/umu/umu-default").resolve()}:
+        return True
+    return prefix.name.casefold() in DEFAULT_PREFIX_NAMES
+
+
 def candidate_prefixes() -> list[Path]:
     """Prefixes that exist on this machine, for the user to pick from when none could be worked out."""
     home = Path.home()
     found: list[Path] = [home / ".wine"]
-    for parent in (home / "Games/umu", home / "Faugus"):
+    parents = [home / "Games/umu", home / "Faugus"]
+    if sys.platform == "darwin":
+        parents += mac_bottle_roots()
+    for parent in parents:
         if parent.is_dir():
             found += sorted(p for p in parent.iterdir() if p.is_dir())
     for root in steam_roots():
@@ -153,7 +182,8 @@ def resolve_prefix(
     moving the game there is followed), then what an earlier run remembered, then the runner's default."""
     if rec.prefix:
         in_game_folder = Path(rec.prefix) == Path(rec.install_dir) / PREFIX_DIR
-        return Found(Path(rec.prefix), FROM_GAME if in_game_folder else FROM_USER)
+        dedicated = (in_game_folder or rec.prefix_dedicated) and not rec.prefix_shared
+        return Found(Path(rec.prefix), FROM_GAME if dedicated else FROM_USER)
     if remembered and remembered_source == FROM_USER:
         return Found(Path(remembered), FROM_USER)  # picked for the sync only: it does not change how the game starts
     own = _own_prefix(rec)

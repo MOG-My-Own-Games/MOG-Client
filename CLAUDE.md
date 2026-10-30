@@ -53,7 +53,7 @@ mog_client/
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
   launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
   gameplay.py   Following a game started from here to its end, and stopping it (stdlib)
-  saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher
+  saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher; importer.py works out where the saves of a game added from outside MOG are (Qt-free) and makes the first sync take all of them; external.py finds a MOG game's old saves in another prefix or game folder and puts them in place of the fresh ones
   steam.py      shortcuts.vdf read/write + grid artwork
   selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
   scrape.py     Artwork URLs from the server's already-scraped metadata
@@ -72,6 +72,8 @@ mog_client/
     syncwindow.py the small "Syncing saves" window `--save-sync --window` and the end-of-game watch show (own process, never the main window; Qt only here)
     theme.py    STYLE, the stylesheet every window shares
     saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`message`/`notify`)
+    importing.py the questions of adding a game from outside MOG, moving it into MOG and removing it; Qt-free like saves_ui (adds `ask_text`)
+    extsaves.py the questions of Import external saves (Options > Saves...); Qt-free like saves_ui
     overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
     logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
     about.py    the About page's tabs (About, Changelog); legend.py builds the guide at the bottom per page, with button and key icons
@@ -94,7 +96,7 @@ lives in the `gui` extra.
 
 - **README stays short and public.** It is an overview with links. Behaviour is documented by topic in `docs/GUI.md`, `docs/INSTALLING.md`, `docs/SAVES.md` and `docs/STEAM.md`, as headings and bullets, never as one long paragraph; update those when behaviour changes.
 
-- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
+- **The prefix lives in the game's folder, and the game must start without MOG.** MOG gives every engine `<install_dir>/pfx` (`WINEPREFIX`, or `STEAM_COMPAT_DATA_PATH` for Proton) and leaves creating and filling it to Faugus, umu, Proton or Wine; the launch script, `.desktop`, `.directory` and `.lnk` sit next to it (`launcher.py`: `entry_stem`, `launch_script_path`, ...). `InstalledGame.prefix` records that path. A prefix the user picks for the save sync only is kept in the sync state (`saves/prefix.py`). A game added from outside MOG (`InstalledGame.imported`) is the exception: its folder and prefix stay where its owner put them (`launcher.pfx_dir` follows `rec.prefix`), its launch files live in `data_dir()/imports/<id>` (`launcher.entries_dir`), and neither is ever deleted by MOG; `manager.move_into_mog` is the one thing that moves them, after warnings. The launcher list is scanned at first start, after an update and on "Rescan launchers" (`launcher.ensure_scanned`, kept in `Settings.launchers`); Faugus, umu, Proton, Wine in that order. PortProton is not supported yet (see `docs/TODO.md`).
 - **No status line.** What the user must see is `MainWindow.message(text, level, game_id, action)` (an overlay with OK and, when given, the option to act on it; also logged and listed in the notifications, `keep=False` to leave it out); what is only worth keeping is `MainWindow.notify(text, level)` (the log only). Do not add messages to the page layouts. Errors and the result of something the user asked for are messages; ambient information ("N games", "Starting X...") is not. Worker threads use `Bridge.error`, `Bridge.message` or `Bridge.note`.
 - Steam rewrites `shortcuts.vdf` from memory when it quits, so a shortcut is never changed while it runs (`manager._sync_steam_entries` marks `steam_pending` and `settle_steam_shortcuts` finishes it at the next start); keys are matched without regard to case.
 - The pad reader reports whatever window has the focus: `MainWindow.on_pad_event` drops events when none of ours is active.

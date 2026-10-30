@@ -13,6 +13,9 @@ variable and not its value (which can differ per machine):
 
     xdg-config/<rest>  xdg-data/<rest>  xdg-state/<rest>   below $XDG_CONFIG_HOME, $XDG_DATA_HOME, $XDG_STATE_HOME
     home/<rest>                                            anywhere else below the home folder
+
+A native macOS game also has `mac-support/<rest>` (~/Library/Application Support) and `mac-prefs/<rest>` (~/Library/Preferences);
+those keys mean nothing on another system, so an archive that holds them is refused there.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import re
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -45,6 +50,16 @@ XDG_ROOTS = {
     "xdg-state": ("XDG_STATE_HOME", ".local/state"),
 }
 HOME_KEY = "home"
+# A Flatpak app has its own XDG folders below `~/.var/app/<id>/`: a game it starts writes its `xdg-*` files there, not in
+# `~/.config`. The keys are the same either way; only where the root points differs (see `native_root`'s `sandbox`).
+FLATPAK_DIR = ".var/app"
+SANDBOX_DIRS = {"xdg-config": "config", "xdg-data": "data", "xdg-state": ".local/state"}
+APP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# macOS only: where a native Mac game keeps its files, named so an archive from a Mac cannot be put back anywhere else.
+MAC_ROOTS = {"mac-support": "Library/Application Support", "mac-prefs": "Library/Preferences"}
+
+# Stands for "the real Windows profile of this machine" where a Wine prefix's `drive_c` would otherwise go (see `windows_*`).
+WINDOWS_HOST = Path("<windows-profile>")
 
 USER_SUBDIRS = ("Documents", "Saved Games", "AppData/Roaming", "AppData/Local", "AppData/LocalLow")
 SHARED_DIRS = ("ProgramData", "users/Public")
@@ -196,10 +211,71 @@ def install_candidates(
         yield candidate
 
 
-def native_root(name: str) -> Path | None:
-    """The folder a native key root stands for on this machine, None for a name that is not one."""
+def windows_profile_roots() -> dict[str, Path]:
+    """The real Windows profile folders by archive key root, from the environment: the same keys a Wine prefix gives, so a save
+    taken on Windows can be put back into a prefix and the other way round."""
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    roots = {f"{USER_KEY}/{sub}": home / sub for sub in USER_SUBDIRS}
+    if program_data := os.environ.get("ProgramData"):
+        roots["ProgramData"] = Path(program_data)
+    if public := os.environ.get("PUBLIC"):
+        roots["users/Public"] = Path(public)
+    return roots
+
+
+def windows_profile_candidates() -> Iterator[Candidate]:
+    """`profile_candidates` for the real Windows profile of the user running MOG."""
+    for key_prefix, root in windows_profile_roots().items():
+        if real_dir(root):
+            yield from walk(root, key_prefix)
+
+
+def sandbox_roots(app_id: str) -> dict[str, Path]:
+    """The `xdg-*` roots of a Flatpak app's sandbox. The home folder inside Flatpak is the real one, so `home` is not among them."""
+    if not APP_ID.fullmatch(app_id) or ".." in app_id:
+        return {}
+    base = Path.home() / FLATPAK_DIR / app_id
+    return {name: base / sub for name, sub in SANDBOX_DIRS.items()}
+
+
+def sandbox_apps() -> list[str]:
+    """The Flatpak apps on this machine that have XDG folders of their own, by id."""
+    base = Path.home() / FLATPAK_DIR
+    try:
+        entries = sorted(base.iterdir())
+    except OSError:
+        return []
+    return [
+        e.name
+        for e in entries
+        if real_dir(e) and any(real_dir(root) for root in sandbox_roots(e.name).values())
+    ]
+
+
+def sandbox_of(path: Path) -> str | None:
+    """The Flatpak app whose sandbox folder `path` is in (`~/.var/app/io.itch.itch/config/...`), or None."""
+    try:
+        rel = path.relative_to(Path.home() / FLATPAK_DIR)
+    except ValueError:
+        return None
+    if not rel.parts:
+        return None
+    app_id = rel.parts[0]
+    for root in sandbox_roots(app_id).values():
+        if path == root or root in path.parents:
+            return app_id
+    return None
+
+
+def native_root(name: str, sandbox: str | None = None) -> Path | None:
+    """The folder a native key root stands for on this machine, None for a name that is not one. For a game that runs in a
+    Flatpak app's `sandbox` the `xdg-*` roots are that app's own folders."""
+    if sandbox and (root := sandbox_roots(sandbox).get(name)) is not None:
+        return root
     if name == HOME_KEY:
         return Path.home()
+    if name in MAC_ROOTS:
+        return Path.home() / MAC_ROOTS[name] if sys.platform == "darwin" else None
     spec = XDG_ROOTS.get(name)
     if spec is None:
         return None
@@ -212,22 +288,25 @@ def is_native_key(key: str) -> bool:
     return native_root(key.partition("/")[0]) is not None
 
 
-def native_key(path: Path) -> str | None:
+def native_key(path: Path, sandbox: str | None = None) -> str | None:
     """The archive key of a path below one of the native roots (an XDG folder before the home folder
     that holds it), or None when it is below none of them."""
-    for name in (*XDG_ROOTS, HOME_KEY):
+    for name in (*MAC_ROOTS, *XDG_ROOTS, HOME_KEY):
+        root = native_root(name, sandbox)
+        if root is None:
+            continue
         try:
-            rel = path.relative_to(native_root(name))
+            rel = path.relative_to(root)
         except ValueError:
             continue
         return str(PurePosixPath(name, *rel.parts))
     return None
 
 
-def describe_key(key: str) -> str:
+def describe_key(key: str, sandbox: str | None = None) -> str:
     """A key as a path the user knows: `~/.config/Game` for `xdg-config/Game`."""
     name, _, rest = key.partition("/")
-    root = native_root(name)
+    root = native_root(name, sandbox)
     if root is None:
         return key
     path = root / rest
@@ -245,16 +324,23 @@ def check_key(key: str) -> str:
     return str(path)
 
 
-def target_for_key(key: str, drive_c: Path | None, install_dir: Path) -> Path:
-    """Where a key goes on this machine."""
+def target_for_key(key: str, drive_c: Path | None, install_dir: Path, sandbox: str | None = None) -> Path:
+    """Where a key goes on this machine. `sandbox` is the Flatpak app a game runs in, whose own folders the `xdg-*` keys are."""
     key = check_key(key)
-    root = native_root(key.partition("/")[0])
+    root = native_root(key.partition("/")[0], sandbox)
     if key == GAME_KEY or key.startswith(f"{GAME_KEY}/"):
         base, rest = install_dir, key[len(GAME_KEY) + 1 :]
     elif root is not None:
         base, rest = root, key.partition("/")[2]
     elif drive_c is None:
         raise UnsafeKey(f"{key}: no prefix to put it in")
+    elif drive_c == WINDOWS_HOST:
+        for root_key, folder in sorted(windows_profile_roots().items(), key=lambda item: -len(item[0])):
+            if key == root_key or key.startswith(root_key + "/"):
+                base, rest = folder, key[len(root_key) + 1 :]
+                break
+        else:
+            raise UnsafeKey(f"{key}: not in the Windows profile")
     elif key.startswith(f"{USER_KEY}/"):
         base, rest = drive_c / "users" / user_dir_name(drive_c), key[len(USER_KEY) + 1 :]
     else:
