@@ -2156,8 +2156,9 @@ class InstallerPickerPage(Page):
     the row change it (Right and Left walk onto them, Enter moves the row). With two or more ticked, Install runs them
     one after another in one install; the first is the game, the others are patches. "Just copy the files" is a row like an
     installer, the first of each version: ticked, it is the game (always the first, the patches come after it).
-    `needed` is when the server has already tried and could not tell which one: then "let the server choose" is not
-    offered (the button is hidden). `saved` is the order the server remembers for the game: ticked from the start."""
+    It opens only when there is something to disambiguate: `needed` is when the server has already tried and could not
+    tell which one, and otherwise there are several installers to put in order. `saved` is the order the server
+    remembers for the game: ticked from the start."""
 
     modal = True
 
@@ -2191,21 +2192,14 @@ class InstallerPickerPage(Page):
         self.list.currentItemChanged.connect(lambda *_: self._row_changed())
         self.list.installEventFilter(self)  # Right and Left walk onto the arrows of a ticked row
         QShortcut(QKeySequence(Qt.Key_Space), self.list, activated=self._toggle_current, context=Qt.WidgetShortcut)
-        self.server_button = QPushButton("Let the server choose")
-        self.server_button.setToolTip("The installer the server would run by itself")
-        self.server_button.setVisible(not needed)  # asked for because it could not choose: not offered again
-        self.server_button.clicked.connect(self.let_server_choose)
         self.ok = QPushButton("Install")
         self.ok.setDefault(True)
         self.ok.clicked.connect(self.accept)
-        for button in (self.server_button, self.ok):
-            button.installEventFilter(self)  # the arrows walk between the buttons, as they are laid out
+        self.ok.installEventFilter(self)  # the arrows walk between the buttons, as they are laid out
         self.status = QLabel("Looking for installers...")
         lay = QVBoxLayout(self)
         lay.addWidget(self.status)
         lay.addWidget(self.list, 1)
-        # The row above Install and Cancel, which is not where buttons usually go: the way that picks no installer here.
-        lay.addLayout(_centered_row(self.server_button))
         self.button_row = _centered_row(self.ok)
         lay.addLayout(self.button_row)
         win.app.bridge.installers.connect(self.on_installers)
@@ -2392,7 +2386,7 @@ class InstallerPickerPage(Page):
 
     def _buttons(self, visible_only: bool = True) -> list[QPushButton]:
         """The buttons below the list, Cancel (the card's own) included."""
-        buttons = [self.server_button, self.ok, self.win.modal.close_button]
+        buttons = [self.ok, self.win.modal.close_button]
         return [b for b in buttons if b.isVisible() or not visible_only]
 
     def _walk_buttons(self, button: QPushButton, key: int) -> bool:
@@ -2514,11 +2508,6 @@ class InstallerPickerPage(Page):
             self.page.start_with(version, None, extract=True)
         else:
             self.page.start_with(version, installer)
-
-    def let_server_choose(self) -> None:
-        version = self._version()
-        self.win.back()
-        self.page.start_with(version, None)
 
     def choose(self, item: QListWidgetItem) -> None:
         picked = item.data(Qt.UserRole)
@@ -4394,12 +4383,28 @@ class GamePage(Page):
         local = load_library()
         fresh = group is not None and not any(m["id"] in local for m in group.members)
         if group is not None and len(group.versions) > 1 and fresh:
-            self.win.push(InstallerPickerPage(self.win, self, group))
+            self._choose_version(group)
             return
         if self.game["id"] not in local:
             self._install_or_order()
             return
         self.win.install_game(self.game, None, self._installing)
+
+    def _choose_version(self, group: Group) -> None:
+        """A title with several versions asks which one only; which installer to run is the server's to decide (and the
+        installer list opens only when it cannot, or when there are several to put in order)."""
+        libraries = self.win.library.libraries
+        current = self.game["id"]
+        versions = sorted(group.versions, key=lambda v: v["id"] != current)  # the page's own version first
+        options = [(version_label(v, libraries), v) for v in versions]
+
+        def chosen(version: dict | None) -> None:
+            if version is None:
+                return
+            self.switch_version(version)
+            self._install_or_order()
+
+        self.win.choose("Choose a version", "This title has more than one version. Which one do you want to install?", options, chosen)
 
     def _install_or_order(self) -> None:
         """A new game with more than one installer to choose from (patches next to the installer, installers inside a

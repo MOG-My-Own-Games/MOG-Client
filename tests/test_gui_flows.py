@@ -1965,7 +1965,7 @@ def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_h
     picker.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
     assert "could not tell which installer" in picker.status.text()
     rows = _rows(picker)
-    assert picker.server_button.isHidden() and any("gothic2.exe" in r for r in rows)  # it could not choose: not offered
+    assert any("gothic2.exe" in r for r in rows)
 
     picker.choose(picker.list.item(_index_of(picker, "Setup/gothic2.exe")))
     assert started == [(41, {"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
@@ -2222,7 +2222,7 @@ def test_a_folder_with_no_installer_offers_its_executables_and_just_copy_as_its_
     assert any("Metroid.exe" in r for r in rows) and sum("Just copy" in r for r in rows) == 1
     first = next(r for r in rows if r.strip() and "Metroid.exe" in r or "Just copy" in r)
     assert first.startswith("Just copy")  # the first row under the version, before the executables
-    assert picker.server_button.isHidden() and "probably the game itself" in picker.status.text()
+    assert "probably the game itself" in picker.status.text()
 
     _tick(picker, qapp, "mog:copy")
     picker.ok.click()
@@ -4476,7 +4476,7 @@ class CandidatesServer:
         return self.data
 
 
-def _install_click(win, qapp, monkeypatch, server, installed=False):
+def _install_click(win, qapp, monkeypatch, server, installed=False, games=None):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
     monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
@@ -4492,7 +4492,7 @@ def _install_click(win, qapp, monkeypatch, server, installed=False):
     monkeypatch.setattr(win.app, "run_bg", run_now)
     started = []
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, steps)))
-    win.app.set_games([{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None, "installed": installed}])
+    win.app.set_games(games or [{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None, "installed": installed}])
     win.show_game(41)
     pump(qapp)
     page = win.current_page()
@@ -4543,6 +4543,36 @@ def test_a_failed_lookup_never_stops_the_install(win, qapp, monkeypatch):
     _page, started = _install_click(win, qapp, monkeypatch, Broken())
 
     assert started == [(None, None)]
+
+
+def _two_versions():
+    return [
+        {"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": 9, "installed": False},
+        {"id": 42, "name": "Jazz GOG", "fs_name": "Jazz GOG", "library_id": None, "igdb_id": 9, "installed": False},
+    ]
+
+
+def test_installing_a_title_with_several_versions_asks_only_for_the_version(win, qapp, monkeypatch):
+    _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP]), games=_two_versions())
+    choice = win.current_page()
+
+    assert isinstance(choice, gui.ChoicePage) and started == []  # no installer list, no server button
+    assert [choice.list.item(i).data(Qt.UserRole)["id"] for i in range(choice.list.count())] == [41, 42]  # the page's own first
+
+    choice.list.setCurrentRow(1)
+    choice.accept()
+    pump(qapp)
+
+    assert win.current_page().game["id"] == 42 and started == [(None, None)]  # the chosen version, installed by the server
+
+
+def test_a_chosen_version_with_several_installers_still_opens_the_picker(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "load_inside", lambda gid, source: None)
+    _page, started = _install_click(win, qapp, monkeypatch, CandidatesServer([SETUP, PATCH1, PATCH2]), games=_two_versions())
+    win.current_page().accept()
+    pump(qapp)
+
+    assert isinstance(win.current_page(), gui.InstallerPickerPage) and started == []
 
 
 # --- installers inside a disc ---------------------------------------------------------------------------
@@ -4627,7 +4657,7 @@ def test_the_down_arrow_leaves_the_last_row_for_the_buttons(win, qapp, monkeypat
     QTest.keyClick(picker.list, Qt.Key_Down)
     pump(qapp)
 
-    assert not picker.list.hasFocus() and picker.focusWidget() in (picker.server_button, picker.ok, win.modal.close_button)
+    assert not picker.list.hasFocus() and picker.focusWidget() in (picker.ok, win.modal.close_button)
 
 
 def test_only_the_current_row_is_filled_and_an_arrow_marked_on_it_is_cleared_when_another_row_is_reached(win, qapp, monkeypatch):
@@ -4649,19 +4679,14 @@ def test_only_the_current_row_is_filled_and_an_arrow_marked_on_it_is_cleared_whe
     assert picker.arrow is None
 
 
-def test_let_the_server_choose_is_a_button_above_install_and_not_a_list_row(win, qapp, monkeypatch):
-    page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
-    started = []
-    monkeypatch.setattr(page, "start_with", lambda version, installer, extract=False, steps=None: started.append((installer, extract, steps)))
+def test_the_picker_has_no_let_the_server_choose_button_because_that_is_what_install_does_by_itself(win, qapp, monkeypatch):
+    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
     picker.on_installers(41, [SETUP, PATCH1], "", False)
     pump(qapp)
 
+    assert not hasattr(picker, "server_button")
     assert not any("Let the server choose" in r for r in _rows(picker))
-    assert picker.server_button.isVisible() and picker.server_button.text() == "Let the server choose"
-    assert picker.server_button.geometry().bottom() < picker.ok.geometry().top() + picker.ok.mapTo(picker, picker.ok.rect().topLeft()).y()
-
-    picker.server_button.click()
-    assert started == [(None, False, None)]
+    assert [b.text() for b in picker._buttons()][0] == "Install"
 
 
 def _tags(picker):
@@ -4703,21 +4728,12 @@ def test_right_from_install_goes_to_cancel_and_left_comes_back(win, qapp, monkey
     assert _focus_after(picker, qapp, win.modal.close_button, Qt.Key_Left) is picker.ok
 
 
-def test_the_button_above_is_reached_by_the_arrows_and_up_and_down_change_row(win, qapp, monkeypatch):
+def test_up_from_the_buttons_goes_back_to_the_list(win, qapp, monkeypatch):
     _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
     picker.on_installers(41, [SETUP, PATCH1], "", False)
     pump(qapp)
 
-    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Down) in (picker.ok, win.modal.close_button)
-    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Up) is picker.server_button
-
-
-def test_up_from_the_top_row_of_buttons_goes_back_to_the_list(win, qapp, monkeypatch):
-    _page, picker = _picker_for(win, qapp, monkeypatch, needed=False)
-    picker.on_installers(41, [SETUP, PATCH1], "", False)
-    pump(qapp)
-
-    assert _focus_after(picker, qapp, picker.server_button, Qt.Key_Up) is picker.list
+    assert _focus_after(picker, qapp, picker.ok, Qt.Key_Up) is picker.list
 
 
 def test_cancel_stops_taking_this_pages_arrows_once_the_page_is_gone(win, qapp, monkeypatch):
