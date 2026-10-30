@@ -25,6 +25,7 @@ from mog_client.saves.state import load_state
 NEW_ENTRY, BROWSE, NEW_PREFIX, ANOTHER_FOLDER = "*new*", "*browse*", "*new-prefix*", "*another*"
 NEW_LIBRARY = "*new-library*"
 IN_GAME_FOLDER = "*in-game-folder*"
+IN_LIBRARY = "*in-library*"
 
 PREFIX_NOTE = (
     "Do not pick a Default prefix (like ~/.wine or umu-default): other games run there too, and their saves may be in it."
@@ -41,6 +42,7 @@ class Draft:
     game: dict | None = None
     prefix: Path | None = None
     new_prefix: bool = False
+    prefix_in_library: bool = False  # the new prefix is in an install folder, in the folder a MOG game of this name would have
     library_id: int | None = None
 
 
@@ -305,30 +307,68 @@ class ImportFlow:
     def new_prefix(self, draft: Draft) -> None:
         own = draft.folder / PREFIX_DIR
 
-        def go(path: Path) -> None:
+        def go(path: Path, in_library: bool = False) -> None:
             self.win.ask(
                 "A new prefix starts empty, and the game will use it from now on.\n"
                 "If the game already has saves, they may be in the prefix it runs in now: this one will not see them.\n"
                 f"Make the prefix in {path}?",
-                lambda: self.prefix_chosen(draft, path, True),
+                lambda: self.prefix_chosen(draft, path, True, in_library),
                 danger=True,
             )
 
         def chosen(answer) -> None:
             if answer == IN_GAME_FOLDER:
                 go(own)
+            elif answer == IN_LIBRARY:
+                self.library_prefix(draft, go)
             elif answer == ANOTHER_FOLDER:
                 self.win.browse_folder(Path.home(), lambda picked: go(Path(picked)))
 
         self.win.choose(
             "Where should the new prefix be?",
             "The launcher (Faugus, umu, Proton or Wine) makes it the first time the game starts, so you will pick the game's executable too.",
-            [(f"In the game's folder: {own}", IN_GAME_FOLDER), ("Another folder...", ANOTHER_FOLDER)],
+            [
+                (f"In the game's folder: {own}", IN_GAME_FOLDER),
+                ("In MOG Library: as a MOG game would have it", IN_LIBRARY),
+                ("Another folder...", ANOTHER_FOLDER),
+            ],
             chosen,
         )
 
-    def prefix_chosen(self, draft: Draft, path: Path, new: bool) -> None:
-        draft.prefix, draft.new_prefix = path, new
+    def library_prefix(self, draft: Draft, go: Callable[[Path, bool], None]) -> None:
+        """The prefix goes where a MOG game of this name would have its own: `<install folder>/<game>/pfx`, in the install folder
+        of the person's choice among the ones that are connected. The game itself stays where it is."""
+        roots = [Path(r) for r in self.app.settings.install_roots if installdirs.reachable(Path(r))]
+        if not roots:
+            self.win.message("None of the MOG libraries (the install folders) is connected: pick another place for the prefix", "error")
+            return
+
+        def use(root: Path) -> None:
+            own = root / safe_dirname(draft.game["name"]) / PREFIX_DIR
+            if own.exists() and (not own.is_dir() or any(own.iterdir())):
+                self.win.message(f"{own} is already there: use Browse Prefix to take it, or pick another place", "error")
+                return
+            go(own, True)
+
+        if len(roots) == 1:
+            use(roots[0])
+            return
+
+        def label(root: Path) -> str:
+            try:
+                return f"{root}   ({fmt_bytes(installdirs.free_bytes(root))} free)"
+            except OSError:
+                return str(root)
+
+        self.win.choose(
+            "Which MOG library?",
+            f"The prefix is made in a folder named {draft.game['name']} there, like a game MOG installs, with nothing but the prefix in it.",
+            [(label(r), r) for r in roots],
+            lambda root: use(root) if root is not None else None,
+        )
+
+    def prefix_chosen(self, draft: Draft, path: Path, new: bool, in_library: bool = False) -> None:
+        draft.prefix, draft.new_prefix, draft.prefix_in_library = path, new, in_library
         self.pick_saves(draft)
 
     # --- the folders of the saves ---
@@ -441,6 +481,8 @@ class ImportFlow:
         game = draft.game
 
         def work() -> None:
+            if draft.prefix_in_library:  # the structure of a MOG game, with the prefix alone in it
+                draft.prefix.mkdir(parents=True, exist_ok=True)
             rec = manager.import_game(game, draft.folder, draft.target, draft.prefix, draft.new_prefix, sandbox=sandbox)
             importer.remember(rec, includes, draft.prefix)
             logstore.info(f"{rec.name}: saves taken from {', '.join(includes) or 'no folder yet'}")

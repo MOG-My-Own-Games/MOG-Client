@@ -239,6 +239,58 @@ def test_a_new_prefix_warns_that_the_saves_may_be_in_the_old_one_and_takes_nothi
     assert ui.win.checklists == [] and load_state(40).includes == []  # nothing to pick yet
 
 
+def _to_the_new_prefix_question(ui):
+    ui.flow.folder_chosen(str(ui.folder))
+    ui.win.choices[-1][3](importer.WINDOWS)
+    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.choices[-1][3](1)
+    ui.win.choices[-1][3](importing.NEW_PREFIX)
+    return ui.win.choices[-1]
+
+
+def test_a_new_prefix_can_be_made_in_a_mog_library_as_a_mog_game_would_have_it(ui):
+    library = ui.tmp / "Library"
+    library.mkdir()
+    ui.win.app.settings.install_dirs = [str(library)]
+
+    title, _text, options, answer = _to_the_new_prefix_question(ui)
+    assert [value for _label, value in options] == [importing.IN_GAME_FOLDER, importing.IN_LIBRARY, importing.ANOTHER_FOLDER]
+    answer(importing.IN_LIBRARY)  # one library: nothing to choose
+    assert str(library / "Lost Ruins" / "pfx") in ui.win.asks[-1][0]
+    ui.win.asks[-1][1]()
+
+    rec = load_library()[40]
+    assert (rec.prefix, rec.prefix_dedicated, rec.imported) == (str(library / "Lost Ruins" / "pfx"), True, True)
+    assert (library / "Lost Ruins" / "pfx").is_dir() and [p.name for p in (library / "Lost Ruins").iterdir()] == ["pfx"]
+    assert not (ui.folder / "pfx").exists()  # the game's own folder is not written into
+
+
+def test_with_several_libraries_it_asks_which_and_only_the_connected_ones_are_offered(ui):
+    first, second = ui.tmp / "A", ui.tmp / "B"
+    first.mkdir()
+    second.mkdir()
+    ui.win.app.settings.install_dirs = [str(first), str(ui.tmp / "unplugged" / "Games"), str(second)]
+
+    _to_the_new_prefix_question(ui)[3](importing.IN_LIBRARY)
+
+    title, _text, options, answer = ui.win.choices[-1]
+    assert title == "Which MOG library?" and [value for _label, value in options] == [first, second]
+    answer(second)
+    assert str(second / "Lost Ruins" / "pfx") in ui.win.asks[-1][0] and not (second / "Lost Ruins").exists()  # made when it is added
+
+
+def test_a_library_prefix_that_is_already_there_or_no_library_connected_is_refused(ui):
+    library = ui.tmp / "Library"
+    (library / "Lost Ruins" / "pfx" / "drive_c").mkdir(parents=True)
+    ui.win.app.settings.install_dirs = [str(library)]
+    _to_the_new_prefix_question(ui)[3](importing.IN_LIBRARY)
+    assert "already there" in ui.win.messages[-1][1] and not ui.win.asks
+
+    ui.win.app.settings.install_dirs = [str(ui.tmp / "unplugged" / "Games")]
+    ui.win.choices[-1][3](importing.IN_LIBRARY)
+    assert "None of the MOG libraries" in ui.win.messages[-1][1]
+
+
 def test_a_conflict_with_another_computers_saves_is_asked_and_keeping_ours_sends_them(ui):
     ui.server.add_foreign_version({"xdg-data/LostRuins/slot1.sav": b"theirs"})
     mine = write(ui.home / ".local/share/LostRuins/slot1.sav", b"mine")
