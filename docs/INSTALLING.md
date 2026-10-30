@@ -90,11 +90,11 @@ a flag on the left:
 - **Install** runs what is ticked (the selected row when nothing is ticked). Two or more run one after another in one install
   on the server, in one installer display; the files are streamed once, at the end. If one fails, the install stops there and
   the message names the step ("Step 2/3: ..."). The server remembers the order for the game.
-- **Install** on a new game opens this picker by itself when there is more than one choice (patches next to the installer,
-  installers inside a disc); with a single installer it just installs. If the server already remembers an order for the
-  game, those installers are ticked and numbered when the picker opens. **Let the server choose** (the installer the
-  server would run by itself; not offered when it already could not choose) is a button on a row of its own above
-  Install; **Cancel** closes the picker. The arrows walk between the buttons as they are laid out (Right from Install is
+- **Install** starts by itself: the server picks the installer and nothing is asked. The picker opens only to
+  disambiguate: when the server says it could not tell which installer to run, or when a new game has more than one choice
+  to put in order (patches next to the installer, installers inside a disc; if the server already remembers an order for
+  the game, those installers are ticked and numbered). A title with several versions first asks which version, nothing
+  else. **Cancel** closes the picker; the arrows walk between the buttons as they are laid out (Right from Install is
   Cancel).
 - **A game the server already holds the install of** (its cache is still there, the game shows as cached) is never asked
   anything: **Install** only downloads it, with no picker and no "extract it?" question. Delete the install cache on the

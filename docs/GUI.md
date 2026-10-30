@@ -15,8 +15,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - "Sort and filter" in the sidebar has switches (last played first, installed first, cached first: the games the server
   holds a finished install of) and two filters (got saves, got mods: only the games that have them), then the order:
   by release date, name, size, or when the server first saw the game (recently added, earliest added).
-- Games the server matched to the same title show as one entry ("N versions"). Installing one lists the installers of
-  every version, each under its version's name, and you pick which to run.
+- Games the server matched to the same title show as one entry ("N versions"). Installing one asks which version to
+  install; the installer is the server's to choose (see docs/INSTALLING.md).
 - A game with a task going on (an install, saves moving, a mod, a file check) has its cover dimmed with a pie that fills
   as far as the task has got (empty when it has no figure). Nothing on it is animated, and a download's progress reaches
   the window a few times a second however many chunks arrive.
