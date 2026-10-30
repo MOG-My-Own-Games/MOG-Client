@@ -388,3 +388,29 @@ def test_another_folder_inside_a_sandbox_names_its_app(ui):
 
     _title, items, _done = ui.win.checklists[-1]
     assert (SANDBOXED, True) in [(v, c) for _l, v, c in items]
+
+
+def test_a_folder_that_was_a_mog_game_is_taken_back_without_the_questions_of_a_game_from_outside(ui):
+    root = ui.tmp / "Games"
+    write(root / "Lost Ruins" / "data.bin", b"x")
+    ui.win.app.settings.install_dirs = [str(root)]
+    ui.win.app.games = {5: {"id": 5, "name": "Lost Ruins", "fs_name": "Lost Ruins"}}
+    asked = []
+    pages = SimpleNamespace(choose_executable=lambda rec: asked.append(rec.game_id))
+    ui.win.game_pages = {5: pages}
+
+    ui.flow.folder_chosen(str(root / "Lost Ruins"))
+
+    rec = load_library()[5]
+    assert rec.state == "awaiting_executable" and not rec.imported and rec.install_dir == str(root / "Lost Ruins")
+    assert asked == [5] and ui.win.shown == [5] and not ui.win.choices and not ui.win.texts
+    assert "already a MOG game" in ui.win.messages[-1][1]
+
+
+def test_any_other_folder_still_goes_through_the_questions(ui):
+    ui.win.app.games = {5: {"id": 5, "name": "Lost Ruins", "fs_name": "Lost Ruins"}}
+    write(ui.folder / "start.sh", b"#!/bin/sh")
+
+    ui.flow.folder_chosen(str(ui.folder))  # in "itch", not in an install folder
+
+    assert ui.win.choices[-1][0] == "What is this game made for?" and 5 not in load_library()

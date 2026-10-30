@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mog_client.api import fmt_bytes, safe_dirname
-from mog_client.config import InstalledGame, Settings
+from mog_client import config
+from mog_client.config import InstalledGame, Settings, _read_json, _write_json
 
 # Room kept free on top of the game's size: the installer's own temporary files, the prefix growing.
 MARGIN_BYTES = 256 * 1024 * 1024
@@ -177,6 +178,43 @@ def find_moved(rec: InstalledGame, roots: Iterable[Path]) -> Path | None:
             if candidate != old and misfit(rec, candidate) is None:
                 return candidate
     return None
+
+
+_MOG_FILES = {"pfx", ".mog-icon", ".mog-steam.desktop", ".mog-permissions", ".directory"}
+
+
+def folder_names(game: dict) -> list[str]:
+    """The names a game's folder in an install folder can have: the server's own folder name, and the one MOG gives a new install."""
+    return list(dict.fromkeys(safe_dirname(n) for n in (game.get("fs_name") or game["name"], game["name"])))
+
+
+def holds_game(folder: Path, name: str) -> bool:
+    """Whether `folder` has anything of a game in it besides what MOG makes (the prefix, the launch files, the icon): the prefix
+    that is kept when a game is uninstalled leaves a folder that is not a game."""
+    stem = safe_dirname(name)
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.name in _MOG_FILES or entry.name in {f"{stem}{ext}" for ext in (".sh", ".cmd", ".desktop", ".lnk")}:
+            continue
+        if not entry.is_dir() or entry.is_symlink() or _holds_files(entry):
+            return True
+    return False
+
+
+def _ignored_path() -> Path:
+    return config.data_dir() / "ignored-folders.json"
+
+
+def ignored_folders() -> set[Path]:
+    """The folders in an install folder that MOG must not take for a game again: the ones of games the user took out of MOG."""
+    return {Path(p) for p in _read_json(_ignored_path(), [])}
+
+
+def ignore_folder(folder: Path) -> None:
+    _write_json(_ignored_path(), sorted({str(p) for p in ignored_folders() | {Path(folder)}}))
 
 
 def misfit(rec: InstalledGame | None, folder: Path) -> str | None:

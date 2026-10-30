@@ -5298,18 +5298,25 @@ def test_the_winetricks_page_shows_what_the_server_keeps_ticked_and_marked_until
     assert rec.winetricks == ["vcrun2019", "vd=1920x1080", "dotnet48", "renderer=gdi", "mine=custom"]  # one vd, the server's value
 
 
-def test_find_game_is_in_the_options_of_an_installed_game_even_when_its_folder_is_gone(win, tmp_path):
-    rec = _game_record(tmp_path / "gone", "g.exe")  # the folder is not there: no Linux or Repair rows, but this one
-    assert "Find game..." in _texts(_options(win, rec))
-    rec.state = "installing"
-    assert "Find game..." not in _texts(_options(win, rec))
-
-
-def test_find_game_is_in_the_options_of_a_game_with_no_record_too(win):
+def test_there_is_no_find_game_in_the_options_any_more(win, tmp_path):
     from types import SimpleNamespace
 
+    rec = _game_record(tmp_path / "gone", "g.exe")  # the folder is not there
+    assert "Find game..." not in _texts(_options(win, rec))
     page = SimpleNamespace(delete_server_cache=lambda: None, game={"id": 4, "name": "G"})
-    assert "Find game..." in _texts(gui.OptionsPage(win, page, None))
+    assert "Find game..." not in _texts(gui.OptionsPage(win, page, None))
+
+
+def test_games_found_in_the_install_folders_are_told_once_and_the_library_is_refreshed(win, qapp, monkeypatch):
+    shown = []
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: shown.append((level, text)))
+    refreshed = []
+    monkeypatch.setattr(win, "refresh_items", lambda: refreshed.append(1))
+
+    win.app.bridge.adopted.emit(["A", "B", "C", "D"])
+    pump(qapp)
+
+    assert refreshed and shown == [("info", "Found in your game folders: A, B, C and 1 more. Open each to choose its executable.")]
 
 
 def test_unticking_a_verb_asks_then_rebuilds_the_prefix_and_takes_it_off_the_servers_row(win, qapp, monkeypatch, tmp_path):

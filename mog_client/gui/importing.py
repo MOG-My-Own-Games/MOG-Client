@@ -11,7 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from mog_client import connectivity, identity, logstore, manager
+from mog_client import connectivity, identity, installdirs, logstore, manager
+from mog_client.api import fmt_bytes, safe_dirname
 from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import PREFIX_DIR
 from mog_client.saves import importer, native, sync
@@ -88,6 +89,10 @@ class ImportFlow:
             if Path(rec.install_dir) == path:
                 self.win.message(f"{rec.name} is already in this library, from that folder", "warning", rec.game_id)
                 return
+        game = manager.found_game(path, list(self.app.games.values()), self.app.settings.install_roots)
+        if game:  # it is a MOG game that lost its record: it is not "from outside", so nothing is asked
+            self.take_back(game, path)
+            return
         draft = Draft(path, name=path.name)
         supported = importer.supported_targets()
         detected = [t for t in importer.detect_targets(path) if t in supported]
@@ -109,6 +114,23 @@ class ImportFlow:
             options,
             chosen,
         )
+
+    def take_back(self, game: dict, folder: Path) -> None:
+        """The folder is the one of a game MOG installed (or would have): it becomes that game again, and its executable is asked."""
+
+        def work() -> None:
+            rec = manager.claim_folder(game, folder, self.app.settings.launcher)
+            self.gui(lambda: done(rec))
+
+        def done(rec: InstalledGame) -> None:
+            self.win.refresh_items()
+            self.win.show_game(rec.game_id)
+            self.win.message(f"{rec.name} was already a MOG game: it is back in your library, from {folder}.", "info", rec.game_id)
+            page = self.win.game_pages.get(rec.game_id)
+            if page is not None and rec.state == "awaiting_executable":
+                page.choose_executable(rec)
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not use that folder: {m}"))
 
     def ask_name(self, draft: Draft) -> None:
         self.win.ask_text(

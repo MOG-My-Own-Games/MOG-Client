@@ -15,7 +15,19 @@ from typing import Callable
 from mog_client import launchargs, logstore, steam
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
-from mog_client.installdirs import default_root, find_moved, present, prune_empty, rebase
+from mog_client.installdirs import (
+    default_root,
+    find_moved,
+    folder_names,
+    holds_game,
+    ignore_folder,
+    ignored_folders,
+    misfit,
+    present,
+    prune_empty,
+    rebase,
+    reachable,
+)
 from mog_client.launcher import (
     PREFIX_DIR,
     create_desktop_entry,
@@ -490,6 +502,51 @@ def relocate_moved(settings: Settings) -> list[str]:
     return found
 
 
+def adopt_found_folders(games: list[dict], settings: Settings, busy: frozenset[int] | set[int] = frozenset()) -> list[str]:
+    """Take into the library the games that are in an install folder but have no record here (installed by an earlier MOG, or
+    by hand): a folder named like the game on the server, with the game in it. A game whose record lost its folder takes the
+    one it was renamed to. Nothing is asked: the games wait for their executable, as after an install. Local, apart from the
+    list the caller has. Returns the names."""
+    library = load_library()
+    taken = {Path(r.install_dir) for r in library.values()}
+    ignored = ignored_folders()
+    roots = [Path(r) for r in settings.install_roots if reachable(Path(r))]
+    claims: dict[Path, list[dict]] = {}
+    for game in games:
+        rec = library.get(game["id"])
+        if game["id"] in busy or (rec and (rec.imported or rec.state not in ("installed", "awaiting_executable") or present(rec))):
+            continue
+        for folder in (root / name for root in roots for name in folder_names(game)):
+            if folder in taken or folder in ignored or not folder.is_dir() or misfit(rec, folder) or not holds_game(folder, game["name"]):
+                continue
+            claims.setdefault(folder, []).append(game)
+            break
+    found = []
+    for folder, claimants in claims.items():
+        if len(claimants) > 1:  # two games for one folder: not for MOG to choose
+            logstore.warning(f"{folder} could be {' or '.join(g['name'] for g in claimants)}: left alone")
+            continue
+        claim_folder(claimants[0], folder, settings.launcher)
+        found.append(claimants[0]["name"])
+    return found
+
+
+def found_game(folder: Path, games: list[dict], roots: list[Path]) -> dict | None:
+    """The game of the server this folder already is for MOG, when it is one that MOG had made or could have: it sits right in an
+    install folder or has MOG's icon in it, is named as a game's folder is, and has no folder of its own here (no record, or one
+    whose folder is gone). None for anything else, which is a game from outside MOG."""
+    if not (any(Path(r) == folder.parent for r in roots) or (folder / ".mog-icon").is_file()):
+        return None
+    library = load_library()
+    for game in games:
+        rec = library.get(game["id"])
+        if rec and (rec.imported or present(rec)):
+            continue
+        if folder.name in folder_names(game) and holds_game(folder, game["name"]) and not misfit(rec, folder):
+            return game
+    return None
+
+
 def point_to(rec: InstalledGame, new: Path, preference: str = "auto") -> None:
     """The game's files are in `new` now (found there, or the user said so): the record and the save sync's prefix follow, and
     what was written with the old path is written again."""
@@ -504,8 +561,8 @@ def point_to(rec: InstalledGame, new: Path, preference: str = "auto") -> None:
 
 
 def claim_folder(game: dict, folder: Path, preference: str = "auto") -> InstalledGame:
-    """The user says the game's files are in `folder` (the game was renamed on the server, or came from another disk or
-    machine). A game with no record here gets one, waiting for its executable; one with a record is pointed to the folder,
+    """The game's files are in `folder` (found in an install folder, the game having been renamed on the server or come from another
+    disk or machine). A game with no record here gets one, waiting for its executable; one with a record is pointed to the folder,
     and takes the server's name for the game, which is what keeps `identity.reconcile` from setting it aside."""
     name, server_name = game["name"], game.get("fs_name") or game["name"]
     rec = load_library().get(game["id"])
@@ -766,6 +823,8 @@ def remove_import(rec: InstalledGame) -> None:
     Its folder and prefix are never touched, and the server keeps its entry and saves."""
     remove_entries(rec)
     shutil.rmtree(entries_dir(rec), ignore_errors=True)
+    if any(Path(r) == Path(rec.install_dir).parent for r in load_settings().install_roots):
+        ignore_folder(Path(rec.install_dir))  # in an install folder: it is not taken for a MOG game the next time
     with _library_lock:
         lib = load_library()
         lib.pop(rec.game_id, None)

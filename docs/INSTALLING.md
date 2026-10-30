@@ -35,15 +35,25 @@ library", "Check again" and changing the folders do it. A folder with the game's
 again: the library, the save sync's prefix, the launch script, the menu and desktop entries, the Steam shortcut and the folder
 icon follow it to the new place.
 
-A game that is not found that way (it was renamed on the server, or moved to another disk or machine) is pointed to by
-hand: Options > "Find game..." is there for any game, installed here or not, and asks for the folder of the game itself, the
-one with its launch script.
+### Games found in the install folders
 
-- A game with a record here has to find its executable in that folder where it was; the library, the entries and the Steam
-  shortcut follow it as above, and the record takes the server's name for the game (a game renamed on the server would
-  otherwise be set aside as belonging to another one). The files named after the old name are replaced.
-- A game with no record here (it came from another machine, or its record was set aside) gets one from any folder that has
-  something in it, and asks for its executable and shortcuts as after an install.
+Every time the server's list arrives, MOG also looks in the install folders for the games it has no record of (installed by an
+earlier MOG, copied from another computer or put there by hand). A folder is a game when:
+
+- its name is exactly the one the server has for the game (its folder name, or the name MOG gives a new install: the game's name
+  made safe as a file name), nothing looser;
+- it has something of the game in it besides what MOG makes (the prefix, launch files and icon), so the prefix kept when a game is
+  uninstalled is not taken for one;
+- no other game's record is in it, no other game has the same name for it, and it is not one of the folders of games you took out
+  of MOG with **Remove from MOG...**.
+
+Nothing is asked: the game comes into the library as after an install, "Setup needed", and its executable and shortcuts are asked
+when you open it (the saves other computers left are offered after that). One message lists the games found. A game whose folder was
+renamed on the server, or moved to another install folder, follows it the same way, with its entries.
+
+A folder picked in user menu > **Add local game** that is one of these (it sits right in an install folder, or has MOG's icon, and
+is named like a game that has no folder here) is taken as that MOG game, with no questions about its system, name, library, prefix
+or saves, and its executable is asked.
 
 ## Games that need no installer
 

@@ -272,6 +272,7 @@ class Bridge(QObject):
     offline_shown = Signal()  # nothing is coming from the server: the loading panel must not stay
     back_online = Signal()  # the server answers again after a stretch of being out of reach
     relinked = Signal(list)  # names of the games found again in their moved folder
+    adopted = Signal(list)  # names of the games found in an install folder with no record here
 
 
 def is_deck() -> bool:
@@ -1609,8 +1610,6 @@ class OptionsPage(Page):
             self.first = self.first or button
 
         gid = rec.game_id if rec else (getattr(page, "game", None) or {}).get("id")
-        if (rec is None or rec.state in ("installed", "awaiting_executable")) and gid not in win.app.installs:
-            add("Find game...", lambda: page.find_game(rec))  # any game: it may be renamed, or brought from another disk or machine
         if rec and rec.state == "installed" and installdirs.present(rec):
             if sys.platform.startswith("linux") and has_linux_options(rec):
                 add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
@@ -4785,41 +4784,6 @@ class GamePage(Page):
     def show_options(self, rec: InstalledGame | None) -> None:
         self.win.push(OptionsPage(self.win, self, rec))
 
-    def find_game(self, rec: InstalledGame | None) -> None:
-        """Say where the game's folder is (the one with its launch script): it was renamed on the server, or moved to another
-        disk or machine, or comes from another one. A game with no record here gets one and asks for its executable; one that has
-        a record follows the folder (its saves' prefix and entries too)."""
-        start = Path(rec.install_dir) if rec else installdirs.default_root(self.app.settings)
-        while not start.is_dir() and start.parent != start:
-            start = start.parent
-        gid = self.game["id"]
-
-        def done(claimed: InstalledGame) -> None:
-            self.win.refresh_items()
-            self.rebuild()
-            if claimed.state == "awaiting_executable":  # the executable is chosen again, and the entries made, from the new folder
-                self.choose_executable(claimed)
-            else:
-                self.win.message(f"{claimed.name} found again in {claimed.install_dir}", "info", gid)
-
-        def picked(folder: str) -> None:
-            path = Path(folder)
-            problem = installdirs.misfit(rec, path)
-            if problem:
-                self.win.message(problem, "warning", gid)
-                return
-            if rec and installdirs.present(rec) and path == Path(rec.install_dir):
-                self.win.message(f"{rec.name} is already there", "info", gid)
-                return
-
-            def work() -> None:
-                claimed = manager.claim_folder(self.game, path, self.app.settings.launcher)
-                self.app.bridge.call.emit(lambda: done(claimed))
-
-            self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not use that folder: {m}"))
-
-        self.win.browse_folder(start, picked)
-
     def set_save_sync(self, rec: InstalledGame, wanted: bool) -> None:
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
         self.win.message(f"Save sync for {rec.name} is {'on' if wanted else 'off'}", "info")
@@ -6472,6 +6436,7 @@ class MainWindow(QMainWindow):
         b = app.bridge
         b.call.connect(lambda fn: fn())
         self._steam_settled = False
+        self._adopting = False  # the install folders are being looked at for games with no record
         self._playing = None
         self.saves = SaveSync(self)
         self.importing = ImportFlow(self)
@@ -6500,6 +6465,7 @@ class MainWindow(QMainWindow):
         b.offline_shown.connect(lambda: self.library.show_loading(False))
         b.back_online.connect(self.on_back_online)
         b.relinked.connect(self.on_relinked)
+        b.adopted.connect(self.on_adopted)
         self.notif_timer = QTimer(self)
         self.notif_timer.timeout.connect(app.poll_notifications)
         self.notif_timer.start(15000)
@@ -6563,6 +6529,15 @@ class MainWindow(QMainWindow):
             page.rebuild()
         shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
         self.message(f"Found again in their new folder: {shown}", "info")
+
+    def on_adopted(self, names: list) -> None:
+        """Games found in an install folder and taken into the library: they wait for their executable, as after an install."""
+        self.refresh_items()
+        page = self.current_page()
+        if isinstance(page, GamePage):
+            page.rebuild()
+        shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        self.message(f"Found in your game folders: {shown}. Open each to choose its executable.", "info")
 
     def on_back_online(self) -> None:
         """MOG Server answers again: take up what waited for it."""
@@ -7380,6 +7355,26 @@ class MainWindow(QMainWindow):
         if result is not None:
             self.saves.after_backup(rec, result, lambda: None, quiet=True)
 
+    def adopt_folders(self, games: list) -> None:
+        """Take into the library the games that are in an install folder with no record here (see manager.adopt_found_folders)."""
+        if self._adopting or not games:
+            return
+        self._adopting = True
+
+        def work() -> None:
+            try:
+                found = manager.adopt_found_folders(games, self.app.settings, set(self.app.installs))
+            finally:
+                self._adopting = False
+            if found:
+                self.app.bridge.adopted.emit(found)
+
+        def failed(message: str) -> None:
+            self._adopting = False
+            self.app.bridge.note.emit(f"Looking for games in the install folders failed: {message}")
+
+        self.app.run_bg(work, on_error=failed)
+
     def settle_steam(self) -> None:
         """Once per session, with Steam closed: check the shortcuts written while it ran are still there."""
         if self._steam_settled or not self.app.settings.configured:
@@ -7406,6 +7401,7 @@ class MainWindow(QMainWindow):
         self.notify(f"{len(games)} games")
         self.refresh_items()
         self.saves.check_all()
+        self.adopt_folders(games)
         self.settle_steam()
         self._resume_background()
         if self._pending_link:

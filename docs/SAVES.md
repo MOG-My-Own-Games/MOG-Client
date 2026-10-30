@@ -66,6 +66,9 @@ A game that is already on this computer, from itch.io or anywhere else, can have
 The game's folder and its prefix stay where they are; MOG only records them. Its launch script, `.desktop` file and
 icon are kept in MOG's data folder (`imports/<game id>`), never in the game's folder, which another program may rewrite.
 
+- **A game MOG had already**: a folder that sits in an install folder or has MOG's icon, named like a game of the server that has
+  no folder here, is that MOG game again (see "Games found in the install folders" in INSTALLING.md): none of the questions
+  below are asked, and it is not a game from outside MOG.
 - **What it is made for**: Windows, Linux or macOS, found from the programs in the folder and confirmed by you. A Windows game
   needs a Wine prefix everywhere but on Windows, where it is read from your real profile (Documents, Saved Games, AppData).
 - **The name**: filled in from the folder's name. If MOG Server has a game with a name like it, you pick it (so a second computer
