@@ -228,3 +228,14 @@ def test_a_chosen_binary_makes_the_game_native(tmp_path):
 
     assert is_native_executable(binary) and not is_native_executable(tmp_path / "setup.exe")
     assert not is_native_executable(tmp_path / "missing.x86_64")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_an_appimage_is_offered_even_when_the_download_left_it_unmarked(tmp_path):
+    """A downloaded AppImage has no executable bit yet: it is still the game, and launching it marks it. A file that only
+    has the name is no program."""
+    game = tmp_path / "Lost Ruins"
+    make_elf(game, "Lost Ruins-x86_64.AppImage", 100, mode=0o644)
+    make(game, "broken.AppImage", "README.txt")
+
+    assert names(game) == ["Lost Ruins-x86_64.AppImage"]

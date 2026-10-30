@@ -65,7 +65,8 @@ command line, and the web UI asks the same question from its Install tab.
 
 A game installed from a native Linux installer is not run through Faugus, umu, Proton or Wine and gets no Wine prefix.
 
-- "Choose executable" lists `start.sh` first, then any `.exe`, then other scripts. The installer's own leftovers
+- "Choose executable" lists `start.sh` first, then any `.exe`, then other scripts, then AppImages (`*.AppImage`, offered
+  even when a download left them unmarked executable). The installer's own leftovers
   (`gog-system-report.sh`, `postinst.sh`, `preuninst.sh`, `reuninst.sh`, `yad.sh`, `uninstall-*.sh`, the `.mojosetup`
   folder) are never offered. A folder with neither a `.exe` nor a script (an itch.io or engine game, `Game.x86_64`) offers
   its Linux programs as the last resort, found by their ELF header: the shallowest first, the one named like the game before

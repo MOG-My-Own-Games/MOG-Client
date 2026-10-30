@@ -70,14 +70,19 @@ def list_executables(install_dir: Path) -> list[Path]:
         dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
             suffix = os.path.splitext(name)[1].lower()
-            if suffix != ".exe" and (suffix != ".sh" or sys.platform == "win32"):
-                continue  # most of a big install is neither: no stat for those (a modded game has tens of thousands of files)
+            if suffix not in (".exe", ".sh", ".appimage"):
+                continue  # most of a big install is none of them: no stat for those (a modded game has tens of thousands of files)
+            if suffix == ".appimage" and sys.platform == "win32":
+                continue
             path = here / name
             if not path.is_file():
                 continue
             rel = path.relative_to(install_dir)
             if path.suffix.lower() == ".exe":
                 if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
+                    continue
+            elif suffix == ".appimage":
+                if not _has_elf_header(path):
                     continue
             elif sys.platform == "win32" or not _is_game_script(rel) or is_mog_script(path):
                 continue
@@ -115,7 +120,7 @@ def _native_programs(install_dir: Path) -> list[Path]:
             dirnames[:] = []
         for name in filenames:
             path = here / name
-            if _NOT_A_GAME.search(path.stem) or not is_elf_program(path) or is_mog_script(path):
+            if _NOT_A_GAME.search(path.stem) or is_mog_script(path) or not (is_elf_program(path) or is_appimage(path)):
                 continue
             found.append((depth, game not in _squash(path.stem), -path.stat().st_size, path))
     return [p for *_key, p in sorted(found, key=lambda f: (f[0], f[1], f[2], f[3].name.lower()))]
@@ -133,6 +138,22 @@ def is_elf_program(path: Path) -> bool:
         return False
     try:
         if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        with path.open("rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def is_appimage(path: Path) -> bool:
+    """An AppImage: a Linux program in one file, offered whether or not it is marked executable, as a download leaves it
+    unmarked; launching it marks it (`ensure_executable`)."""
+    return sys.platform != "win32" and path.name.lower().endswith(".appimage") and _has_elf_header(path)
+
+
+def _has_elf_header(path: Path) -> bool:
+    try:
+        if not path.is_file():
             return False
         with path.open("rb") as f:
             return f.read(4) == b"\x7fELF"
