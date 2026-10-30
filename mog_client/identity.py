@@ -72,6 +72,9 @@ def reconcile(games: list[dict], busy: set[int] = frozenset()) -> list[str]:
             continue
         if rec.server_name:
             fits = rec.server_name == game["fs_name"]
+            if not fits and rec.imported and (alike(rec.name, game["name"]) or alike(rec.server_name, game["fs_name"])):
+                # A scan found the folder of a game added from outside MOG and took its entry over: same game, new folder name.
+                rec.server_name, fits, changed = game["fs_name"], True, True
         else:
             fits = alike(rec.name, game["name"]) or alike(rec.name, game["fs_name"])
             if fits:

@@ -74,3 +74,19 @@ def test_a_game_being_installed_is_not_touched():
 )
 def test_names_of_the_same_game_are_told_from_names_of_two_games(a, b, same):
     assert identity.alike(a, b) is same
+
+
+def test_a_game_added_from_outside_mog_follows_the_server_when_a_scan_takes_its_entry_over():
+    save_library({5: record(5, "Hollow Knight", imported=True, target="linux", server_name="Hollow Knight")})
+
+    said = identity.reconcile([game(5, "Hollow Knight", "Hollow_Knight")])  # the folder was found: the entry has its name now
+
+    assert said == [] and load_library()[5].server_name == "Hollow_Knight"
+
+
+def test_a_game_added_from_outside_mog_on_a_number_the_server_gave_to_another_game_is_still_set_aside():
+    save_library({5: record(5, "Hollow Knight", imported=True, target="linux", server_name="Hollow Knight")})
+
+    said = identity.reconcile([game(5, "Celeste")])
+
+    assert load_library() == {} and len(said) == 1
