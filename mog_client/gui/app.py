@@ -3490,7 +3490,7 @@ class BrowsePage(Page):
     title = "Browse for the executable"
     modal = True
 
-    def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False):
+    def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False, text: str = ""):
         super().__init__()
         if folders:
             self.title = "Choose a folder"
@@ -3505,6 +3505,10 @@ class BrowsePage(Page):
         self.ok.setDefault(True)
         self.ok.clicked.connect(self.accept)
         lay = QVBoxLayout(self)
+        if text:  # what the picker is for, said where the choice is made (the page used to be preceded by a message)
+            note = QLabel(text)
+            note.setWordWrap(True)
+            lay.addWidget(note)
         lay.addWidget(self.where)
         lay.addWidget(self.list, 1)
         self.button_row = _centered_row(self.ok)
@@ -3538,11 +3542,15 @@ class BrowsePage(Page):
             self.list.setCurrentRow(0)
         self._sync_ok()
 
+    def _typed_path(self) -> Path:
+        text = self.where.text().strip().strip("\"'")
+        return Path(text).expanduser() if text else self.cwd
+
     def _go_typed(self) -> None:
         """Enter in the path field: a folder is opened (and "Use this folder" is what OK takes); a file, where files are picked,
         is taken as it is."""
         text = self.where.text().strip().strip("\"'")
-        path = Path(text).expanduser() if text else self.cwd
+        path = self._typed_path()
         if path.is_dir():
             self._load(path)
             self.list.setFocus()
@@ -3571,6 +3579,9 @@ class BrowsePage(Page):
             self._load(Path(item.data(Qt.UserRole)))
 
     def accept(self) -> None:
+        if self.folders and self._typed_path() != self.cwd:
+            self._go_typed()  # a path typed or pasted and not entered yet is opened first, so OK never takes another folder
+            return
         item = self.list.currentItem()
         if not self._picks_here(item):
             return
@@ -6722,8 +6733,8 @@ class MainWindow(QMainWindow):
     def checklist(self, title: str, text: str, items: list, on_done, exclusive=None, extra=None) -> None:
         self.push(ChecklistPage(self, title, text, items, on_done, exclusive, extra))
 
-    def browse_folder(self, start: Path, on_pick) -> None:
-        self.push(BrowsePage(self, start, on_pick, folders=True))
+    def browse_folder(self, start: Path, on_pick, text: str = "") -> None:
+        self.push(BrowsePage(self, start, on_pick, folders=True, text=text))
 
     def ask_text(self, title: str, text: str, default: str, on_done) -> None:
         self.push(NamePage(self, title, text, default, on_done))

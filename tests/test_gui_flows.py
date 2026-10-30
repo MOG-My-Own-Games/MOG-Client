@@ -5652,3 +5652,27 @@ def test_notification_rows_wrap_to_the_list_and_never_scroll_sideways(win, qapp)
     pump(qapp)
     assert not page.list.horizontalScrollBar().isVisible()
     assert page.list.visualItemRect(page.list.item(0)).height() > tall.height()  # narrower: more lines
+
+
+def test_ok_with_a_pasted_path_not_yet_entered_opens_that_folder_instead_of_taking_the_old_one(win, qapp, tmp_path):
+    """A path pasted in the folder picker and OK pressed before Enter must not take the folder it was opened in: the
+    game was once added from the home folder that way."""
+    game = tmp_path / "Games" / "Zelda" / "Harkinian"
+    game.mkdir(parents=True)
+    picked = []
+    win.push(gui.BrowsePage(win, tmp_path, picked.append, folders=True))
+    pump(qapp)
+    page = win.current_page()
+    page.where.setText(f"{game}/")
+    page.ok.click()
+    assert picked == [] and page.cwd == game
+    page.ok.click()
+    assert picked == [str(game)]
+
+
+def test_the_folder_picker_says_what_it_is_for_in_its_own_page(win, qapp, tmp_path):
+    win.browse_folder(tmp_path, lambda _p: None, text="Pick the folder of the game you already have")
+    pump(qapp)
+    page = win.current_page()
+    assert isinstance(page, gui.BrowsePage)
+    assert any(label.text() == "Pick the folder of the game you already have" for label in page.findChildren(QLabel))
