@@ -399,3 +399,4 @@ def test_the_list_of_files_is_kept_from_the_install_folder_when_the_game_has_a_f
 
     home.rec.files_dir = None
     assert manager.from_install_dir(home.rec, files) == files  # no folder of its own: the paths are already from the install folder
+
