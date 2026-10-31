@@ -30,7 +30,10 @@ Save sync can be switched off for all games in Settings or for one game in its O
 - **When the game ends** (started from MOG, its desktop entry or its Steam shortcut), when MOG opens (for games started by
   hand), on Options > Saves... > "Back up saves now" and when the game is uninstalled.
 - **Before the game starts**: a newer save from another machine is offered when started from MOG, after an install, and
-  under Options > Saves... > "Restore a saved version...".
+  under Options > Saves... > "Restore a saved version...". A game with several versions (see "Versions of one game" below)
+  is one game for its saves: the list shows the saves of the version installed here first and then those of the other versions,
+  marked with that version's name in brackets, and the newest save of another version is offered like one of another machine,
+  even when this computer made it.
 - **Offline** (the server cannot be reached, or Offline mode was chosen, see [GUI.md](GUI.md)): nothing is sent and no save
   question is asked before a game starts. A backup that was due is left as it is, marked "waiting for the server" in the game's
   last check, and you are told. Nothing is changed in the baseline, so when the server is back the next look over the saves
@@ -38,6 +41,13 @@ Save sync can be switched off for all games in Settings or for one game in its O
   the server for a few seconds first and goes on without it.
 - A restore never replaces a file without first copying it to a backup (`saves/<game id>/backups` in the client's data
   folder).
+
+## Versions of one game
+
+The versions of a title (two installers of one game, a GOG and a Steam copy, a game IGDB does not know that was tied to its other
+entry in the web interface) are one game for the person playing it. Each version backs its saves up under its own entry
+and the server lists all of them together, so what you saved with one version can be put into another. Nothing is merged or
+moved: a version split off from the title (a wrong IGDB match corrected) gets back only the saves it made.
 
 ## Saves waiting for a new game
 

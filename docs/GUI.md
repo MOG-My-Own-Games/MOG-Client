@@ -15,8 +15,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - "Sort and filter" in the sidebar has switches (last played first, installed first, cached first: the games the server
   holds a finished install of) and two filters (got saves, got mods: only the games that have them), then the order:
   by release date, name, size, or when the server first saw the game (recently added, earliest added).
-- Games the server matched to the same title show as one entry ("N versions"). Installing one asks which version to
-  install; the installer is the server's to choose (see docs/INSTALLING.md).
+- Games of the same title show as one entry ("N versions"): the server says which games are the same one (the same IGDB
+  match, or put together by hand in the web interface, which also covers games IGDB does not know). Installing one asks which
+  version to install; the installer is the server's to choose (see docs/INSTALLING.md). The versions of a title share the
+  time played, the name and the artwork, and the saves you can restore (see docs/SAVES.md).
 - A game with a task going on (an install, saves moving, a mod, a file check) has its cover dimmed with a pie that fills
   as far as the task has got (empty when it has no figure). Nothing on it is animated, and a download's progress reaches
   the window a few times a second however many chunks arrive.
@@ -44,7 +46,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   still starts, and the winecfg settings (DLL overrides among them) are put in even when a verb failed. While a game started from MOG runs, a message over the window shows its
   cover and name with a Stop button (A on the pad). It closes by itself when the game does. Stop closes the game
   (politely first, then by force) before its saves are backed up.
-- **Time played** on the game's page is how long you have played the title (all its versions), as the server counts it for you:
+- **Time played** on the game's page is how long you have played the title (all its versions together, whichever you ran), as the server counts it for you:
   the sum of the runs your clients reported. A run is from the moment the game's first process shows up to the moment its
   processes are gone, so the wait for the prefix, the restore of saves before and the save sync after it are not in it
   (a run under 10 seconds is not counted, and Stop ends the run where it is). It is sent to the server as soon as the game
