@@ -227,6 +227,23 @@ def test_a_newer_save_from_another_machine_is_offered_until_applied_or_declined(
     assert sync.newer_elsewhere(world.ctx)[0]["id"] == newer["id"]
 
 
+def test_a_save_this_machine_made_for_another_version_of_the_game_is_offered(world):
+    """The version installed here has not seen what the other version saved on this same machine."""
+    sibling = world.server.add_foreign_version({"game/a.sav": b"x"}, device_id=1, game_id=99, fs_name="Game GOG")
+
+    version, device = sync.newer_elsewhere(world.ctx)
+
+    assert (version["id"], device["id"]) == (sibling["id"], 1)
+
+
+def test_the_saves_of_the_version_installed_here_come_first_then_those_of_the_others(world):
+    own = world.server.add_foreign_version({"game/a": b"1"}, device_id=2, game_id=7)
+    other = world.server.add_foreign_version({"game/a": b"2"}, device_id=2, game_id=99, fs_name="Game GOG")
+    newest_own = world.server.add_foreign_version({"game/a": b"3"}, device_id=1, game_id=7)
+
+    assert [v["id"] for v, d in sync.versions_of(world.ctx)] == [newest_own["id"], own["id"], other["id"]]
+
+
 def test_versions_are_listed_newest_first_with_their_device(world):
     a = world.server.add_foreign_version({"game/a": b"1"}, device_id=2)
     b = world.server.add_foreign_version({"game/a": b"2"}, device_id=1)

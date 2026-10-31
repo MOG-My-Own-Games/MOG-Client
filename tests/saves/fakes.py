@@ -53,7 +53,7 @@ class FakeServer:
             on_progress(len(self.blobs[version_id]), len(self.blobs[version_id]))
         Path(dest).write_bytes(self.blobs[version_id])
 
-    def add_foreign_version(self, files: dict[str, bytes], device_id=2):
+    def add_foreign_version(self, files: dict[str, bytes], device_id=2, game_id=None, fs_name=None):
         import io
 
         buf = io.BytesIO()
@@ -61,6 +61,8 @@ class FakeServer:
             for key, data in files.items():
                 z.writestr(key, data)
         version = {"id": len(self.versions) + 1, "device_id": device_id, "created_at": f"2026-10-05T10:00:{len(self.versions):02d}Z"}
+        if game_id is not None:  # made by another version of the title
+            version.update(game_id=game_id, fs_name=fs_name)
         self.versions.append(version)
         self.blobs[version["id"]] = buf.getvalue()
         return version

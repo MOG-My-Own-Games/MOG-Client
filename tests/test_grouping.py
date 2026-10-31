@@ -11,6 +11,19 @@ def test_games_sharing_an_igdb_id_form_one_group():
     assert [[g["id"] for g in grp.members] for grp in groups] == [[1, 3], [2]]
 
 
+def test_games_the_server_tied_to_one_title_are_one_group_whatever_their_igdb_id():
+    """A game IGDB does not know is tied to another by hand (`mog:<id>`), and a wrong match is split off the same way."""
+    tied = [dict(_game(1), title_key="mog:1"), dict(_game(2), title_key="mog:1"), dict(_game(3, 10), title_key="mog:3"), _game(4, 10)]
+
+    groups = group_games(tied)
+
+    assert [[g["id"] for g in grp.members] for grp in groups] == [[1, 2], [3], [4]]
+
+
+def test_a_server_that_does_not_send_the_title_still_groups_by_the_igdb_id():
+    assert [[g["id"] for g in grp.members] for grp in group_games([_game(1, 10), _game(2, 10)])] == [[1, 2]]
+
+
 def test_unmatched_games_stay_separate():
     groups = group_games([_game(1), _game(2)])
     assert len(groups) == 2

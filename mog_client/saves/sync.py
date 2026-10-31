@@ -466,13 +466,16 @@ def newest_version(saves: dict | None) -> tuple[dict, dict] | None:
 
 
 def newer_elsewhere(ctx: Context) -> tuple[dict, dict] | None:
-    """The newest save from another device that this machine has not applied or declined yet."""
+    """The newest save from another device that this machine has not applied or declined yet. A save of another version of the
+    game (the server lists the saves of every version of a title) counts even when this machine made it: the version installed
+    here has not seen it."""
     best = newest_version(ctx.client.list_saves(ctx.rec.game_id))
     if best is None:
         return None
     version, device = best
     state = load_state(ctx.rec.game_id)
-    if device["id"] == ctx.device.device_id or version["id"] <= (state.seen_version_id or 0):
+    ours = device["id"] == ctx.device.device_id and version.get("game_id", ctx.rec.game_id) == ctx.rec.game_id
+    if ours or version["id"] <= (state.seen_version_id or 0):
         return None
     return version, device
 
@@ -584,8 +587,11 @@ def apply_pending(ctx: Context, only_if_free: bool = False) -> RestoreResult | N
 
 
 def versions_of(ctx: Context) -> list[tuple[dict, dict]]:
-    """Every saved version of the game as (version, device), newest first."""
+    """Every saved version of the game as (version, device): first those of the version installed here, then those of the other
+    versions of the title, each newest first."""
     saves = ctx.client.list_saves(ctx.rec.game_id) or {}
     rows = [(v, e["device"]) for e in saves.get("devices", []) for v in e["versions"]]
-    return sorted(rows, key=lambda r: (r[0]["created_at"], r[0]["id"]), reverse=True)
+    rows.sort(key=lambda r: (r[0]["created_at"], r[0]["id"]), reverse=True)
+    own = [r for r in rows if r[0].get("game_id", ctx.rec.game_id) == ctx.rec.game_id]
+    return own + [r for r in rows if r not in own]
 

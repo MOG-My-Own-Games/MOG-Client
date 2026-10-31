@@ -139,8 +139,9 @@ def test_the_time_is_said_in_hours_and_minutes():
     assert playtime.describe(65 * 3600 + 5 * 60) == "65 h 05 min"
 
 
-def test_a_title_adds_up_the_time_of_its_versions():
-    versions = [{"id": 1, "playtime_seconds": 600}, {"id": 2, "playtime_seconds": 60}, {"id": 3}]
+def test_a_titles_time_is_not_added_up_over_its_versions_since_each_carries_the_total():
+    """The server puts the time of the whole title on every version; adding them up showed it N times."""
+    versions = [{"id": 1, "playtime_seconds": 660}, {"id": 2, "playtime_seconds": 660}, {"id": 3}]
 
     assert ordering.playtime(Group(members=versions, versions=versions)) == 660
 

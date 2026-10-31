@@ -63,8 +63,9 @@ def added(group: Group) -> float | None:
 
 
 def playtime(group: Group) -> int:
-    """What this user has played of the title, over all its versions (the server's figure, in seconds)."""
-    return sum(m.get("playtime_seconds") or 0 for m in group.members)
+    """What this user has played of the title (the server's figure, in seconds). Every version carries the title's total, so
+    the versions are not added up."""
+    return max((m.get("playtime_seconds") or 0 for m in group.members), default=0)
 
 
 def cached(group: Group) -> bool:

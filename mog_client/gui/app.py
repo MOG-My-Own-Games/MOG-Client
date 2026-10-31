@@ -7297,9 +7297,10 @@ class MainWindow(QMainWindow):
                 """The game has closed: its time is kept and sent at once, before the saves are backed up (which is not play time)."""
                 if playtime.record(rec.game_id, began, seconds):
                     say(f"played for {seconds / 60:.0f} min")
-                    known = self.app.games.get(rec.game_id)
-                    if known is not None:  # the page shows it at once; the server's figure comes with the next list of games
-                        known["playtime_seconds"] = (known.get("playtime_seconds") or 0) + int(seconds)
+                    group = self.app.group_of.get(rec.game_id)  # every version of the title carries the title's total
+                    for known in (group.members if group else [self.app.games.get(rec.game_id)]):
+                        if known is not None:  # the page shows it at once; the server's figure comes with the next list of games
+                            known["playtime_seconds"] = (known.get("playtime_seconds") or 0) + int(seconds)
                     playtime.send_in_background(client, say=say)
 
             started = gameplay.watch(

@@ -386,6 +386,14 @@ def test_labels_name_the_machine_the_time_and_the_size(ui):
     assert label.endswith("(quit, 1 file)")
 
 
+def test_a_save_of_another_version_of_the_game_says_which_version_made_it(ui):
+    other = {"created_at": "2026-10-04T20:51:30Z", "trigger": "quit", "game_id": 99, "fs_name": "Game GOG"}
+    own = dict(other, game_id=7, fs_name="Game")
+
+    assert "[Game GOG]" in saves_ui.version_label(other, {"name": "karasu"}, own_game_id=7)
+    assert "[" not in saves_ui.version_label(own, {"name": "karasu"}, own_game_id=7)
+
+
 def test_the_games_folder_is_the_first_choice_and_is_taken_even_before_the_prefix_exists(ui):
     done = []
     ui.ui.choose_prefix(ui.rec, then=lambda: done.append(1))

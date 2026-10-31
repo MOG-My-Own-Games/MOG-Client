@@ -83,10 +83,13 @@ def describe_check(state) -> str:
     return f"{when(state.last_check_at)}: {result}" + (f" ({trigger})" if trigger else "")
 
 
-def version_label(version: dict, device: dict) -> str:
+def version_label(version: dict, device: dict, own_game_id: int | None = None) -> str:
+    """One saved version. One made by another version of the game (`own_game_id` is the one installed here) says which."""
     count = version.get("file_count")
     files = f", {count} file{'' if count == 1 else 's'}" if count is not None else ""
-    return f"{device['name']}: {when(version['created_at'])} ({version.get('trigger', 'sync')}{files})"
+    other = version.get("game_id") not in (None, own_game_id) and own_game_id is not None
+    whose = f" [{version.get('fs_name') or version.get('game_name')}]" if other and (version.get("fs_name") or version.get("game_name")) else ""
+    return f"{device['name']}{whose}: {when(version['created_at'])} ({version.get('trigger', 'sync')}{files})"
 
 
 class SaveSync:
@@ -572,7 +575,7 @@ class SaveSync:
         self.win.choose(
             "Restore which save?",
             f"Put a saved version of {rec.name} back on this machine. What it replaces is copied to a backup first.",
-            [(version_label(v, d), v["id"]) for v, d in rows],
+            [(version_label(v, d, rec.game_id), v["id"]) for v, d in rows],
             lambda version_id: self._restore(rec, ctx, version_id),
             game=rec.game_id,
         )
@@ -584,16 +587,16 @@ class SaveSync:
 
         def run(ctx: sync.Context) -> None:
             rows = sync.versions_of(ctx)
-            newest: dict[int, tuple[dict, dict]] = {}
-            for v, d in rows:  # newest first
-                newest.setdefault(d["id"], (v, d))
+            newest: dict[tuple[int, int | None], tuple[dict, dict]] = {}
+            for v, d in rows:  # the version installed here first, each newest first
+                newest.setdefault((d["id"], v.get("game_id")), (v, d))
             if newest:
                 self.gui(lambda: self._offer_install(rec, ctx, list(newest.values())))
 
         self.with_context(rec, run, otherwise=lambda _reason: None, ask=True)
 
     def _offer_install(self, rec, ctx, rows) -> None:
-        options = [(f"Restore {version_label(v, d)}", v["id"]) for v, d in rows]
+        options = [(f"Restore {version_label(v, d, rec.game_id)}", v["id"]) for v, d in rows]
         self.win.choose(
             "Saves from another machine",
             f"The server has saves of {rec.name}. Put one on this machine now?",

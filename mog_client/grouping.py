@@ -1,4 +1,4 @@
-"""Games the server matched to the same IGDB title are versions of one game."""
+"""Games of the same title (the server says which: the same IGDB match, or tied by hand) are versions of one game."""
 
 from __future__ import annotations
 
@@ -15,13 +15,18 @@ class Group:
         return self.versions[0]
 
 
+def title_key(game: dict) -> object:
+    """The title a game is a version of: the server's `title_key`, else (a server that does not send it) the IGDB id."""
+    return game.get("title_key") or game.get("igdb_id") or ("single", game["id"])
+
+
 def group_games(games: list[dict]) -> list[Group]:
-    """One group per IGDB id, in the order its first game appears; a game without a
+    """One group per title, in the order its first game appears; a game without a
     match is its own group. Games missing from the server's disk are never offered
     as versions unless nothing else is left."""
     buckets: dict[object, list[dict]] = {}
     for game in games:
-        key = game.get("igdb_id") or ("single", game["id"])
+        key = title_key(game)
         buckets.setdefault(key, []).append(game)
     groups = []
     for members in buckets.values():
