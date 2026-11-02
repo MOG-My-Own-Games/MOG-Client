@@ -5905,6 +5905,10 @@ class LibraryPage(Page):
         self.libs.set_natural_height(min(LIBS_MAX_HEIGHT, self.libs.sizeHintForRow(0) * self.libs.count() + 12))
 
     def set_libraries(self, libraries: list[dict]) -> None:
+        # The server's list arrives with every refresh (a scrape changes the games all the time). The same list is not built
+        # again: a click whose row is replaced between the press and the release never changes the library.
+        if libraries == self.libraries and self.libs.count() == len(libraries) + 1:
+            return
         self.libraries = libraries
         self._fill_libraries()
 

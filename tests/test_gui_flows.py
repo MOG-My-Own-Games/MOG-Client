@@ -1637,6 +1637,19 @@ def test_the_library_chosen_in_the_sidebar_is_kept_for_the_next_visit_and_the_ne
     assert win.library.libs.currentRow() == 0
 
 
+def test_the_same_list_of_libraries_from_a_refresh_does_not_rebuild_the_sidebar_list(win, qapp):
+    """A refresh arrives every time the games change; a list rebuilt under the pointer lost the click that was in progress, which
+    then had to be made again."""
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    row = win.library.libs.item(2)
+
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    assert win.library.libs.item(2) is row
+
+    win.library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}, {"id": 3, "name": "New"}])
+    assert win.library.libs.count() == 4
+
+
 def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_alone(win, qapp, monkeypatch):
     from mog_client.gui import legend
 
