@@ -64,6 +64,7 @@ CATALOG = (
     ("dotnet40", ".NET Framework 4.0"),
     ("dotnet35", ".NET Framework 3.5"),
     ("dotnet20", ".NET Framework 2.0"),
+    ("webview2", "Microsoft Edge WebView2 runtime"),
     ("xna40", "Microsoft XNA Framework 4.0"),
     ("xna31", "Microsoft XNA Framework 3.1"),
     ("d3dx9", "DirectX 9 helper libraries (d3dx9)"),

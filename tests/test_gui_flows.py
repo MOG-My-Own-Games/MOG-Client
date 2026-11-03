@@ -2788,6 +2788,25 @@ def test_questions_and_pickers_are_cards_over_the_page_they_came_from(win, qapp,
         assert not win.modal.showing and win.current_page() is game_page
 
 
+def test_the_search_of_a_checklist_narrows_the_list_and_keeps_the_ticks_of_what_it_hides(win, qapp, monkeypatch, tmp_path):
+    _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
+    done = []
+    win.checklist("Tick", "which", [("vcrun2019: Visual C++", "vcrun2019", True), ("dotnet48: .NET", "dotnet48"), ("vd=1280x720: size", "vd=1280x720")],
+                  done.append, search=True)
+    pump(qapp)
+    page = win.current_page()
+    shown = lambda: [page.list.item(i).data(Qt.UserRole) for i in range(page.list.count()) if not page.list.item(i).isHidden()]
+    assert shown() == ["vcrun2019", "dotnet48", "vd=1280x720"]
+    page.search.setText("NET 48")
+    assert shown() == ["dotnet48"] and page.list.currentItem().data(Qt.UserRole) == "dotnet48"
+    page.search.setText("1280x")
+    assert shown() == ["vd=1280x720"]
+    page.add_entry("custom (added)", "custom")  # an entry added by hand is not left out of the search
+    assert "custom" in shown()
+    page.finish()
+    assert done == [["vcrun2019", "custom"]]
+
+
 def test_a_question_card_is_as_big_as_the_question_and_has_no_close_button(win, qapp, monkeypatch, tmp_path):
     game_page, _folder = _game_with_mods_and_a_copy(win, qapp, monkeypatch, tmp_path)
     win.ask("Cancel that and play with the saves on this machine instead?", lambda: None)

@@ -1698,11 +1698,12 @@ class ChoicePage(Page):
 class ChecklistPage(Page):
     """A list to tick any number of entries from, then Done. With `exclusive` (a function from an entry's value to its key),
     only one entry of a key stays ticked: ticking another takes the tick off the one before. `extra` is a button, (text,
-    function of this page), that sits before Done."""
+    function of this page), that sits before Done. With `search`, a field above the list narrows it to the entries that hold
+    what is typed (any of the words, in the label or the value); the ones hidden keep their tick and are still handed over."""
 
     modal = True
 
-    def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done, exclusive=None, extra=None):
+    def __init__(self, win: "MainWindow", title: str, text: str, items: list, on_done, exclusive=None, extra=None, search=False):
         super().__init__()
         self.title, self.win, self.on_done, self.exclusive = title, win, on_done, exclusive
         note = QLabel(text)
@@ -1724,14 +1725,35 @@ class ChecklistPage(Page):
             more = QPushButton(extra[0])
             more.clicked.connect(lambda: extra[1](self))
             buttons.insert(0, more)
+        self.search = None
         lay = QVBoxLayout(self)
         lay.addWidget(note)
+        if search:
+            self.search = SearchBox()
+            self.search.setPlaceholderText("Search")
+            self.search.textChanged.connect(self.narrow)
+            lay.addWidget(self.search)
         lay.addWidget(self.list, 1)
         self.button_row = _row(*buttons)
         lay.addLayout(self.button_row)
 
     def focus_default(self) -> None:
         self.list.setFocus()
+
+    def narrow(self, text: str) -> None:
+        """Show only the entries whose label or value holds every word of `text` (all, when it is empty)."""
+        words = text.lower().split()
+        first = None
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            haystack = f"{item.text()} {item.data(Qt.UserRole)}".lower()
+            hide = not all(w in haystack for w in words)
+            item.setHidden(hide)
+            if first is None and not hide:
+                first = item
+        current = self.list.currentItem()
+        if first is not None and (current is None or current.isHidden()):
+            self.list.setCurrentItem(first)
 
     def toggle(self, item: QListWidgetItem) -> None:
         ticked = item.checkState() != Qt.Checked
@@ -1756,6 +1778,8 @@ class ChecklistPage(Page):
             item.setData(Qt.UserRole, value)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             self.list.addItem(item)
+        if self.search is not None and item.isHidden():
+            self.search.clear()  # an entry just added is shown, not left out of the search
         item.setCheckState(Qt.Checked)
         self._one_for_the_key(item)
         self.list.setCurrentItem(item)
@@ -5092,6 +5116,7 @@ class GamePage(Page):
             done,
             exclusive=winetricks.key_of,
             extra=("Add settings...", add_settings),
+            search=True,
         )
 
     def _apply_winetricks(self, rec: InstalledGame, todo: list[str], reset: list[str]) -> None:
@@ -6716,8 +6741,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip, game))
 
-    def checklist(self, title: str, text: str, items: list, on_done, exclusive=None, extra=None) -> None:
-        self.push(ChecklistPage(self, title, text, items, on_done, exclusive, extra))
+    def checklist(self, title: str, text: str, items: list, on_done, exclusive=None, extra=None, search=False) -> None:
+        self.push(ChecklistPage(self, title, text, items, on_done, exclusive, extra, search))
 
     def browse_folder(self, start: Path, on_pick, text: str = "") -> None:
         self.push(BrowsePage(self, start, on_pick, folders=True, text=text))

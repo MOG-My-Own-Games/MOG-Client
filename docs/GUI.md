@@ -94,10 +94,11 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       engine makes a new one with its own defaults, which cannot be told from settings). Settings applied before that was
       recorded, and what winetricks installed, stay in the prefix.
     - **Winetricks** (Windows games): a list of the usual verbs (the Visual C++ runtimes from vcrun6 to vcrun2022, .NET
-      Framework and .NET Desktop, d3dx9, XInput, XAudio, Media Foundation, PhysX, fonts...) and of usual settings with a
+      Framework and .NET Desktop, WebView2, d3dx9, XInput, XAudio, Media Foundation, PhysX, fonts...) and of usual settings with a
       value (`vd=1280x1024`, `renderer=gdi`, `csmt=on`, `grabfullscreen=y`, `hidewineexports=enable`...); the ones already in the prefix are ticked, and so are the ones
       the server keeps for the game that the prefix does not have yet (read when the page opens, marked "on the server, not applied
-      yet"; Done applies them, and so does the next start of the game). A setting has one value:
+      yet"; Done applies them, and so does the next start of the game). A **Search** field above the list narrows it to the entries
+      holding every word typed (in the name or the description); the ones hidden keep their tick. A setting has one value:
       ticking another value of it takes the tick off the first, and **Add settings...** opens a page (the same as the
       launch arguments') where you type settings of your own, `vd=1280x1024 renderer=gdi`, as many as you need (the pad's keyboard
       types into the field): **+** adds what is typed, each one listed has a **-** that takes it out, **OK** ticks them all in

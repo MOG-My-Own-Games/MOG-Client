@@ -275,3 +275,7 @@ def test_the_game_is_started_with_its_language_by_every_engine(monkeypatch, tmp_
     monkeypatch.setattr(launcher, "resolve_wine", lambda name: (tmp_path / "wine", None))
     assert launcher.launch_command(game)[1]["LANG"] == "ja_JP.UTF-8"
     assert "LC_ALL" not in launcher.launch_command(_game(tmp_path))[1]
+
+
+def test_webview2_is_offered():
+    assert "webview2" in {verb for verb, _text in winetricks.CATALOG} and winetricks.is_verb("webview2")
