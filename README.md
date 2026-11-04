@@ -2,19 +2,16 @@
 
 # MOG Client
 
-CLI client for [MOG-Server](https://github.com/MOG-My-Own-Games/MOG-Server).
+CLI client for [MOG-Server](https://github.com/MOG-My-Own-Games/MOG-Server).  
 Part of [MOG - My Own Games](https://github.com/MOG-My-Own-Games).
 
-The CLI is pure stdlib Python. The GUI (Qt, controller friendly, Steam Deck
-ready) needs the `gui` extra.
+Developed through **Human-Directed Agentic Engineering**.
 
-**Beta, provided as is.** MOG Client is in beta and may contain bugs. Back up your saves
-yourself too, apart from MOG. The development team takes no responsibility for any loss or
-damage: the software is provided as is, without warranty of any kind.
+The CLI is pure stdlib Python. The GUI (Qt, controller-friendly, Steam Deck ready) requires the `gui` extra.
 
-**Windows is untested.** The Windows exe is built with every release, but nobody has tried it
-yet. If you run MOG Client on Windows, please [tell us how it went](https://github.com/MOG-My-Own-Games/MOG-Client/issues):
-we are looking for testers.
+**Beta, provided as is.** MOG Client is currently in beta and may contain bugs. Always maintain independent backups of your save files in addition to those managed by MOG. The development team assumes no responsibility for data loss or damage. The software is provided as is, without warranty of any kind.
+
+**Windows is untested.** The Windows executable is built with every release, but has not yet been tested by the development team. If you run MOG Client on Windows, please [let us know how it went](https://github.com/MOG-My-Own-Games/MOG-Client/issues). We are looking for testers!
 
 ## What it does
 
