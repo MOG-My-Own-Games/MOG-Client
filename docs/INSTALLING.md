@@ -81,6 +81,8 @@ A game installed from a native Linux installer is not run through Faugus, umu, P
   folder) are never offered. A folder with neither a `.exe` nor a script (an itch.io or engine game, `Game.x86_64`) offers
   its Linux programs as the last resort, found by their ELF header: the shallowest first, the one named like the game before
   the others, shared libraries (`*.so`) never.
+- On Linux, `.desktop` entries that start a program (a game's or a tool's own, not MOG's entry for the game) are offered too,
+  after the scripts. Such an entry is not run itself: the program its `Exec` line names is, with the `%f`/`%U` field codes dropped.
 - The script is made executable and started as it is, by the launch script, the desktop entry and the Steam shortcut.
 - Save sync finds saves through the Wine prefix, so it leaves such a game alone.
 
