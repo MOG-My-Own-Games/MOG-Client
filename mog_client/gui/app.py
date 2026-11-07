@@ -1626,6 +1626,8 @@ class OptionsPage(Page):
             add("Remove from MOG...", lambda: win.importing.remove(rec, page.rebuild), True)
         elif rec:
             add("Uninstall...", lambda: win.push(UninstallOptionsPage(win, page, rec)), True, pop=0)
+        elif has_no_files(getattr(page, "game", None) or {}):  # the server has no files and this computer no record: add it from here
+            add("Add from this computer...", win.importing.start)
         else:
             add("Delete server cache only", page.delete_server_cache, True)
         outer = QVBoxLayout(self)
@@ -4566,6 +4568,8 @@ class GamePage(Page):
             self.status.setText("No installation files on the server")  # nothing to install from: no Install button
             self.bar.setRange(0, 1)
             self.bar.setValue(0)
+            # Still an entry to act on: a game added from this computer whose adding was left half way ends up here.
+            self.first = self._button("Options", lambda: self.show_options(None), True)
         else:
             self.status.setText("Partially downloaded, can resume" if rec else "Not installed")
             self.bar.setRange(0, 1)

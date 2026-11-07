@@ -4675,10 +4675,27 @@ def test_a_game_with_no_installation_files_on_the_server_has_no_install_button(w
     page = win.current_page()
 
     labels = [b.text() for b in page.findChildren(QPushButton)]
-    assert not {"Install", "Resume", "Options"} & set(labels)
+    assert not {"Install", "Resume"} & set(labels)
+    assert "Options" in labels  # an entry left half way (the prefix question cancelled) is still one to act on
     assert page.status.text() == "No installation files on the server"
     page.install()  # a link or a key could still ask for it
     assert started == [] and "no installation files" in win.overlay.body.text()
+
+
+def test_the_options_of_an_entry_with_no_files_and_no_record_here_offer_adding_it(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
+    monkeypatch.setattr(win.app, "load_installers", lambda gid: None)
+    win.app.set_games([{"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": None, "imported": True}])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+
+    page.show_options(None)
+    pump(qapp)
+    labels = [b.text() for b in win.current_page().findChildren(QPushButton)]
+    assert "Add from this computer..." in labels and "Delete server cache only" not in labels
 
 
 def test_the_version_picker_leaves_out_the_versions_with_no_files(win, qapp, monkeypatch):
