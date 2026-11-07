@@ -161,6 +161,11 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       winecfg keeps (DLL overrides, Direct3D, DirectSound, X11 and virtual desktop options, Windows version) is kept on the
       server like winecfg's: you say whether it holds for all of the game's devices or only this one. Any other key it
       changes, and what the other programs do, stays in this prefix.
+    - **Move prefix...**: a new place for the prefix the game runs in (its own folder, or any folder). The prefix is moved there
+      (across disks it is copied and checked first) unless you answer No, which in red only points the game at the new place and
+      leaves the files where they are; a folder that already holds a prefix is used as it is. The launch script, entries and
+      Steam shortcut are written again. If the game's folder is inside the place you pick, a warning asks first. A prefix other
+      programs use, or one from a game added from outside MOG, is never moved from here (Move into MOG does that).
     - **Prefix location**: where the game's Wine prefix is, for the save sync (shown when save sync is on).
   - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts. Its
     **Launch arguments** row has an **Edit** button for what is put after the game's executable. The arguments are **tags**:
