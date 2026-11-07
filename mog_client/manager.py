@@ -818,6 +818,28 @@ def set_sandbox_enabled(rec: InstalledGame, enabled: bool, preference: str = "au
     _rewrite_entries(rec, preference)
 
 
+def set_prefix(rec: InstalledGame, dest: Path, move: bool = False, preference: str = "auto") -> None:
+    """Make `dest` the game's prefix. With `move` the prefix it has now is moved there first (never one other programs use, never
+    onto a folder with something in it, never into itself); without, the game is only pointed at `dest`, which is another prefix
+    or an empty place for the launcher to make one. The launch script, entries and Steam shortcut are written again."""
+    dest, old = Path(dest), pfx_dir(rec)
+    if dest == old:
+        return
+    if move and old.is_dir():
+        if rec.imported:
+            raise MoveError("a prefix from outside MOG is moved only by Move into MOG")
+        if rec.prefix_shared:
+            raise MoveError("other programs use this prefix, so it is not moved")
+        if dest.is_relative_to(old):
+            raise MoveError(f"{dest} is inside the prefix it would be moved from")
+        if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
+            raise MoveError(f"{dest} is already there with something in it")
+        _move_tree(old, dest)
+    _update(rec, prefix=str(dest), prefix_custom=dest != Path(rec.install_dir) / PREFIX_DIR)
+    logstore.info(f"{rec.name}: the prefix is {dest} now ({'moved from' if move else 'it was'} {old})")
+    _rewrite_entries(rec, preference)
+
+
 def remove_import(rec: InstalledGame) -> None:
     """Take a game added from outside MOG out of MOG: its launch files, shortcuts and what is remembered about its saves go.
     Its folder and prefix are never touched, and the server keeps its entry and saves."""

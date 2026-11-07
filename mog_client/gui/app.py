@@ -1398,6 +1398,7 @@ class LinuxOptionsPage(Page):
             add("Winetricks", lambda: page.open_winetricks(rec), pop=0)
             self.language_button = add("", lambda: page.choose_language(rec), pop=0)
             add("Launch executable...", lambda: page.launch_in_prefix(rec), pop=0)
+            add("Move prefix...", lambda: win.saves.relocate_prefix(rec), pop=0)
         if sync_enabled(rec, win.app.settings) and not rec.native:  # only a Wine prefix has a location
             add("Prefix location", lambda: win.saves.choose_prefix(rec))
         outer = QVBoxLayout(self)

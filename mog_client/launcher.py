@@ -495,8 +495,9 @@ def umu_id(game: InstalledGame) -> str:
 
 def pfx_dir(game: InstalledGame) -> Path:
     """The prefix MOG hands every engine: a `pfx` folder inside the game's own folder. What goes in
-    it, and how, is up to the engine. A game added from outside MOG keeps the prefix it was added with, wherever it is."""
-    if game.imported and game.prefix:
+    it, and how, is up to the engine. A game added from outside MOG, or whose prefix was moved or pointed elsewhere from its
+    Linux Options, keeps the prefix its record says, wherever it is."""
+    if game.prefix and (game.imported or game.prefix_custom):
         return Path(game.prefix)
     return Path(game.install_dir) / PREFIX_DIR
 

@@ -125,3 +125,58 @@ def test_a_renamed_game_takes_the_server_name_and_its_files_get_it_too(moved):
     assert (renamed / "Game 2.sh").is_file() and (renamed / "Game 2.desktop").is_file()
     assert not (renamed / "Game.sh").exists() and not (renamed / "Game.desktop").exists()  # the old names are not left over
     assert Path(found.desktop_entry).resolve() == (renamed / "Game 2.desktop").resolve()
+
+
+def _installed_with_prefix(moved):
+    rec, _settings, folder, _user = moved
+    found = config.load_library()[7]
+    manager.relocate_moved(_settings)
+    found = config.load_library()[7]
+    (folder / "pfx" / "drive_c").mkdir(parents=True)
+    (folder / "pfx" / "drive_c" / "save.dat").write_bytes(b"s")
+    return found, folder
+
+
+def test_moving_the_prefix_moves_the_files_and_the_launch_script_follows(moved, tmp_path):
+    rec, folder = _installed_with_prefix(moved)
+    dest = tmp_path / "Prefixes" / "game"
+
+    manager.set_prefix(rec, dest, move=True, preference="wine")
+
+    found = config.load_library()[7]
+    assert (dest / "drive_c" / "save.dat").read_bytes() == b"s" and not (folder / "pfx").exists()
+    assert found.prefix == str(dest) and found.prefix_custom and launcher.pfx_dir(found) == dest
+    assert f"WINEPREFIX={dest}" in launcher.launch_script_path(found).read_text() or str(dest) in launcher.launch_script_path(found).read_text()
+
+
+def test_pointing_the_game_at_another_prefix_leaves_the_files_where_they_are(moved, tmp_path):
+    rec, folder = _installed_with_prefix(moved)
+    dest = tmp_path / "elsewhere"
+    (dest / "drive_c").mkdir(parents=True)
+
+    manager.set_prefix(rec, dest, move=False, preference="wine")
+
+    assert launcher.pfx_dir(config.load_library()[7]) == dest and (folder / "pfx" / "drive_c" / "save.dat").exists()
+
+
+def test_the_prefix_is_not_moved_onto_a_full_folder_into_itself_or_when_it_is_not_ours(moved, tmp_path):
+    rec, folder = _installed_with_prefix(moved)
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "something").write_bytes(b"x")
+    for dest in (full, folder / "pfx" / "inside"):
+        with pytest.raises(manager.MoveError):
+            manager.set_prefix(rec, dest, move=True, preference="wine")
+    rec.imported = True
+    with pytest.raises(manager.MoveError):
+        manager.set_prefix(rec, tmp_path / "free", move=True, preference="wine")
+    assert (folder / "pfx" / "drive_c" / "save.dat").exists()
+
+
+def test_moving_the_prefix_back_into_the_games_folder_is_not_a_custom_prefix(moved, tmp_path):
+    rec, folder = _installed_with_prefix(moved)
+    manager.set_prefix(rec, tmp_path / "away", move=True, preference="wine")
+    manager.set_prefix(config.load_library()[7], folder / "pfx", move=True, preference="wine")
+
+    back = config.load_library()[7]
+    assert not back.prefix_custom and launcher.pfx_dir(back) == folder / "pfx"

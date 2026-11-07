@@ -16,7 +16,7 @@ from pathlib import Path
 
 from mog_client import connectivity, installdirs, logstore
 from mog_client.config import InstalledGame, load_library
-from mog_client.launcher import detect_launcher, effective_launcher, pfx_dir
+from mog_client.launcher import PREFIX_DIR, detect_launcher, effective_launcher, pfx_dir
 from mog_client.saves import devices, native, sync
 from mog_client.saves import prefix as prefixes
 from mog_client.saves.locations import describe_key
@@ -280,6 +280,79 @@ class SaveSync:
             skip="Not now" if skip is not None else None,
             game=rec.game_id,
         )
+
+    # --- changing where the prefix is, and moving it ---
+
+    def relocate_prefix(self, rec: InstalledGame) -> None:
+        """Linux Options > Move prefix: a new place for the prefix the game runs in, and the prefix itself moved there if wanted."""
+        current, own = pfx_dir(rec), Path(rec.install_dir) / PREFIX_DIR
+        options: list[tuple[str, object]] = []
+        if current != own:
+            options.append((f"In the game's folder: {own}", own))
+        options.append(("Another folder...", "browse"))
+
+        def chosen(answer) -> None:
+            if answer == "browse":
+                self.win.browse_folder(Path.home(), lambda picked: self.prefix_destination(rec, Path(picked)))
+            elif answer is not None:
+                self.prefix_destination(rec, answer)
+
+        self.win.choose(
+            "Where should the prefix be?",
+            f"It is in {current} now. The launch script, shortcuts and Steam entry are written again for the new place.",
+            options,
+            chosen,
+            game=rec.game_id,
+        )
+
+    def prefix_destination(self, rec: InstalledGame, dest: Path) -> None:
+        if dest == pfx_dir(rec):
+            self.win.message(f"The prefix of {rec.name} is {dest} already", "info", rec.game_id)
+            return
+        game_folder = Path(rec.install_dir)
+        if game_folder == dest or game_folder.is_relative_to(dest):
+            self.win.ask(
+                f"The game's folder, {game_folder}, is inside {dest}. A prefix there holds the game itself, and moving or "
+                "deleting the prefix later takes the game with it.\nUse it anyway?",
+                lambda: self.prefix_how(rec, dest),
+                danger=True,
+                game=rec.game_id,
+            )
+            return
+        self.prefix_how(rec, dest)
+
+    def prefix_how(self, rec: InstalledGame, dest: Path) -> None:
+        old = pfx_dir(rec)
+        empty = not dest.exists() or (dest.is_dir() and not any(dest.iterdir()))
+        if not empty and not prefixes.is_prefix(dest):
+            self.win.message(f"{dest} has files in it and does not look like a Wine prefix (no drive_c inside)", "error", rec.game_id)
+            return
+        shared = rec.prefix_shared or prefixes.is_default(old)
+        if old.is_dir() and empty and not shared and not rec.imported and not dest.is_relative_to(old):
+            self.win.ask(
+                f"Move the prefix from {old} to {dest}?\n"
+                f"No: {rec.name} uses {dest} from now on, and the files stay in {old}.",
+                lambda: self.apply_prefix(rec, dest, True),
+                on_no=lambda: self.apply_prefix(rec, dest, False),
+                yes_default=True,  # moving is the usual answer, so No is the red one
+                game=rec.game_id,
+            )
+            return
+        why = " Other programs use the prefix it has now, so that one is not moved." if shared and old.is_dir() else ""
+        if rec.imported and old.is_dir():
+            why = " The prefix it has now was not made by MOG, so it stays where it is (Move into MOG moves it, with its warnings)."
+        self.win.ask(
+            f"Use {dest} as the prefix of {rec.name}?{why}", lambda: self.apply_prefix(rec, dest, False), game=rec.game_id
+        )
+
+    def apply_prefix(self, rec: InstalledGame, dest: Path, move: bool) -> None:
+        from mog_client import manager
+
+        def work() -> None:
+            manager.set_prefix(rec, dest, move, self.app.settings.launcher)
+            self.gui(lambda: self.win.message(f"The prefix of {rec.name} is {dest} now.", "info", rec.game_id))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(f"Could not change the prefix: {m}"))
 
     def confirm_folders(
         self, rec: InstalledGame, folders: list[str], then: Callable[[], None], native: bool = False

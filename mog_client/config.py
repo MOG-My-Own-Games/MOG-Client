@@ -223,6 +223,9 @@ class InstalledGame:
     # The prefix is shared with other programs even though it sits in the game's folder (it was moved there): only the folders
     # the user confirmed are the game's saves.
     prefix_shared: bool = False
+    # The prefix of a game MOG installed was moved or pointed elsewhere (Linux Options > Move prefix): `prefix` says where, not the
+    # `pfx` folder of the game's folder.
+    prefix_custom: bool = False
     # A native game that runs in a Flatpak app (itch's, say) keeps its `xdg-*` saves below `~/.var/app/<id>/`: the app's id.
     sandbox: str | None = None
     # The person can switch it off (Linux Options): the app is remembered, and the real home is used meanwhile.

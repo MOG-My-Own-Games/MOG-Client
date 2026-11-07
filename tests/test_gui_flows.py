@@ -3458,7 +3458,34 @@ def test_the_linux_entries_are_in_one_linux_page_of_the_options(win, tmp_path, m
     assert not any(t.startswith(("Engine", "Prefix")) or "winecfg" in t for t in options)
 
     linux = _texts(gui.LinuxOptionsPage(win, SimpleNamespace(), rec))
-    assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "System language: default", "Launch executable...", "Prefix location"]
+    assert linux == ["Engine: umu-launcher, GE-Proton9-1", "Wine configuration (winecfg)", "Winetricks", "System language: default", "Launch executable...", "Move prefix...", "Prefix location"]
+
+
+def test_moving_the_prefix_warns_when_the_games_folder_is_inside_the_new_place_and_offers_the_move_otherwise(win, tmp_path, monkeypatch):
+    rec = _game_record(tmp_path / "Games" / "G", "g.exe")
+    (tmp_path / "Games" / "G" / "pfx" / "drive_c").mkdir(parents=True)
+    asked, moved = [], []
+    monkeypatch.setattr(win, "ask", lambda text, yes, on_no=None, **kw: asked.append((text, yes, on_no, kw)))
+    said = []
+    monkeypatch.setattr(win, "message", lambda text, level="error", game_id=None: said.append(text))
+    monkeypatch.setattr("mog_client.manager.set_prefix", lambda rec, dest, move, preference="auto": moved.append((dest, move)))
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(win.saves, "gui", lambda fn: fn())
+
+    win.saves.prefix_destination(rec, tmp_path / "Games")  # the game's folder is below it
+    text, yes, _no, kw = asked[-1]
+    assert "is inside" in text and kw["danger"] is True
+    assert moved == []
+
+    yes()  # used anyway: it has files in it and is no prefix, so it is refused
+    assert "does not look like a Wine prefix" in said[-1] and moved == []
+
+    win.saves.prefix_destination(rec, tmp_path / "Prefixes" / "g")
+    text, yes, no, kw = asked[-1]
+    assert text.startswith("Move the prefix from") and kw["yes_default"] is True  # No is the red one
+    yes()
+    no()
+    assert moved == [(tmp_path / "Prefixes" / "g", True), (tmp_path / "Prefixes" / "g", False)]
 
 
 def _local_linux_game(tmp_path, **extra):
