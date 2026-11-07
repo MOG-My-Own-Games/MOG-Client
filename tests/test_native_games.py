@@ -239,3 +239,42 @@ def test_an_appimage_is_offered_even_when_the_download_left_it_unmarked(tmp_path
     make(game, "broken.AppImage", "README.txt")
 
     assert names(game) == ["Lost Ruins-x86_64.AppImage"]
+
+
+def desktop(path: Path, exec_line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"[Desktop Entry]\nType=Application\nName=Game\nExec={exec_line}\n")
+
+
+def test_on_linux_a_desktop_entry_that_starts_a_program_is_offered(tmp_path):
+    desktop(tmp_path / "Game.desktop", "/games/Game/bin/game --fullscreen %u")
+    make(tmp_path, "Game.exe")
+    assert names(tmp_path) == ["Game.desktop", "Game.exe"]
+
+
+def test_desktop_entries_are_not_offered_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    desktop(tmp_path / "Game.desktop", "/games/Game/bin/game")
+    assert names(tmp_path) == []
+
+
+def test_mog_own_entry_and_uninstallers_are_not_offered(tmp_path):
+    script = tmp_path / "launch.sh"
+    script.write_text("#!/bin/sh\n# Game: started through wine. Written by MOG and rewritten\n")
+    desktop(tmp_path / "Game.desktop", str(script))
+    desktop(tmp_path / ".mog-steam.desktop", "/bin/true")
+    desktop(tmp_path / "Uninstall Game.desktop", "/games/Game/uninstall")
+    assert names(tmp_path) == []
+
+
+def test_a_desktop_entry_runs_its_exec_program_with_the_field_codes_dropped(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "_known", [])
+    folder = tmp_path / "Game"
+    make(folder, "bin/game")
+    (folder / "bin/game").chmod(0o755)
+    desktop(folder / "Game.desktop", f'"{folder}/bin/game" -windowed "--name=My Game" %f 100%%')
+    game = InstalledGame(3, "Game", str(folder), state="installed", executable=str(folder / "Game.desktop"))
+    assert game.native and is_native_executable(game.executable)
+    command, env = launcher.launch_command(game)
+    assert command == [str(folder / "bin/game"), "-windowed", "--name=My Game", "100%"] and env == {}
+    assert (folder / "Game.desktop").stat().st_mode & stat.S_IXUSR == 0  # the entry itself is never run, so not marked

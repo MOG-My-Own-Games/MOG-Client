@@ -49,6 +49,47 @@ def is_mog_script(path: Path) -> bool:
         return False
 
 
+_FIELD_CODE = re.compile(r"%(%|[fFuUdDnNickvm])")  # the %f, %U... of an Exec line, which a launch has no file or URL for
+
+
+def desktop_argv(path: Path) -> list[str] | None:
+    """The command a Linux .desktop entry starts: its Exec line in the [Desktop Entry] group, split as the spec quotes it,
+    the field codes dropped. None when there is no such line."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    section = ""
+    for line in lines:
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Desktop Entry]" and line.startswith("Exec="):
+            try:
+                words = shlex.split(line[len("Exec="):])
+            except ValueError:
+                return None
+            argv = []
+            for word in words:
+                word = _FIELD_CODE.sub(lambda m: "%" if m.group(1) == "%" else "", word)
+                if word:
+                    argv.append(word)
+            return argv or None
+    return None
+
+
+def _is_game_desktop(path: Path) -> bool:
+    """A .desktop entry that starts a program, not MOG's own entry for the game (which starts MOG's launch script) and not
+    a hidden file."""
+    if path.name.startswith("."):
+        return False
+    argv = desktop_argv(path)
+    if not argv:
+        return False
+    program = Path(argv[0])
+    return not (program.is_absolute() and is_mog_script(program))
+
+
 def _is_game_script(rel: Path) -> bool:
     return (
         rel.suffix.lower() == ".sh"
@@ -70,7 +111,7 @@ def list_executables(install_dir: Path) -> list[Path]:
         dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
             suffix = os.path.splitext(name)[1].lower()
-            if suffix not in (".exe", ".sh", ".appimage"):
+            if suffix not in (".exe", ".sh", ".appimage", ".desktop"):
                 continue  # most of a big install is none of them: no stat for those (a modded game has tens of thousands of files)
             if suffix == ".appimage" and sys.platform == "win32":
                 continue
@@ -83,6 +124,9 @@ def list_executables(install_dir: Path) -> list[Path]:
                     continue
             elif suffix == ".appimage":
                 if not _has_elf_header(path):
+                    continue
+            elif suffix == ".desktop":
+                if sys.platform == "win32" or _NOT_A_GAME.search(path.stem) or not _is_game_desktop(path):
                     continue
             elif sys.platform == "win32" or not _is_game_script(rel) or is_mog_script(path):
                 continue
@@ -544,10 +588,16 @@ def launch_command(
     if game.native and program is not None:
         raise RuntimeError("a Linux game runs as it is: it has no Wine prefix")
     if game.native:
-        ensure_executable(game.executable)
+        if game.executable.lower().endswith(".desktop"):  # an entry starts its Exec program; the entry itself is not run
+            argv = desktop_argv(Path(game.executable))
+            if not argv:
+                raise RuntimeError("the desktop entry of this game has no Exec line to start it with")
+        else:
+            ensure_executable(game.executable)
+            argv = [game.executable]
         if not game.imported:  # the folder of a game added from outside MOG is left as it is
             ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
-        return [game.executable, *args], sandbox_env(game)  # a Linux program: no launcher, no prefix
+        return [*argv, *args], sandbox_env(game)  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")

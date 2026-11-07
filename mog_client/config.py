@@ -146,6 +146,8 @@ def is_native_executable(path: str | Path | None) -> bool:
         return False
     if str(path).lower().endswith(".sh"):
         return True
+    if str(path).lower().endswith(".desktop"):  # an entry runs the Linux program its Exec line names (launcher.desktop_argv)
+        return sys.platform != "win32"
     return sys.platform != "win32" and _is_elf(str(path))
 
 
