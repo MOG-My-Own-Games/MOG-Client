@@ -32,6 +32,12 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   no Install button: its page says "No installation files on the server", and a version picker leaves it out.
   Its page keeps an Options button, so an entry left half way (adding a game from this computer cancelled at the prefix question)
   never has nothing to act on: with no record on this computer, Options offers "Add from this computer...".
+- A game this computer has a record of and the server has no entry for at all (deleted there) stays in the library, with a red
+  corner and a white cloud at the top right of its cover; its page says "Not on the server (the cloud)". It is played and removed
+  like any other, but nothing that asks the server (add-ons, refreshing metadata, checking the files, the server cache) is offered.
+  It is never removed on its own: this computer may still send its saves or mods, which makes the entry again. A game whose entry
+  is still there with only saves or mods has the other corners. The list is trusted only when the server sent games and the client
+  is online.
 - The arrow on a cover points down while saves are downloaded and up while they are uploaded (the server is above).
 - Everything the window tells you in a message is also in the notifications (a message about a game shows its icon at the
   left), and a message can carry an option (finishing

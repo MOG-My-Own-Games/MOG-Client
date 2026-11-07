@@ -4682,6 +4682,85 @@ def test_a_game_with_no_installation_files_on_the_server_has_no_install_button(w
     assert started == [] and "no installation files" in win.overlay.body.text()
 
 
+def test_adding_a_game_the_server_already_listed_rebuilds_its_page_and_asks_for_the_executable(win, qapp, monkeypatch, tmp_path):
+    from mog_client import manager
+
+    for name in ("fetch_header_art", "load_size", "load_mods", "load_installers"):
+        monkeypatch.setattr(win.app, name, lambda *a, **k: None)
+    game = {"id": 41, "name": "Metroid", "fs_name": "Metroid", "library_id": None, "igdb_id": None, "imported": True}
+    win.app.set_games([game])
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    assert [b.text() for b in page.findChildren(QPushButton)] == ["Options"]  # no record here yet
+    asked = []
+    monkeypatch.setattr(page, "choose_executable", asked.append)
+    (tmp_path / "Metroid").mkdir()
+    rec = manager.import_game(game, tmp_path / "Metroid", "linux")
+
+    win.importing.added(rec, "", None)
+    pump(qapp)
+
+    assert "Add a launcher..." in [b.text() for b in page.findChildren(QPushButton)]
+    assert asked == [rec]
+    page.show_options(None)  # a page made before the record still opens the record's Options
+    pump(qapp)
+    assert "Remove from MOG..." in [b.text() for b in win.current_page().findChildren(QPushButton)]
+
+
+def _server_forgets_a_game_this_computer_has(win, qapp, monkeypatch, tmp_path):
+    from mog_client import manager
+
+    for name in ("fetch_header_art", "load_size", "load_mods", "load_installers", "fetch_images", "fetch_videos"):
+        monkeypatch.setattr(win.app, name, lambda *a, **k: None)
+    keep = {"id": 1, "name": "Kept", "fs_name": "Kept", "library_id": None, "igdb_id": None}
+    gone = {"id": 2, "name": "Gone", "fs_name": "Gone", "library_id": None, "igdb_id": None}
+    win.app.set_games([keep, gone])
+    (tmp_path / "Gone").mkdir()
+    manager.import_game(gone, tmp_path / "Gone", "linux", executable="/bin/true")
+    win.set_games([keep])  # the server deleted Gone
+    pump(qapp)
+    return keep
+
+
+def test_a_game_the_server_no_longer_has_stays_listed_with_a_red_cloud_corner_and_is_never_removed(win, qapp, monkeypatch, tmp_path):
+    from mog_client.config import load_library
+    from mog_client.grouping import GONE, corner_state
+
+    _server_forgets_a_game_this_computer_has(win, qapp, monkeypatch, tmp_path)
+
+    assert win.library.grid.count() == 2 and 2 in load_library()
+    assert corner_state(win.app.games[2]) == GONE and corner_state(win.app.games[1]) is None
+    win.show_game(2)
+    pump(qapp)
+    page = win.current_page()
+    assert "Not on the server" in page.status.text()
+    labels = [b.text() for b in page.findChildren(QPushButton)]
+    assert "Play" in labels and "Options" in labels and "Addons" not in labels
+    page.show_options(None)
+    pump(qapp)
+    options = [b.text() for b in win.current_page().findChildren(QPushButton)]
+    assert "Refresh metadata" not in options and "Repair: check the installed files" not in options and "Remove from MOG..." in options  # added from outside MOG, so it is taken out rather than uninstalled
+
+
+def test_the_corner_of_a_game_gone_from_the_server_paints(qapp):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    image = QImage(200, 300, QImage.Format_RGB32)
+    image.fill(QColor("#000000"))
+    painter = QPainter(image)
+    gui.paint_state_badge(painter, QRect(0, 0, 200, 300), "gone")
+    painter.end()
+    assert image.pixelColor(197, 2) == QColor("#d64545")
+
+
+def test_an_empty_list_from_the_server_does_not_make_every_local_game_gone(win, qapp, monkeypatch, tmp_path):
+    _server_forgets_a_game_this_computer_has(win, qapp, monkeypatch, tmp_path)
+    win.app.set_games([])
+    assert win.app.games == {}
+
+
 def test_the_options_of_an_entry_with_no_files_and_no_record_here_offer_adding_it(win, qapp, monkeypatch):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)

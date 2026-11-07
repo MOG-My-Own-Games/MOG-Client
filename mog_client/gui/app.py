@@ -115,7 +115,7 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.grouping import SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, group_games, has_no_files
+from mog_client.grouping import GONE, SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, gone_game, group_games, has_no_files
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
@@ -736,7 +736,11 @@ class App:
         """Take the server's list. Returns what was done about local records that no longer fit their game."""
         said = identity.reconcile(games, set(self.installs)) if games else []
         self.games = {g["id"]: g for g in games}
-        self.group_of = {g["id"]: group for group in group_games(games) for g in group.members}
+        if games and not connectivity.is_offline():  # an empty or cached list says nothing about what the server dropped
+            for gid, rec in load_library().items():
+                if gid not in self.games:
+                    self.games[gid] = gone_game(rec)
+        self.group_of = {g["id"]: group for group in group_games(list(self.games.values())) for g in group.members}
         return said
 
     def active_version(self, group: Group) -> dict:
@@ -1578,6 +1582,8 @@ class UninstallOptionsPage(Page):
             ),
             ("Delete server cache only", page.delete_server_cache),
         ]
+        if page.game.get("gone"):  # no server entry: no cache of it there either
+            rows = rows[:1]
         for text, action in rows:
             button = add_option_button(win, lay, text, action, danger=True, pop=2)
             self.first = self.first or button
@@ -1614,8 +1620,10 @@ class OptionsPage(Page):
             if sys.platform.startswith("linux") and has_linux_options(rec):
                 add("Linux Options", lambda: win.push(LinuxOptionsPage(win, page, rec)), pop=0)
             add("Shortcuts / executable", lambda: page.choose_executable(rec))
-            add("Refresh metadata", lambda: page.refresh_metadata(rec))
-            if not rec.imported:  # the files of a game from outside MOG are not the server's to check
+            gone = bool((getattr(page, "game", None) or {}).get("gone"))  # the server has no entry to refresh from or check against
+            if not gone:
+                add("Refresh metadata", lambda: page.refresh_metadata(rec))
+            if not rec.imported and not gone:  # the files of a game from outside MOG are not the server's to check
                 add("Repair: check the installed files", lambda: page.repair(rec))
             add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
             if rec.imported:
@@ -4197,12 +4205,14 @@ class GamePage(Page):
         b.header_art.connect(self._on_header_art)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.cover_for(gid)))
         b.activity.connect(self._sync_buttons)  # an install that began or ended elsewhere
-        self.app.fetch_images(self.shot_urls, game["id"])
-        self.app.fetch_videos(game["id"])
-        self.app.fetch_header_art(game)
+        if not game.get("gone"):  # the server has nothing to say about a game it has no entry for
+            self.app.fetch_images(self.shot_urls, game["id"])
+            self.app.fetch_videos(game["id"])
+            self.app.fetch_header_art(game)
         self._update_version_label()
-        self.app.load_size(game["id"])
-        self.app.load_mods(game["id"])
+        if not game.get("gone"):
+            self.app.load_size(game["id"])
+            self.app.load_mods(game["id"])
         self._show_play_rows()
         self.rebuild()
         self._built = True
@@ -4558,7 +4568,7 @@ class GamePage(Page):
                 if self._starting:  # the buttons were made again while the game is on its way
                     self.first.setText("Starting...")
             self._button("Options", lambda: self.show_options(rec))
-            if not rec.imported:
+            if not rec.imported and not self.game.get("gone"):
                 self._button("Addons", lambda: self.win.push(AddonsPage(self.win, self.game, rec)))
         elif rec and rec.state == "awaiting_executable":
             self.status.setText("Awaiting executable info")
@@ -4576,6 +4586,8 @@ class GamePage(Page):
             self.bar.setValue(0)
             self.first = self._button("Resume" if rec else "Install", self.install, True)
             self._button("Options", lambda: self.show_options(rec))
+        if self.game.get("gone"):
+            self.status.setText("Not on the server (the cloud): it stays here until you remove it")
         if self.app.mods.get(gid):
             self._button("Mods", self.open_mods)
 
@@ -4810,7 +4822,7 @@ class GamePage(Page):
         self.win.begin_play(rec, proc)
 
     def show_options(self, rec: InstalledGame | None) -> None:
-        self.win.push(OptionsPage(self.win, self, rec))
+        self.win.push(OptionsPage(self.win, self, rec or load_library().get(self.game["id"])))  # the page may be older than the record
 
     def set_save_sync(self, rec: InstalledGame, wanted: bool) -> None:
         manager._update(rec, save_sync=None if wanted == self.app.settings.sync_saves else wanted)
@@ -5527,11 +5539,30 @@ def paint_setup_badge(painter: QPainter, cover: QRect) -> None:
     painter.restore()
 
 
+def paint_gone_badge(painter: QPainter, cover: QRect) -> None:
+    """A red corner at the top right with a white cloud: the server has no entry for this game (it is not there, in the cloud)."""
+    right, top = cover.right() + 1, cover.top()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#d64545"))
+    painter.drawPolygon(QPolygonF([QPointF(right, top), QPointF(right - BADGE_SIZE, top), QPointF(right, top + BADGE_SIZE)]))
+    x, y = right - 26, top + 8
+    cloud = QPainterPath()
+    cloud.addRoundedRect(QRectF(x, y + 7, 20, 8), 4, 4)  # the flat bottom
+    cloud.addEllipse(QRectF(x + 2, y + 3, 8, 8))
+    cloud.addEllipse(QRectF(x + 6, y, 10, 10))
+    cloud.addEllipse(QRectF(x + 12, y + 4, 7, 7))
+    painter.setBrush(QColor("white"))
+    painter.drawPath(cloud.simplified())
+
+
 def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
     """A colored corner on the left of the cover: amber with a floppy disk (only the saves are
     left, top), green with a floppy disk (a game added from outside MOG, never had files here), violet with a puzzle piece
     (only add-ons, bottom)."""
     left, top, bottom = cover.left(), cover.top(), cover.bottom() + 1
+    if state == GONE:
+        paint_gone_badge(painter, cover)
+        return
     saves = state in (SAVES_ONLY, SAVES_IMPORTED)
     if saves:
         corner = QPolygonF([QPointF(left, top), QPointF(left + BADGE_SIZE, top), QPointF(left, top + BADGE_SIZE)])
@@ -7452,13 +7483,13 @@ class MainWindow(QMainWindow):
         state = activity.load()
         for gid in state["installs"]:
             game, rec = self.app.games.get(gid), local.get(gid)
-            if game and rec and rec.state not in ("installed", "awaiting_executable") and installdirs.resumable(rec):
+            if game and not game.get("gone") and rec and rec.state not in ("installed", "awaiting_executable") and installdirs.resumable(rec):
                 self.install_game(game)
             else:
                 activity.remove_install(gid)
         for entry in state["mods"]:
             game = self.app.games.get(entry["game_id"])
-            if game:
+            if game and not game.get("gone"):
                 self.app.download_mod(game, entry["mod"])
             else:
                 activity.remove_mod(entry["game_id"], entry["mod"].get("name"))

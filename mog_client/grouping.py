@@ -35,19 +35,28 @@ def group_games(games: list[dict]) -> list[Group]:
     return groups
 
 
-SAVES_ONLY, SAVES_IMPORTED, ADDONS_ONLY = "saves-only", "saves-imported", "addons-only"
+SAVES_ONLY, SAVES_IMPORTED, ADDONS_ONLY, GONE = "saves-only", "saves-imported", "addons-only", "gone"
+
+
+def gone_game(rec) -> dict:
+    """The stand-in for a game this computer has a record of and the server has no entry for at all (deleted there): it is
+    listed so it can still be played or removed, never removed on its own (this computer may yet send its saves or mods, and
+    the entry is made again then). Saves or mods on the server keep the entry, so those are other states."""
+    return {"id": rec.game_id, "name": rec.name, "fs_name": rec.server_name or rec.name, "library_id": None, "igdb_id": None, "gone": True}
 
 
 def has_no_files(game: dict) -> bool:
     """Whether the server has nothing to install the game from: one added by a client only to sync its saves (it never had files
     there), or gone from disk with only its saves kept."""
-    return bool(game.get("imported") or game.get("saves_only"))
+    return bool(game.get("imported") or game.get("saves_only") or game.get("gone"))
 
 
 def corner_state(game: dict) -> str | None:
     """What the server says is special about a game's files, for a badge on its cover: gone from
     disk but its saves are kept, only there to sync the saves of a game added from outside MOG (it never had files here),
-    or only add-ons (mods, DLC) and nothing that installs the game."""
+    or only add-ons (mods, DLC) and nothing that installs the game. A game the server has no entry for is `GONE`."""
+    if game.get("gone"):
+        return GONE
     if game.get("saves_only"):
         return SAVES_IMPORTED if game.get("imported") else SAVES_ONLY
     if game.get("addons_only") and not game.get("missing_from_fs"):
