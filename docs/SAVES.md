@@ -93,7 +93,8 @@ icon are kept in MOG's data folder (`imports/<game id>`), never in the game's fo
   for it (in the game's folder, **In MOG Library** or where you say; the launcher creates it the first time the game starts, so
   you pick the game's executable too). In MOG Library makes `<install folder>/<game name>/pfx`, as a game MOG installs would have
   it, with nothing but the prefix in it (the game stays where it is): it asks which install folder when there are several, and
-  only offers the ones that are connected. Do not pick a Default prefix (`~/.wine`, umu's `umu-default`, a folder called `default`): other games
+  only offers the ones that are connected. A folder picked by hand that is not called `pfx` is offered a `pfx` made inside it
+  (Yes is the default and No, in red, keeps the folder as picked). Do not pick a Default prefix (`~/.wine`, umu's `umu-default`, a folder called `default`): other games
   run in it and their saves are in it too, so such a prefix is marked in the list and asks again. A new prefix starts empty: the
   saves the game already has may be in the prefix it uses now, and the warning says so.
 - **The saves' folders**: the places that look like the game's saves, the ones named like the game first, ticked. They are in the

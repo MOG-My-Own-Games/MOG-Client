@@ -322,7 +322,7 @@ class ImportFlow:
             elif answer == IN_LIBRARY:
                 self.library_prefix(draft, go)
             elif answer == ANOTHER_FOLDER:
-                self.win.browse_folder(Path.home(), lambda picked: go(Path(picked)))
+                self.win.browse_folder(Path.home(), lambda picked: self.named_pfx(Path(picked), go))
 
         self.win.choose(
             "Where should the new prefix be?",
@@ -333,6 +333,24 @@ class ImportFlow:
                 ("Another folder...", ANOTHER_FOLDER),
             ],
             chosen,
+        )
+
+    def named_pfx(self, chosen: Path, go: Callable[[Path, bool], None]) -> None:
+        """A prefix is a folder called `pfx` like every MOG game has: a folder picked by hand that is not called so is offered a
+        `pfx` inside it. Saying no keeps the folder as picked (the No is red: it is the answer that leaves the usual way)."""
+        if chosen.name == PREFIX_DIR:
+            go(chosen)
+            return
+        inside = chosen / PREFIX_DIR
+        if inside.exists() and (not inside.is_dir() or any(inside.iterdir())):
+            self.win.message(f"{inside} is already there: use Browse Prefix to take it, or pick another place", "error")
+            return
+        self.win.ask(
+            f"A prefix is a folder called {PREFIX_DIR}. Make {PREFIX_DIR} in {chosen} and put the prefix there?\n"
+            f"No: the prefix is {chosen} itself.",
+            lambda: go(inside),
+            on_no=lambda: go(chosen),
+            yes_default=True,
         )
 
     def library_prefix(self, draft: Draft, go: Callable[[Path, bool], None]) -> None:
@@ -548,9 +566,10 @@ class ImportFlow:
         self.app.refresh()
         self.win.show_game(rec.game_id)
         self.win.message(f"{rec.name} was added from {rec.install_dir}. {text}", "info", rec.game_id)
-        if not rec.executable:  # as if it had just been installed: which file starts it (a new prefix is made by it, too)
-            page = self.win.game_pages.get(rec.game_id)
-            if page is not None:
+        page = self.win.game_pages.get(rec.game_id)
+        if page is not None:
+            page.rebuild()  # an entry the server already had has a page made before this computer had a record of it
+            if not rec.executable:  # as if it had just been installed: which file starts it (a new prefix is made by it, too)
                 page.choose_executable(rec)
 
     # --- moving it into MOG ---

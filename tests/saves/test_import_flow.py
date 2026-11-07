@@ -64,7 +64,7 @@ class FakeWin:
         self.library = SimpleNamespace(libraries=[])
         self.game_pages = {}
         self.choices, self.checklists, self.asks, self.texts, self.messages = [], [], [], [], []
-        self.errors, self.shown = [], []
+        self.errors, self.shown, self.red_no = [], [], []
         self.browsed = []
         self.saves = SimpleNamespace(final_backup=lambda rec, then, on_abort=None, action="Uninstall": then())
 
@@ -90,6 +90,7 @@ class FakeWin:
 
     def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None):
         self.asks.append((text, on_yes, on_no))
+        self.red_no.append(yes_default)  # the default being Yes paints No red
 
     def ask_text(self, title, text, default, on_done):
         self.texts.append((title, default, on_done))
@@ -248,6 +249,55 @@ def _to_the_new_prefix_question(ui):
     return ui.win.choices[-1]
 
 
+def _pick_another_folder_for_the_new_prefix(ui, folder: Path):
+    _to_the_new_prefix_question(ui)[3](importing.ANOTHER_FOLDER)
+    ui.win.on_pick(str(folder))
+
+
+def test_a_folder_picked_for_the_new_prefix_that_is_not_called_pfx_is_offered_a_pfx_inside_it(ui):
+    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    chosen.mkdir(parents=True)
+    _pick_another_folder_for_the_new_prefix(ui, chosen)
+
+    text, yes, _no = ui.win.asks[-1]
+    assert "Make pfx in" in text and ui.win.red_no[-1]  # yes is the default, so No is the red one
+    yes()
+    ui.win.asks[-1][1]()  # then the usual warning about a new prefix
+
+    rec = load_library()[40]
+    assert rec.prefix == str(chosen / "pfx") and rec.prefix_dedicated
+
+
+def test_saying_no_to_the_pfx_keeps_the_folder_as_picked(ui):
+    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    chosen.mkdir(parents=True)
+    _pick_another_folder_for_the_new_prefix(ui, chosen)
+
+    ui.win.asks[-1][2]()
+    ui.win.asks[-1][1]()
+
+    assert load_library()[40].prefix == str(chosen)
+
+
+def test_a_folder_picked_for_the_new_prefix_that_is_called_pfx_is_used_without_the_question(ui):
+    chosen = ui.tmp / "Prefixes" / "pfx"
+    chosen.mkdir(parents=True)
+    _pick_another_folder_for_the_new_prefix(ui, chosen)
+
+    assert "may be in the prefix it runs in now" in ui.win.asks[-1][0]
+    ui.win.asks[-1][1]()
+    assert load_library()[40].prefix == str(chosen)
+
+
+def test_a_pfx_that_is_already_filled_is_not_offered_for_the_new_prefix(ui):
+    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    (chosen / "pfx").mkdir(parents=True)
+    (chosen / "pfx" / "something").write_text("x")
+    _pick_another_folder_for_the_new_prefix(ui, chosen)
+
+    assert ui.win.asks == [] and "is already there" in ui.win.messages[-1][1]
+
+
 def test_a_new_prefix_can_be_made_in_a_mog_library_as_a_mog_game_would_have_it(ui):
     library = ui.tmp / "Library"
     library.mkdir()
@@ -383,7 +433,7 @@ def test_a_library_the_server_refuses_is_told_and_the_choice_comes_back(ui):
 
 def test_the_executable_is_asked_for_once_the_game_is_added_as_after_an_install(ui):
     asked = []
-    ui.win.game_pages[40] = SimpleNamespace(choose_executable=asked.append)
+    ui.win.game_pages[40] = SimpleNamespace(choose_executable=asked.append, rebuild=lambda: None)
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
     ui.win.texts[-1][2]("Lost Ruins")
