@@ -17,12 +17,13 @@ from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
 from mog_client.installdirs import (
     default_root,
+    copy_candidates,
     find_moved,
     folder_names,
     holds_game,
     ignore_folder,
     ignored_folders,
-    misfit,
+    looks_like,
     present,
     prune_empty,
     rebase,
@@ -489,17 +490,58 @@ def refresh_launch_files(settings: Settings) -> None:
 def relocate_moved(settings: Settings) -> list[str]:
     """Find again the games whose folder is not where it was recorded but is in an install folder now (the games folder was
     moved, or the install folder changed): the record and the save sync's prefix follow it, and the launch script, the entries
-    and the folder icon are written again, as they hold the old path. Local only, so it also works offline. Returns the names."""
+    and the folder icon are written again, as they hold the old path. A copy of the game kept in another install folder takes
+    the place of a folder that is gone. A game whose folder is there keeps its list of copies up to date (`refresh_copies`).
+    Local only, so it also works offline. Returns the names of the games that were found again."""
     found = []
+    roots = settings.install_roots
     for rec in load_library().values():
-        if rec.imported or rec.state not in ("installed", "awaiting_executable") or present(rec):
+        if rec.imported or rec.state not in ("installed", "awaiting_executable"):
             continue  # a game added from outside MOG is where its owner put it: it is not looked for in the install folders
-        new = find_moved(rec, settings.install_roots)
+        if present(rec):
+            refresh_copies(rec, roots)
+            continue
+        new = next((Path(c) for c in rec.copies if looks_like(rec, Path(c))), None) or find_moved(rec, roots)
         if new is None:
             continue
         point_to(rec, new, settings.launcher)
+        refresh_copies(rec, roots)
         found.append(rec.name)
     return found
+
+
+def refresh_copies(rec: InstalledGame, roots: list[Path]) -> None:
+    """Bring the record's list of copies in line with the install folders: the folders that hold the game besides the one in use.
+    A folder another game has, or the user took out of MOG, is not a copy."""
+    taken = {Path(r.install_dir) for r in load_library().values() if r.game_id != rec.game_id}
+    taken |= {Path(c) for r in load_library().values() if r.game_id != rec.game_id for c in r.copies}
+    ignored = ignored_folders()
+    copies = [str(c) for c in copy_candidates(rec, [Path(r) for r in roots]) if c not in taken and c not in ignored]
+    if copies != rec.copies:
+        _update(rec, copies=copies)
+        if copies:
+            logstore.info(f"{rec.name} has {len(copies) + 1} copies: {', '.join([rec.install_dir, *copies])}")
+
+
+def copy_view(rec: InstalledGame, folder: str | Path) -> InstalledGame:
+    """The record as it would be with `folder` as its install folder: what a copy is when it is the one an action is about."""
+    old, new = rec.install_dir, str(folder)
+    return replace(
+        rec,
+        install_dir=new,
+        copies=[],
+        **{k: rebase(getattr(rec, k), old, new) for k in ("files_dir", "executable", "prefix")},
+    )
+
+
+def use_copy(rec: InstalledGame, folder: str | Path, preference: str = "auto") -> None:
+    """Make `folder`, one of the game's copies, the one in use: the record, the entries and the Steam shortcut point to it, and
+    the folder in use until now becomes a copy."""
+    old = rec.install_dir
+    if Path(folder) == Path(old):
+        return
+    point_to(rec, Path(folder), preference)
+    _update(rec, copies=[c for c in dict.fromkeys([*rec.copies, old]) if Path(c) != Path(folder)])
 
 
 def adopt_found_folders(games: list[dict], settings: Settings, busy: frozenset[int] | set[int] = frozenset()) -> list[str]:
@@ -517,7 +559,7 @@ def adopt_found_folders(games: list[dict], settings: Settings, busy: frozenset[i
         if game["id"] in busy or (rec and (rec.imported or rec.state not in ("installed", "awaiting_executable") or present(rec))):
             continue
         for folder in (root / name for root in roots for name in folder_names(game)):
-            if folder in taken or folder in ignored or not folder.is_dir() or misfit(rec, folder) or not holds_game(folder, game["name"]):
+            if folder in taken or folder in ignored or not folder.is_dir() or (rec and not looks_like(rec, folder)) or not holds_game(folder, game["name"]):
                 continue
             claims.setdefault(folder, []).append(game)
             break
@@ -542,7 +584,7 @@ def found_game(folder: Path, games: list[dict], roots: list[Path]) -> dict | Non
         rec = library.get(game["id"])
         if rec and (rec.imported or present(rec)):
             continue
-        if folder.name in folder_names(game) and holds_game(folder, game["name"]) and not misfit(rec, folder):
+        if folder.name in folder_names(game) and holds_game(folder, game["name"]) and not (rec and not looks_like(rec, folder)):
             return game
     return None
 
@@ -551,7 +593,13 @@ def point_to(rec: InstalledGame, new: Path, preference: str = "auto") -> None:
     """The game's files are in `new` now (found there, or the user said so): the record and the save sync's prefix follow, and
     what was written with the old path is written again."""
     old = rec.install_dir
-    _update(rec, **{k: rebase(getattr(rec, k), old, str(new)) for k in ("install_dir", "files_dir", "executable", "prefix")})
+    moved = {k: rebase(getattr(rec, k), old, str(new)) for k in ("install_dir", "files_dir", "executable", "prefix")}
+    if rec.state == "installed" and moved["executable"] and not Path(moved["executable"]).is_file():
+        # The program was deleted or replaced on the way: the folder is the game's, the executable is chosen again (the entries
+        # are edited then, not made anew).
+        moved |= {"executable": None, "state": "awaiting_executable"}
+        logstore.info(f"{rec.name}: {rec.executable} is not in {new}, its executable is to be chosen again")
+    _update(rec, **moved)
     state = load_state(rec.game_id)
     if state.prefix and rebase(state.prefix, old, str(new)) != state.prefix:
         state.prefix = rebase(state.prefix, old, str(new))
@@ -727,15 +775,9 @@ def repair(
     return result
 
 
-def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
-    """Remove the game files and shortcuts, returning the paths that could not be deleted.
-
-    The prefix lives in the game's folder and may hold save files, so it is only deleted when the
-    caller got the user's consent; without it everything else in the folder goes and `pfx` stays."""
-    if rec.imported:  # its folder and prefix are not MOG's to delete
-        remove_import(rec)
-        return []
-    remove_entries(rec)
+def _delete_files(rec: InstalledGame, delete_prefix: bool) -> tuple[list[str], Path]:
+    """Delete the game's files in the folder `rec` says (the prefix stays unless `delete_prefix`). Returns the paths that could
+    not be deleted and the game's folder."""
     install = Path(rec.install_dir)
     keep = pfx_dir(rec)
     keeping = not delete_prefix and rec.prefix is not None and Path(rec.prefix) == keep and keep.is_dir()
@@ -749,14 +791,53 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
                 leftovers.append(path)
         except OSError:
             leftovers.append(path)
+    return leftovers, install
+
+
+def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
+    """Remove the game files and shortcuts, returning the paths that could not be deleted. Every copy of the game goes with it
+    (`uninstall_copy` removes one).
+
+    The prefix lives in the game's folder and may hold save files, so it is only deleted when the
+    caller got the user's consent; without it everything else in the folder goes and `pfx` stays."""
+    if rec.imported:  # its folder and prefix are not MOG's to delete
+        remove_import(rec)
+        return []
+    remove_entries(rec)
+    leftovers, install = _delete_files(rec, delete_prefix)
+    others = []
+    for folder in rec.copies:
+        left, other = _delete_files(copy_view(rec, folder), delete_prefix)
+        leftovers += left
+        others.append(other)
     if not leftovers:
         lib = load_library()
         lib.pop(rec.game_id, None)
         save_library(lib)
         forget_game(rec.game_id)
-        prune_empty(install, load_settings().install_roots)  # a prefix kept with nothing in it, or a folder left empty
+        for folder in [install, *others]:
+            prune_empty(folder, load_settings().install_roots)  # a prefix kept with nothing in it, or a folder left empty
     return leftovers
 
+
+def uninstall_copy(rec: InstalledGame, folder: str | Path, delete_prefix: bool = False, preference: str = "auto") -> list[str]:
+    """Remove one copy of a game that has several, returning the paths that could not be deleted. The record, the entries and the
+    saves stay: when the copy in use is the one that goes, another copy takes its place first (the entries point to it)."""
+    folder = Path(folder)
+    if folder != Path(rec.install_dir) and str(folder) not in rec.copies:
+        return []
+    if folder == Path(rec.install_dir):
+        if not rec.copies:
+            return uninstall(rec, delete_prefix)
+        use_copy(rec, rec.copies[0], preference)
+    view = copy_view(rec, folder)
+    # A prefix kept outside the folders is shared by the copies: it goes only with the game itself.
+    own_prefix = bool(view.prefix) and Path(view.prefix).is_relative_to(folder)
+    leftovers, install = _delete_files(view, delete_prefix and own_prefix)
+    if not leftovers:
+        _update(rec, copies=[c for c in rec.copies if Path(c) != folder])
+        prune_empty(install, load_settings().install_roots)
+    return leftovers
 
 
 def import_game(

@@ -167,17 +167,31 @@ def rebase(path: str | None, old: str, new: str) -> str | None:
         return path
 
 
-def find_moved(rec: InstalledGame, roots: Iterable[Path]) -> Path | None:
-    """Where an installed game's folder is now, when it is not where it was recorded (the games folder was moved, or the install
-    folder changed): a folder of the same name in one of the install folders. When the executable is known it has to be there too,
-    so a folder that only has the same name is not taken for the game."""
+def looks_like(rec: InstalledGame, folder: Path) -> bool:
+    """Whether `folder` can be the game's files: it holds the executable where it was, or, when that was deleted or replaced
+    (the game was moved and its program changed), it holds something of a game besides what MOG makes. A folder with only
+    the prefix, the launch files and empty folders is not a game."""
+    return misfit(rec, folder) is None or (folder.is_dir() and holds_game(folder, rec.name))
+
+
+def copy_candidates(rec: InstalledGame, roots: Iterable[Path]) -> list[Path]:
+    """The folders in the install folders that look like the game's files and are not the one recorded: a folder of the
+    same name as the recorded one, or as the game's, in each of them."""
     old = Path(rec.install_dir)
+    found: list[Path] = []
     for root in roots:
         for name in dict.fromkeys([old.name, safe_dirname(rec.name)]):
             candidate = Path(root) / name
-            if candidate != old and misfit(rec, candidate) is None:
-                return candidate
-    return None
+            if candidate != old and candidate not in found and looks_like(rec, candidate):
+                found.append(candidate)
+    return found
+
+
+def find_moved(rec: InstalledGame, roots: Iterable[Path]) -> Path | None:
+    """Where an installed game's folder is now, when it is not where it was recorded (the games folder was moved, or the install
+    folder changed): a folder of the same name in one of the install folders that looks like the game (see `looks_like`)."""
+    found = copy_candidates(rec, roots)
+    return found[0] if found else None
 
 
 _MOG_FILES = {"pfx", ".mog-icon", ".mog-steam.desktop", ".mog-permissions", ".directory"}

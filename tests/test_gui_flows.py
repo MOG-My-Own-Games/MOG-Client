@@ -562,6 +562,30 @@ def test_a_game_whose_folder_is_gone_is_greyed_and_comes_back_with_the_drive(win
     assert "Not available" not in item.text()
 
 
+def test_a_game_with_a_copy_asks_which_one_to_play_and_which_one_to_uninstall(win, qapp, tmp_path, monkeypatch):
+    first, second = tmp_path / "a" / "Alpha", tmp_path / "b" / "Alpha"
+    for folder in (first, second):
+        folder.mkdir(parents=True)
+    _library_with(win, qapp, tmp_path, monkeypatch, first)
+    rec = config.load_library()[1]
+    rec.copies = [str(second)]
+    config.save_library({1: rec})
+    win.show_game(1)
+    page = win.current_page()
+    assert "2 copies" in page.status.text()
+
+    page.play()
+    choice = win.current_page()
+    assert isinstance(choice, gui.ChoicePage)
+    assert [choice.list.item(i).data(gui.Qt.UserRole) for i in range(choice.list.count())] == [str(first), str(second)]
+    win.back()
+
+    gui.run_uninstall(win, rec)
+    choice = win.current_page()
+    assert isinstance(choice, gui.ChoicePage)
+    assert choice.list.count() == 3 and choice.list.item(2).data(gui.Qt.UserRole) is None  # the copies, then all of them
+
+
 def test_the_page_of_a_game_that_is_not_there_cannot_play_it(win, qapp, tmp_path, monkeypatch):
     _library_with(win, qapp, tmp_path, monkeypatch, tmp_path / "unplugged" / "Alpha")
     win.show_game(1)

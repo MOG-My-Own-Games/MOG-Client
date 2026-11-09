@@ -4030,12 +4030,23 @@ class ViewerPage(Page):
             super().keyPressEvent(e)
 
 
-def run_uninstall(win: "MainWindow", rec: InstalledGame, and_server_cache: bool = False, on_change=lambda: None) -> None:
+def run_uninstall(
+    win: "MainWindow", rec: InstalledGame, and_server_cache: bool = False, on_change=lambda: None, all_copies: bool = False
+) -> None:
     """Take a game off this device: the saves are backed up and questions asked first, then the files go. `on_change` runs
     whenever the state of the game's job changes (it began, ended or was called off), for the page that shows it."""
     app = win.app
     if rec.imported:  # a game from outside MOG is taken out of MOG, never deleted
         win.importing.remove(rec, on_change)
+        return
+    if rec.copies and not all_copies:  # the game was copied: which one goes is asked
+        def picked(folder: str | None) -> None:
+            if folder is None:  # all of them
+                run_uninstall(win, rec, and_server_cache, on_change, all_copies=True)
+            else:
+                uninstall_one_copy(win, rec, folder, on_change)
+
+        win.pick_copy(rec, "Which copy do you want to uninstall?", picked, with_all=True)
         return
 
     def start() -> None:
@@ -4103,6 +4114,51 @@ def run_uninstall(win: "MainWindow", rec: InstalledGame, and_server_cache: bool 
         danger=True,
         game=rec.game_id,
     )
+
+
+def uninstall_one_copy(win: "MainWindow", rec: InstalledGame, folder: str, on_change=lambda: None) -> None:
+    """Delete one of the copies of a game that has several. The game stays: its record, entries and saves are kept, and when
+    the copy in use goes another takes its place."""
+    app = win.app
+    view = manager.copy_view(rec, folder)
+
+    def remove(delete_prefix: bool) -> None:
+        app.jobs[rec.game_id] = "uninstall"
+        on_change()
+
+        def work() -> None:
+            leftovers = manager.uninstall_copy(rec, folder, delete_prefix, app.settings.launcher)
+            app.bridge.call.emit(lambda: finish(leftovers))
+
+        def finish(leftovers: list[str]) -> None:
+            app.jobs.pop(rec.game_id, None)
+            if leftovers:
+                win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
+            else:
+                win.message(f"The copy of {rec.name} in {folder} was deleted", "info")
+            win.refresh_items()
+            on_change()
+
+        def failed(message: str) -> None:
+            app.jobs.pop(rec.game_id, None)
+            win.message(f"Could not delete the copy in {folder}: {message}", "error")
+            on_change()
+
+        app.run_bg(work, on_error=failed)
+
+    def after_yes() -> None:
+        if view.prefix and Path(view.prefix).exists() and Path(view.prefix).is_relative_to(folder):
+            win.ask(
+                "Also delete the Wine prefix of this copy?\nIt may contain your save files. This cannot be undone.",
+                lambda: remove(True),
+                on_no=lambda: remove(False),
+                danger=True,
+                game=rec.game_id,
+            )
+        else:
+            remove(False)
+
+    win.ask(f"Delete the copy of {rec.name} in {folder}? The other copies stay.", after_yes, danger=True, game=rec.game_id)
 
 
 class GamePage(Page):
@@ -4558,7 +4614,7 @@ class GamePage(Page):
             self.first = self._button("Check again", self._check_again, True)
             self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "installed":
-            self.status.setText("Added from outside MOG: its saves are synced" if rec.imported else "Installed")
+            self.status.setText("Added from outside MOG: its saves are synced" if rec.imported else "Installed" + self._copies_note(rec))
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
             if rec.imported and not rec.executable:  # only its saves are kept until a launcher is added
@@ -4730,11 +4786,31 @@ class GamePage(Page):
             self._ring = RingPulse(self.header)
         self._ring.fire(self.cover)
 
+    @staticmethod
+    def _copies_note(rec: InstalledGame) -> str:
+        return f" ({len(rec.copies) + 1} copies)" if rec.copies else ""
+
     def play(self) -> None:
         if self._starting:
             return
         rec = load_library()[self.game["id"]]
+        if rec.copies:  # the game was copied: which one starts is asked every time
+            self.win.pick_copy(rec, "Which copy do you want to play?", lambda folder: self._play_copy(rec, folder))
+            return
+        self._launch(rec)
+
+    def _play_copy(self, rec: InstalledGame, folder: str) -> None:
         self._set_starting(True)
+
+        def work() -> None:
+            manager.use_copy(rec, folder, self.app.settings.launcher)  # the entries and the Steam shortcut follow the choice
+            self.app.bridge.call.emit(lambda: self._launch(load_library()[rec.game_id], starting=True))
+
+        self.app.run_bg(work, on_error=lambda m: (self._set_starting(False), self.win.message(f"Could not switch to that copy: {m}", "error")))
+
+    def _launch(self, rec: InstalledGame, starting: bool = False) -> None:
+        if not starting:
+            self._set_starting(True)
 
         def go() -> None:
             self._set_starting(False)
@@ -6593,7 +6669,12 @@ class MainWindow(QMainWindow):
         if isinstance(page, GamePage):
             page.rebuild()
         shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
-        self.message(f"Found again in their new folder: {shown}", "info")
+        library = load_library()
+        choose = [r.name for r in library.values() if r.name in names and r.state == "awaiting_executable"]
+        text = f"Found again in their new folder: {shown}"
+        if choose:  # the program they started is not there any more
+            text += f". Open {', '.join(choose[:3])} to choose its executable again."
+        self.message(text, "info")
 
     def on_adopted(self, names: list) -> None:
         """Games found in an install folder and taken into the library: they wait for their executable, as after an install."""
@@ -6776,6 +6857,15 @@ class MainWindow(QMainWindow):
         self, title: str, text: str, options: list, on_choose, skip: str | None = None, game: int | None = None,
     ) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip, game))
+
+    def pick_copy(self, rec: InstalledGame, title: str, on_pick, with_all: bool = False) -> None:
+        """Ask which of a game's copies an action is about (the one in use first); `on_pick` gets the folder, or None for "All of
+        them" when `with_all`. A game with one folder is not asked."""
+        folders = [rec.install_dir, *rec.copies]
+        options = [(folder + ("  (in use)" if folder == rec.install_dir else ""), folder) for folder in folders]
+        if with_all:
+            options.append((f"All {len(folders)} copies", None))
+        self.choose(title, f"{rec.name} is in {len(folders)} folders.", options, on_pick, game=rec.game_id)
 
     def checklist(self, title: str, text: str, items: list, on_done, exclusive=None, extra=None, search=False) -> None:
         self.push(ChecklistPage(self, title, text, items, on_done, exclusive, extra, search))

@@ -31,9 +31,22 @@ available". Its page offers "Check again" instead of Play, nothing is backed up 
 itself when the drive does. Resuming a half-finished install waits for its drive too.
 
 When the games folder was moved (or the install folder changed), the games are looked for in the install folders: "Refresh
-library", "Check again" and changing the folders do it. A folder with the game's name, holding its executable, is the game
-again: the library, the save sync's prefix, the launch script, the menu and desktop entries, the Steam shortcut and the folder
-icon follow it to the new place.
+library", "Check again" and changing the folders do it. A folder with the game's name that holds its executable, or any game
+files when the executable was deleted or replaced on the way, is the game again: the library, the save sync's prefix, the launch
+script, the menu and desktop entries, the Steam shortcut and the folder icon follow it to the new place. When the executable is
+not there any more the game says "Setup needed" and asks for it again; its entries are edited then, not made anew.
+
+### Copies of a game
+
+A folder with the game's name in another install folder, holding the game, is a copy of it (the game was copied, not moved).
+The game stays one entry in the library and its page says "Installed (2 copies)".
+
+- **Play** asks which copy to start every time. The copy picked becomes the one in use: the launch script, the entries and the
+  Steam shortcut point to it.
+- **Uninstall** asks which copy to delete, or all of them. Deleting one copy keeps the game, its entries and its saves; when the
+  one in use goes, another takes its place. The prefix question is asked for the copy that goes.
+- A copy removed by hand disappears from the list at the next refresh, and a copy takes the place of the folder in use when
+  that one is gone. A copy with another folder name is not recognised.
 
 ### Games found in the install folders
 

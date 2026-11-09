@@ -167,6 +167,9 @@ class InstalledGame:
     game_id: int
     name: str
     install_dir: str
+    # Other folders in the install folders that hold the same game (it was copied): `install_dir` is the copy in use, and Play
+    # and Uninstall ask which when there are more (see manager.refresh_copies).
+    copies: list[str] = field(default_factory=list)
     # "installing" | "awaiting_executable" | "installed"
     state: str = "installing"
     session_id: int | None = None

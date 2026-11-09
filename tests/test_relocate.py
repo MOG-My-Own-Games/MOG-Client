@@ -180,3 +180,103 @@ def test_moving_the_prefix_back_into_the_games_folder_is_not_a_custom_prefix(mov
 
     back = config.load_library()[7]
     assert not back.prefix_custom and launcher.pfx_dir(back) == folder / "pfx"
+
+
+def test_a_moved_game_whose_program_was_replaced_is_found_and_asks_for_its_executable(moved):
+    rec, settings, folder, _ = moved
+    (folder / "bin" / "game.exe").unlink()
+    (folder / "bin" / "newgame.exe").write_bytes(b"y")  # deleted, and replaced by a new one
+
+    assert manager.relocate_moved(settings) == ["Game"]
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(folder)
+    assert found.state == "awaiting_executable" and found.executable is None
+    assert state.load_state(7).prefix == str(folder / "pfx")
+
+
+def test_looks_like_takes_a_folder_with_game_files_but_not_one_with_only_what_mog_makes(moved):
+    rec, _, folder, _ = moved
+    (folder / "bin" / "game.exe").unlink()
+    assert not installdirs.looks_like(rec, folder)  # the icon and an empty bin are not a game
+    (folder / "data.pak").write_bytes(b"d")
+    assert installdirs.looks_like(rec, folder)
+
+
+def _copied(moved, tmp_path, monkeypatch):
+    """The moved game found in `new/`, then copied into a second install folder."""
+    rec, settings, folder, _ = moved
+    second = tmp_path / "second"
+    second.mkdir()
+    settings.install_dirs = [str(folder.parent), str(second)]
+    monkeypatch.setattr(manager, "load_settings", lambda: settings)  # what empties the folders left behind is read from it
+    assert manager.relocate_moved(settings) == ["Game"]
+    shutil.copytree(folder, second / "Game")
+    return settings, folder, second / "Game"
+
+
+def test_a_copy_of_the_game_in_another_install_folder_is_listed_and_the_game_in_use_stays(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+
+    assert manager.relocate_moved(settings) == []
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(folder) and found.copies == [str(copy)]
+    shutil.rmtree(copy)  # the copy is removed by hand
+    manager.relocate_moved(settings)
+    assert config.load_library()[7].copies == []
+
+
+def test_a_copy_takes_the_place_of_the_folder_in_use_when_that_one_is_gone(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+    manager.relocate_moved(settings)
+    shutil.rmtree(folder)
+
+    assert manager.relocate_moved(settings) == ["Game"]
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(copy) and found.copies == []
+    assert found.executable == str(copy / "bin" / "game.exe")
+
+
+def test_using_a_copy_swaps_it_with_the_one_in_use_and_writes_the_launch_script_for_it(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+    manager.relocate_moved(settings)
+
+    manager.use_copy(config.load_library()[7], copy, "wine")
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(copy) and found.copies == [str(folder)]
+    assert str(copy) in launcher.launch_script_path(found).read_text()
+    assert state.load_state(7).prefix == str(copy / "pfx")
+
+
+def test_uninstalling_a_copy_keeps_the_game_and_the_other_copy(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+    manager.relocate_moved(settings)
+
+    assert manager.uninstall_copy(config.load_library()[7], copy) == []
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(folder) and found.copies == [] and folder.is_dir() and not copy.exists()
+
+
+def test_uninstalling_the_copy_in_use_promotes_the_other_one(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+    manager.relocate_moved(settings)
+
+    assert manager.uninstall_copy(config.load_library()[7], folder, preference="wine") == []
+
+    found = config.load_library()[7]
+    assert found.install_dir == str(copy) and found.copies == [] and copy.is_dir()
+    assert not (folder / "bin").exists()
+    assert str(copy) in launcher.launch_script_path(found).read_text()
+
+
+def test_uninstalling_the_game_removes_every_copy(moved, tmp_path, monkeypatch):
+    settings, folder, copy = _copied(moved, tmp_path, monkeypatch)
+    manager.relocate_moved(settings)
+
+    assert manager.uninstall(config.load_library()[7], delete_prefix=True) == []
+
+    assert 7 not in config.load_library() and not (folder / "bin").exists() and not (copy / "bin").exists()
