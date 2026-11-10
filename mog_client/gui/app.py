@@ -94,6 +94,7 @@ from mog_client import (
     net,
     ordering,
     protocol,
+    quiver,
     selfsteam,
     snapshot,
     steam,
@@ -115,7 +116,7 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.grouping import GONE, SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, gone_game, group_games, has_no_files
+from mog_client.grouping import GONE, SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, gone_game, group_games, has_no_files, local_only
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
@@ -291,6 +292,8 @@ class App:
         self.queued: dict[int, int] = {}  # games the server holds in its queue -> their place (1 is next; 0 when not said)
         self.vnc: dict[int, str] = {}
         self.group_of: dict[int, Group] = {}  # any game id -> the versions of its title
+        self.server_games: list[dict] = []  # the list as the server sent it, before the Quiver games are put among them
+        self.quiver_games: list[quiver.QuiverGame] = []  # what Quiver Launcher has installed, while its library is on
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
         self.jobs: dict[int, str] = {}  # games with a job (see JOB_TEXT), shown on their main button
         self._icons_asked: set[int] = set()
@@ -740,8 +743,64 @@ class App:
             for gid, rec in load_library().items():
                 if gid not in self.games:
                     self.games[gid] = gone_game(rec)
+        self.server_games = games
+        self.add_quiver_games()
         self.group_of = {g["id"]: group for group in group_games(list(self.games.values())) for g in group.members}
         return said
+
+    def add_quiver_games(self) -> None:
+        """Quiver Launcher's games, as a library of their own: a game with no record here is listed under a negative id (it gets its
+        entry on the server when first started from here, see `GamePage.play_quiver`); one with a record is the server's entry
+        moved into that library. Quiver moving or updating a game is followed in the records."""
+        self.quiver_games = []
+        if not self.settings.quiver_library:
+            return
+        data = quiver.find(self.settings.quiver_dir)
+        if data is None:
+            return
+        try:
+            self.quiver_games = quiver.installed(data)
+            manager.follow_quiver(self.quiver_games)
+        except Exception as e:  # noqa: BLE001 - Quiver's files are not ours: a change in them never keeps the library from showing
+            logstore.warning(f"Could not read Quiver Launcher's games: {e}")
+            return
+        recorded = {rec.quiver_id: rec for rec in load_library().values() if rec.quiver_id}
+        for game in self.quiver_games:
+            if game.id not in recorded:
+                stand = quiver.standin(game)
+                self.games[stand["id"]] = stand
+        for rec in recorded.values():
+            entry = self.games.get(rec.game_id) or {"id": rec.game_id, "name": rec.name, "fs_name": rec.server_name or rec.name, "igdb_id": None}
+            art = next((g.cover for g in self.quiver_games if g.id == rec.quiver_id), "")
+            self.games[rec.game_id] = {
+                **entry, "library_id": quiver.LIBRARY_ID, "quiver": rec.quiver_id, "cover_path": entry.get("cover_path") or art or None,
+            }
+
+    def load_quiver_covers(self) -> None:
+        """The covers of the Quiver games (the server has none for a game it does not know yet, and may have none for one it does)."""
+        wanted = [g for g in self.games.values() if g.get("quiver") and g.get("cover_path") and (g["id"] < 0 or not g.get("igdb_metadata"))]
+
+        def work() -> None:
+            client = self.client()
+            for game in wanted:
+                url = game["cover_path"]
+                cache = data_dir() / "covers" / f"{game['id']}-{hashlib.sha1(url.encode()).hexdigest()[:10]}.img"
+                try:
+                    blob = self._image(cache, f"/api/games/{game['id']}/cover", url, client)
+                except (OSError, RuntimeError):
+                    continue
+                if blob is not None:
+                    self.bridge.cover.emit(game["id"], blob)
+
+        if wanted:
+            self.run_bg(work, on_error=lambda _m: None)
+
+    def use_quiver(self, enabled: bool) -> None:
+        """Turn the Quiver Launcher library on or off (its games are looked for again; the records and saves are kept either way)."""
+        self.settings.quiver_library = enabled
+        save_settings(self.settings)
+        self.set_games(self.server_games)
+        self.load_quiver_covers()
 
     def active_version(self, group: Group) -> dict:
         """The version to show for a title: one being installed, else one with local files, else the first."""
@@ -1627,9 +1686,9 @@ class OptionsPage(Page):
             if not rec.imported and not gone:  # the files of a game from outside MOG are not the server's to check
                 add("Repair: check the installed files", lambda: page.repair(rec))
             add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
-            if rec.imported:
+            if rec.imported and not rec.quiver_id:  # Quiver's folder stays Quiver's: it updates it, MOG never moves it
                 add("Move into MOG...", lambda: win.importing.move_into_mog(rec, page.rebuild), True)
-            else:
+            elif not rec.imported:
                 add("Nuke custom settings", lambda: page.nuke_settings(rec), True)
         if rec and rec.imported:
             add("Remove from MOG...", lambda: win.importing.remove(rec, page.rebuild), True)
@@ -3214,9 +3273,54 @@ class SettingsPage(Page):
             )
             self.launcher_status = row.status
             self._scan_row = row
+        menu.section("Quiver Launcher")
+        self.quiver_box = Toggle()
+        self.quiver_box.setChecked(self.win.app.settings.quiver_library)
+        self.quiver_box.toggled.connect(self._quiver_toggled)
+        self._quiver_row = menu.add(
+            OptionRow(
+                "Quiver Launcher library",
+                "List the games Quiver Launcher installed as a library of their own. Quiver keeps installing and updating them; MOG "
+                "starts them, gives them Steam shortcuts and syncs their saves (only the saves, never the files Quiver updates).",
+                self.quiver_box,
+            )
+        )
+        pick = QPushButton("Choose folder...")
+        pick.clicked.connect(self._pick_quiver_folder)
+        self._quiver_folder_row = menu.add(
+            OptionRow(
+                "Quiver data folder",
+                "Only needed when Quiver is portable or its data was moved: the folder with its installs.json.",
+                pick,
+            )
+        )
+        self._quiver_status()
         self._installed_title = menu.section("Installed games")
         self._library_menu = menu
         return menu
+
+    def _quiver_status(self) -> None:
+        settings = self.win.app.settings
+        found = quiver.find(settings.quiver_dir)
+        self._quiver_row.set_status(f"Found: {found}" if found else "Quiver Launcher was not found on this computer.")
+
+    def _quiver_toggled(self, on: bool) -> None:
+        self.win.use_quiver(on)
+        self._quiver_status()
+
+    def _pick_quiver_folder(self) -> None:
+        def picked(path: str) -> None:
+            if quiver.find(str(path)) is None:
+                self.win.message(f"There is no Quiver Launcher data in {path} (no installs.json).", "error")
+                return
+            settings = self.win.app.settings
+            settings.quiver_dir = str(path)
+            save_settings(settings)
+            self.quiver_box.setChecked(True)
+            self.win.use_quiver(True)
+            self._quiver_status()
+
+        self.win.push(BrowsePage(self.win, Path.home(), picked, folders=True, text="Choose Quiver Launcher's data folder."))
 
     def _library_records(self) -> list[InstalledGame]:
         return list(load_library().values())
@@ -4262,12 +4366,12 @@ class GamePage(Page):
         b.header_art.connect(self._on_header_art)
         b.cover.connect(lambda gid, _blob: gid == self.game["id"] and self._set_cover(win.cover_for(gid)))
         b.activity.connect(self._sync_buttons)  # an install that began or ended elsewhere
-        if not game.get("gone"):  # the server has nothing to say about a game it has no entry for
+        if not local_only(game):  # the server has nothing to say about a game it has no entry for
             self.app.fetch_images(self.shot_urls, game["id"])
             self.app.fetch_videos(game["id"])
             self.app.fetch_header_art(game)
         self._update_version_label()
-        if not game.get("gone"):
+        if not local_only(game):
             self.app.load_size(game["id"])
             self.app.load_mods(game["id"])
         self._show_play_rows()
@@ -4614,7 +4718,11 @@ class GamePage(Page):
             self.first = self._button("Check again", self._check_again, True)
             self._button("Options", lambda: self.show_options(rec))
         elif rec and rec.state == "installed":
-            self.status.setText("Added from outside MOG: its saves are synced" if rec.imported else "Installed" + self._copies_note(rec))
+            self.status.setText(
+                "Installed by Quiver Launcher" if rec.quiver_id
+                else "Added from outside MOG: its saves are synced" if rec.imported
+                else "Installed" + self._copies_note(rec)
+            )
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
             if rec.imported and not rec.executable:  # only its saves are kept until a launcher is added
@@ -4631,6 +4739,14 @@ class GamePage(Page):
             self.status.setText("Awaiting executable info")
             self.first = self._button("Choose executable", lambda: self.choose_executable(rec), True)
             self._button("Options", lambda: self.show_options(rec))
+        elif not rec and quiver.is_virtual(gid):
+            self.status.setText("Installed by Quiver Launcher")
+            self.bar.setRange(0, 1)
+            self.bar.setValue(1)
+            self.first = self._button("Play", self.play_quiver, True)
+            self.play_ring = SpinRing(self.first)
+            if self._starting:
+                self.first.setText("Starting...")
         elif not rec and has_no_files(self.game):
             self.status.setText("No installation files on the server")  # nothing to install from: no Install button
             self.bar.setRange(0, 1)
@@ -4798,6 +4914,43 @@ class GamePage(Page):
             self.win.pick_copy(rec, "Which copy do you want to play?", lambda folder: self._play_copy(rec, folder))
             return
         self._launch(rec)
+
+    def play_quiver(self) -> None:
+        """The first start of a Quiver game from here: it gets its entry on the server (what its saves and playing time hang off), a
+        record that leaves Quiver's folder alone, and the shortcuts; then it starts like any other game."""
+        if self._starting:
+            return
+        game = next((g for g in self.app.quiver_games if g.id == self.game.get("quiver")), None)
+        if game is None or not game.present or game.executable is None:
+            self.win.message(f"{self.game['name']} is not where Quiver Launcher put it: open Quiver to repair it.", "error")
+            return
+        self._set_starting(True)
+        settings = self.app.settings
+
+        def work() -> None:
+            entry = self.app.client().import_game(game.name)
+            users = selfsteam.accounts(settings) if settings.steam_decided else []
+            rec = manager.adopt_quiver_game(game, entry, users, settings.launcher)
+            self.app.bridge.call.emit(lambda: self._quiver_ready(rec, entry))
+
+        def failed(message: str) -> None:
+            self._set_starting(False)
+            self.win.message(f"Could not add {game.name}: {message} MOG Server is needed the first time a Quiver game is started from here.", "error")
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(lambda: failed(m)))  # the error comes from the worker
+
+    def _quiver_ready(self, rec: InstalledGame, entry: dict) -> None:
+        old = self.game["id"]
+        if all(g["id"] != entry["id"] for g in self.app.server_games):
+            self.app.server_games = [*self.app.server_games, entry]  # the server's next list has it; until then this does
+        self.app.set_games(self.app.server_games)  # the stand-in goes, the record's entry takes its place
+        self.win.game_pages.pop(old, None)
+        self.win.back()
+        self.win.library.populate(self.win.search.text().lower())
+        self.win.show_game(rec.game_id)
+        page = self.win.game_pages.get(rec.game_id)
+        if page is not None:
+            page._launch(rec)
 
     def _play_copy(self, rec: InstalledGame, folder: str) -> None:
         self._set_starting(True)
@@ -5941,6 +6094,7 @@ class LibraryPage(Page):
         self.items: dict[int, QListWidgetItem] = {}
         self.library_filter: int | None = win.app.settings.library_filter  # the last one chosen, until the server's list says it is gone
         self.libraries: list[dict] = []
+        self.server_libraries: list[dict] = []  # the same without the Quiver Launcher library
 
         # The sidebar sits on the left, beside the grid, not inside it, so scrolling the games leaves it where it is.
         self.sidebar = QWidget()
@@ -6042,6 +6196,9 @@ class LibraryPage(Page):
         self.libs.set_natural_height(min(LIBS_MAX_HEIGHT, self.libs.sizeHintForRow(0) * self.libs.count() + 12))
 
     def set_libraries(self, libraries: list[dict]) -> None:
+        self.server_libraries = libraries
+        if self.win.app.settings.quiver_library:  # Quiver Launcher's games are a library of this computer's, after the server's
+            libraries = [*libraries, {"id": quiver.LIBRARY_ID, "name": quiver.LIBRARY_NAME}]
         # The server's list arrives with every refresh (a scrape changes the games all the time). The same list is not built
         # again: a click whose row is replaced between the press and the release never changes the library.
         if libraries == self.libraries and self.libs.count() == len(libraries) + 1:
@@ -7406,6 +7563,21 @@ class MainWindow(QMainWindow):
     def open_about(self, changelog_first: bool = False) -> None:
         self.push(AboutPage(changelog_first))
 
+    def offer_quiver(self) -> None:
+        """Once: when Quiver Launcher is on this computer, offer its games as a library. A no is kept (Settings > Library adds it later)."""
+        settings = self.app.settings
+        if settings.quiver_asked or settings.quiver_library or quiver.find(settings.quiver_dir) is None:
+            return
+        settings.quiver_asked = True
+        save_settings(settings)
+        self.message(
+            "Quiver Launcher is installed on this computer. Add its games to MOG as a library? They keep being installed and updated "
+            "by Quiver; MOG starts them, adds Steam shortcuts and syncs their saves.",
+            "info",
+            action=("Add the library", lambda: self.use_quiver(True)),
+            keep=False,
+        )
+
     def offer_changelog(self) -> None:
         """After an update, once per version: open what changed in it."""
         settings = self.app.settings
@@ -7556,6 +7728,7 @@ class MainWindow(QMainWindow):
         self.app.poll_notifications()
         self.notify(f"{len(games)} games")
         self.refresh_items()
+        self.app.load_quiver_covers()
         self.saves.check_all()
         self.adopt_folders(games)
         self.settle_steam()
@@ -7665,6 +7838,12 @@ class MainWindow(QMainWindow):
 
     def refresh_items(self) -> None:
         self.library.populate(self.search.text().lower())
+
+    def use_quiver(self, enabled: bool) -> None:
+        """Quiver Launcher's library on or off: its games come and go among the others and in the sidebar."""
+        self.app.use_quiver(enabled)
+        self.library.set_libraries(self.library.server_libraries)
+        self.refresh_items()
 
     def changeEvent(self, e) -> None:  # noqa: N802 - Qt's name
         super().changeEvent(e)
@@ -7842,4 +8021,5 @@ def run_gui(link: str | None = None) -> int:
     if app.settings.first_run_done:
         QTimer.singleShot(0, win.offer_steam_client)
         QTimer.singleShot(0, win.offer_changelog)
+        QTimer.singleShot(0, win.offer_quiver)
     return qapp.exec()

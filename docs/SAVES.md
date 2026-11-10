@@ -120,6 +120,22 @@ icon are kept in MOG's data folder (`imports/<game id>`), never in the game's fo
   **Flatpak sandbox** switches this off.
 - macOS is implemented but has not been tried on a Mac.
 
+## Games Quiver Launcher keeps up to date
+
+A game installed by Quiver Launcher (see "Quiver Launcher" in GUI.md) is a game from outside MOG whose folder is rewritten by
+its launcher, several times a day: shaders, recompiled files, the program itself. So its saves are **exactly the places named**
+and nothing else in the folder, however new or changed a file there is (**listed saves**):
+
+- The places are the ones MOG knows for the port, or the ones you tick under Options > Saves... > **Choose the saves' folders...**.
+  Known today: Zelda 64: Recompiled, in `~/.config/Zelda64Recompiled/saves` (`%LOCALAPPDATA%\Zelda64Recompiled\saves` on
+  Windows), or in the game's own `saves` folder when `portable.txt` is next to its program (Quiver adds it for some ports);
+  Soulcalibur II Recomp, in `~/.local/share/Soulcalibur II/saves` (not the logs and ini files beside it). A
+  port MOG does not know has no saves until you name them; the folders it wrote to during a session are offered then.
+- A file in the game's folder that is not in a named place is never taken for a save, and the server's list of save places for
+  the title is not added to yours.
+- What would go up is checked before the archive is made: more than 512 MiB (what the server takes) is refused with the folders
+  that weigh most, so a wrongly ticked folder of recompiled files stops at once instead of becoming gigabytes of saves.
+
 ## Import external saves
 
 A game installed by MOG that you also had outside MOG (itch.io, a Wine prefix of its own) can take your old progress in place of
