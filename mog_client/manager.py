@@ -48,6 +48,7 @@ from mog_client.launcher import (
     write_directory_file,
     write_launch_script,
 )
+from mog_client.quiver import QuiverGame
 from mog_client.saves import installed as ledger
 from mog_client.saves.locations import GAME_KEY, SANDBOX_DIRS
 from mog_client.saves.state import forget_game, load_state, save_install_manifest, save_state
@@ -872,6 +873,56 @@ def import_game(
     return rec
 
 
+def record_of_quiver(quiver_id: str) -> InstalledGame | None:
+    """The record a Quiver game got when it was first started from here, or None while it is only listed."""
+    return next((r for r in load_library().values() if r.quiver_id == quiver_id), None)
+
+
+def adopt_quiver_game(game: QuiverGame, entry: dict, steam_users: list[Path] | None = None, launcher: str = "auto") -> InstalledGame:
+    """Give a game Quiver Launcher installed a record here, the first time it is started from MOG. `entry` is the server's entry for
+    it (`MogClient.import_game` makes one by the name). It is an imported game whose folder stays Quiver's, so MOG never moves
+    or deletes it, and whose saves are only the places `game.keys` names: Quiver rewrites the folder on every update.
+    The prefix, when there is one, is Quiver's own."""
+    rec = import_game(entry, game.folder, game.target, game.prefix, executable=str(game.executable) if game.executable else None)
+    prefix = game.prefix
+    if game.target == "windows" and prefix is None and sys.platform != "win32":
+        # Quiver 3.x runs a Windows program with the user's own command and keeps no prefix for it: MOG makes one in its own data
+        # folder, never in Quiver's.
+        prefix = entries_dir(rec) / PREFIX_DIR
+    _update(rec, quiver_id=game.id, explicit_saves=True, prefix=str(prefix) if prefix else None)
+    importer_remember(rec, game.keys, prefix)
+    if game.executable:
+        meta = {**entry, "cover_path": entry.get("cover_path") or game.cover or None}  # Quiver's own art when the server has none
+        finish_setup(rec, meta, str(game.executable), steam_users or [], True, launcher)
+    return rec
+
+
+def importer_remember(rec: InstalledGame, keys: list[str], prefix: Path | None) -> None:
+    from mog_client.saves import importer  # the importer reaches into the sync, which reaches back here
+
+    importer.remember(rec, keys, prefix)
+
+
+def follow_quiver(games: list[QuiverGame]) -> list[InstalledGame]:
+    """Quiver moved or updated its games: the records follow (the folder, the program, the prefix). A game Quiver no longer has
+    keeps its record, as a folder that is not connected; nothing is removed. Returns the records that changed."""
+    by_id = {g.id: g for g in games}
+    changed = []
+    for rec in list(load_library().values()):
+        game = by_id.get(rec.quiver_id or "")
+        if game is None:
+            continue
+        wanted = {"install_dir": str(game.folder)}
+        if game.executable and str(game.executable) != rec.executable:
+            wanted["executable"] = str(game.executable)
+        if game.prefix and str(game.prefix) != rec.prefix:
+            wanted["prefix"] = str(game.prefix)
+        if any(getattr(rec, k) != v for k, v in wanted.items()):
+            _update(rec, **wanted)
+            changed.append(rec)
+    return changed
+
+
 def set_sandbox(rec: InstalledGame, sandbox: str | None) -> None:
     """The Flatpak app a game runs in (its saves are below `~/.var/app/<id>/`), or None for the real home. Found by the saves'
     folders being chosen, so it is on; Linux Options can switch it off (`set_sandbox_enabled`)."""
@@ -988,6 +1039,8 @@ def move_into_mog(rec: InstalledGame, settings: Settings, move_prefix: bool = Tr
     Raises MoveError, with the record as it was, when the game's folder cannot be moved."""
     if not rec.imported:
         raise MoveError(f"{rec.name} is already a MOG game")
+    if rec.quiver_id:
+        raise MoveError(f"{rec.name} is kept up to date by Quiver Launcher, so its folder stays where Quiver put it")
     old_dir = Path(rec.install_dir)
     dest = move_target(rec, settings)
     if not old_dir.is_dir():

@@ -45,10 +45,16 @@ def gone_game(rec) -> dict:
     return {"id": rec.game_id, "name": rec.name, "fs_name": rec.server_name or rec.name, "library_id": None, "igdb_id": None, "gone": True}
 
 
+def local_only(game: dict) -> bool:
+    """Whether the server has nothing to say about the game: it has no entry (`gone`), or none yet (a Quiver game that was never
+    started from here is listed under an id the server does not know)."""
+    return bool(game.get("gone")) or game.get("id", 0) < 0
+
+
 def has_no_files(game: dict) -> bool:
     """Whether the server has nothing to install the game from: one added by a client only to sync its saves (it never had files
     there), or gone from disk with only its saves kept."""
-    return bool(game.get("imported") or game.get("saves_only") or game.get("gone"))
+    return bool(game.get("imported") or game.get("saves_only") or game.get("gone") or game.get("quiver"))
 
 
 def corner_state(game: dict) -> str | None:

@@ -54,6 +54,7 @@ mog_client/
   launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
   gameplay.py   Following a game started from here to its end, and stopping it (stdlib)
   saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher; importer.py works out where the saves of a game added from outside MOG are (Qt-free) and makes the first sync take all of them; external.py finds a MOG game's old saves in another prefix or game folder and puts them in place of the fresh ones
+  quiver.py     Quiver Launcher's installed games read from its own files, 3.x (`apps.json`) and 4.x (`installs.json`) (Qt-free): data folder, install folder, program, prefix, the save places of known ports; `InstalledGame.quiver_id`/`explicit_saves` make the sync take only those places
   steam.py      shortcuts.vdf read/write + grid artwork
   selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
   scrape.py     Artwork URLs from the server's already-scraped metadata

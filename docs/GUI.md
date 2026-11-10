@@ -10,6 +10,20 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - The sidebar's sections (active installs, libraries, sort and filter) fold with a click, Enter or A on their heading, and
   stay folded between runs. Where the sidebar is too short for all of them the active installs keep their room first, then
   the libraries, then the sort and filter list.
+- **Quiver Launcher** (native ports and recompilations such as Zelda 64: Recompiled) has a library of its own at the end of the
+  sidebar's list. When MOG finds Quiver on the computer at the start, it asks once whether to add it (a no is kept); Settings >
+  Library > **Quiver Launcher library** switches it on or off later, and **Quiver data folder** points to it when Quiver is
+  portable or its data was moved (the folder with its `apps.json`, or `installs.json` for Quiver 4). MOG looks beside
+  Quiver 3's AppImage (found from its menu entry or in `~/Applications`, `~/AppImages`, `~/Downloads`...), in
+  `~/.local/share/QuiverLauncher` and, for Quiver 4, in `com.quiverlauncher.app` there. Quiver installs and updates the games, in place and as
+  often as it likes; MOG only lists what it installed, so a game Quiver removes or moves is followed or leaves the library.
+  - A game nobody started from MOG yet is listed as it is (with Quiver's cover) and its page has Play. The first Play makes its
+    entry on MOG Server (what its saves and playing time hang off, listed there like any game added from outside MOG; this
+    needs the server the first time) and a record here, writes its Steam shortcuts and menu entry, and starts it. From then on
+    it is an ordinary game of the library.
+  - Its folder is Quiver's: **Move into MOG...** is not offered and **Remove from MOG...** never deletes it.
+  - A Windows-only port on Linux is started like a game from outside MOG, in the Wine prefix Quiver keeps for it
+    (`<Quiver data>/proton/<folder>`); on Windows the program is started as it is.
 - The library chosen in the sidebar is remembered, for the next visit to the library and the next start, instead of
   going back to All games. A library that is gone from the server is forgotten.
 - "Sort and filter" in the sidebar has switches (last played first, installed first, cached first: the games the server

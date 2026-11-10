@@ -20,6 +20,8 @@ The CLI is pure stdlib Python. The GUI (Qt, controller-friendly, Steam Deck read
 - Makes a desktop entry and a Steam shortcut for each game, with the server's artwork. They run the game straight through
   Faugus Launcher, umu, Proton or Wine (or directly on Windows) and keep working without the client.
 - Backs your saves up to the server and brings them to your other machines.
+- Shows the native ports that [Quiver Launcher](https://quiverlauncher.com) installed on the computer as a library of their
+  own. Quiver keeps installing and updating them; MOG starts them, gives them Steam shortcuts and syncs only their saves.
 - Runs a game's installers and patches in a chosen order, and sends or takes the mods, patches and DLC of a game as addons kept
   on the server, never mistaken for saves. It is not a mod manager: for load order and conflicts use dedicated software such
   as Amethyst Mod Manager.
@@ -46,6 +48,8 @@ The first start walks you through the server, where games go, saves and Steam.
   installing from the web UI.
 - [Save sync](docs/SAVES.md): what is backed up, when, and what the logs say.
 - [Steam](docs/STEAM.md): accounts, shortcuts and the first-start guide.
+- [Quiver Launcher](docs/GUI.md#the-library): its games as a library, and how their saves are kept (see also
+  [Games Quiver Launcher keeps up to date](docs/SAVES.md#games-quiver-launcher-keeps-up-to-date)).
 
 ## CLI
 

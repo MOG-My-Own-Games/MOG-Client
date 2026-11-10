@@ -106,6 +106,12 @@ class Settings:
     changelog_seen: str = ""
     # The first-start guide has been through (or the client was set up before there was one).
     first_run_done: bool = False
+    # Quiver Launcher's games are listed as a library of their own (see quiver.py). `quiver_dir` is its data folder when the
+    # user picked it (a portable install); `quiver_library` is whether the library is on, and `quiver_asked` that the user
+    # was asked once (a "no" is kept: the library is then added only from the Settings).
+    quiver_library: bool = False
+    quiver_asked: bool = False
+    quiver_dir: str = ""
 
     @property
     def install_roots(self) -> list[Path]:
@@ -233,6 +239,11 @@ class InstalledGame:
     sandbox: str | None = None
     # The person can switch it off (Linux Options): the app is remembered, and the real home is used meanwhile.
     sandbox_enabled: bool = True
+    # A game Quiver Launcher installs and keeps up to date (quiver.py): the id of its entry there. Its folder changes with every
+    # update, so what counts as a save is exactly the list of places the user confirmed (`explicit_saves`) and nothing else
+    # in the folder, whatever the launcher writes into it.
+    quiver_id: str | None = None
+    explicit_saves: bool = False
 
     def __post_init__(self) -> None:
         # An earlier version kept the arguments as one text: they become tags the first time the record is read.

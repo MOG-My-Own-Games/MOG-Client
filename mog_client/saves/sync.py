@@ -131,7 +131,11 @@ def _files_dir(rec: InstalledGame) -> Path | None:
 
 
 def _install_folder_candidates(ctx: Context) -> list[Candidate]:
-    """What the game wrote into its own folder, without reading again the files that were already checked."""
+    """What the game wrote into its own folder, without reading again the files that were already checked. A game whose saves
+    are listed (Quiver's: its launcher rewrites the folder) has none: what the installer left is not told from what an update
+    wrote, so only the listed places count."""
+    if ctx.rec.explicit_saves:
+        return []
     game_id = ctx.rec.game_id
     verified = load_verified(game_id)
     before = dict(verified)
@@ -148,7 +152,7 @@ def _candidates(ctx: Context, drive_c: Path | None, includes: list[str] | None =
     elif drive_c is not None:
         found += list(profile_candidates(drive_c))
     found += _install_folder_candidates(ctx)
-    if ctx.rec.imported:
+    if ctx.rec.imported or ctx.rec.explicit_saves:
         # No manifest tells an imported game's own files from its saves: only the folders the user confirmed count.
         inside = [k for k in includes or [] if k == GAME_KEY or k.startswith(f"{GAME_KEY}/")]
         found += list(native.included_files(inside, Path(ctx.rec.install_dir)))
@@ -274,11 +278,12 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
     if found is None and not candidates and prefixes.has_prefixes():
         return BackupResult("needs-prefix")
 
-    dedicated = found is not None and found.source in DEDICATED_SOURCES
+    explicit = ctx.rec.explicit_saves
+    dedicated = found is not None and found.source in DEDICATED_SOURCES and not explicit
     includes = state.includes
 
     def accept(key: str) -> bool:
-        if key.startswith(f"{GAME_KEY}/") or dedicated:
+        if not explicit and (key.startswith(f"{GAME_KEY}/") or dedicated):
             return True
         return includes is not None and any(key.startswith(p + "/") or key == p for p in includes)
 
@@ -297,14 +302,17 @@ def _backup_native(
     it wrote into its own folder; until then the folders it wrote to during the last session are offered."""
     rec = ctx.rec
     install_dir = Path(rec.install_dir)
-    known = _manifest_folders(ctx, state, upload)
+    explicit = rec.explicit_saves
+    known = [] if explicit else _manifest_folders(ctx, state, upload)  # a listed game is not given the server's guesses
     # What the manifest names counts as confirmed, along with what the user confirmed.
     confirmed = sorted({*(state.includes or []), *known})
     candidates = _install_folder_candidates(ctx)
     candidates += list(native.included_files(confirmed, install_dir, rec.in_sandbox))
 
     def accept(key: str) -> bool:
-        return key.startswith(f"{GAME_KEY}/") or any(key == p or key.startswith(p + "/") for p in confirmed)
+        if not explicit and key.startswith(f"{GAME_KEY}/"):
+            return True
+        return any(key == p or key.startswith(p + "/") for p in confirmed)
 
     result = attribute(candidates, state.tracked, since_ns, accept)
     if state.includes is None and not result.tracked:
@@ -359,6 +367,17 @@ def too_large_message(name: str, size: int, tracked: dict, by_key: dict) -> str:
     return text + " That is probably not saves: check which folders are taken for them."
 
 
+# What the server takes of one save (its default); a listed game is held to it before the archive is made.
+EXPLICIT_LIMIT = 512 * 1024 * 1024
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _mib(size: int) -> str:
     return f"{size / 1024 / 1024:.0f} MiB"
 
@@ -388,6 +407,11 @@ def _send(
         return BackupResult("unchanged")
 
     by_key = {c.key: c.path for c in candidates}
+    if rec.explicit_saves:
+        # What a launcher rewrites can be gigabytes: refuse before it is zipped, not after the server says no.
+        size = sum(_size(by_key[k]) for k in result.tracked if k in by_key)
+        if size > EXPLICIT_LIMIT:
+            raise RuntimeError(too_large_message(rec.name, size, result.tracked, by_key))
     outgoing = saves_dir(rec.game_id) / "outgoing.zip"
     try:
         count = build_archive(((k, by_key[k]) for k in sorted(result.tracked) if k in by_key), outgoing)
