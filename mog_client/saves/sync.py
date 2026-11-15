@@ -20,6 +20,7 @@ from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import native
 from mog_client.saves import prefix as prefixes
+from mog_client.saves import rules as save_rules
 from mog_client.saves.archive import build_archive, extract_archive, read_keys
 from mog_client.saves.devices import DeviceRecord
 from mog_client.saves.locations import (
@@ -269,7 +270,9 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
     found = find_prefix(ctx, state)
     drive_c = _drive_c(found, ctx.rec)
     scan_began = time.monotonic()
+    rules = _rules(ctx, state, upload)
     candidates = _candidates(ctx, drive_c, state.includes)
+    candidates = _with_rules(ctx, candidates, rules, drive_c)
     if upload:
         logstore.info(
             f"Saves of {ctx.rec.name}: {len(candidates)} candidate files in {time.monotonic() - scan_began:.1f}s"
@@ -287,7 +290,7 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
             return True
         return includes is not None and any(key.startswith(p + "/") or key == p for p in includes)
 
-    result = attribute(candidates, state.tracked, since_ns, accept)
+    result = attribute(candidates, state.tracked, since_ns, accept, rules.added)
     if result.unattributed and since_ns is None and not dedicated and includes is None:
         folders = sorted({_folder_of(k) for k in result.unattributed if not k.startswith(f"{GAME_KEY}/")})
         if folders:
@@ -306,15 +309,17 @@ def _backup_native(
     known = [] if explicit else _manifest_folders(ctx, state, upload)  # a listed game is not given the server's guesses
     # What the manifest names counts as confirmed, along with what the user confirmed.
     confirmed = sorted({*(state.includes or []), *known})
+    rules = _rules(ctx, state, upload)
     candidates = _install_folder_candidates(ctx)
     candidates += list(native.included_files(confirmed, install_dir, rec.in_sandbox))
+    candidates = _with_rules(ctx, candidates, rules, None)
 
     def accept(key: str) -> bool:
         if not explicit and key.startswith(f"{GAME_KEY}/"):
             return True
         return any(key == p or key.startswith(p + "/") for p in confirmed)
 
-    result = attribute(candidates, state.tracked, since_ns, accept)
+    result = attribute(candidates, state.tracked, since_ns, accept, rules.added)
     if state.includes is None and not result.tracked:
         if since_ns is not None and upload:
             # Only a session window tells the game's files from every other program's, so look now.
@@ -326,6 +331,29 @@ def _backup_native(
     if not result.tracked and not confirmed and trigger == MANUAL:
         return BackupResult("needs-folder")
     return _send(ctx, state, None, candidates, result, trigger, force, upload)
+
+
+def _rules(ctx: Context, state: SaveState, fresh: bool) -> save_rules.Rules:
+    """The game's save rules: from the server when this is a real backup, else (a look that sends nothing, so it must not
+    wait on the network) the ones this machine read last. `state` is the one the backup saves at its end, so it is given what
+    was read too, or it would put the old ones back."""
+    if not fresh:
+        return save_rules.stored(ctx.rec.game_id)
+    try:
+        rules = save_rules.load(ctx.client, ctx.rec.game_id)
+    except (RuntimeError, OSError, AttributeError):
+        return save_rules.stored(ctx.rec.game_id)
+    state.rules_blacklist, state.rules_whitelist = list(rules.blacklist), list(rules.whitelist)
+    return rules
+
+
+def _with_rules(ctx: Context, candidates: list[Candidate], rules: save_rules.Rules, drive_c: Path | None) -> list[Candidate]:
+    """What the user left out is not a candidate; what was added by hand is, found or not by the scan."""
+    if not rules:
+        return candidates
+    rec = ctx.rec
+    extra = save_rules.added_files(rules, drive_c, Path(rec.install_dir), rec.in_sandbox)
+    return save_rules.without_blacklisted(save_rules.merge(candidates, extra), rules)
 
 
 def _manifest_folders(ctx: Context, state: SaveState, remember: bool) -> list[str]:
@@ -567,7 +595,10 @@ def _apply(
     if only_if_free and any(target_for_key(k, drive_c, install_dir, rec.in_sandbox).exists() for k in keys):
         return RestoreResult("conflict")
     backup_zip = saves_dir(rec.game_id) / "backups" / f"before-restore-{time.strftime('%Y%m%d-%H%M%S')}.zip"
-    written = extract_archive(archive, lambda key: target_for_key(key, drive_c, install_dir, rec.in_sandbox), backup=backup_zip)
+    rules = save_rules.stored(rec.game_id)
+    written = extract_archive(
+        archive, lambda key: target_for_key(key, drive_c, install_dir, rec.in_sandbox), backup=backup_zip, skip=rules.blocked
+    )
     for key, path in written:
         try:
             stat = path.stat()

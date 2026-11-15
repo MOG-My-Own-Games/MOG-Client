@@ -38,6 +38,7 @@ def attribute(
     tracked: dict[str, FileInfo],
     since_ns: int | None = None,
     accept: Callable[[str], bool] = lambda key: False,
+    forced: Callable[[str], bool] = lambda key: False,
 ) -> ScanResult:
     """Work out the game's files from what is on disk.
 
@@ -45,7 +46,8 @@ def attribute(
     counts as changed only if the content really differs. A file not tracked yet becomes the
     game's when it was written during the session (`since_ns`, the time the game started) or,
     with no session to go by, when `accept(key)` says it is this game's (a prefix only this game
-    uses, or a folder the user confirmed)."""
+    uses, or a folder the user confirmed). A file `forced(key)` is true for (one the user added to the saves by hand) is the
+    game's whatever the session says."""
     result = ScanResult()
     for candidate in candidates:
         try:
@@ -58,7 +60,7 @@ def attribute(
             continue
         if previous is None:
             in_session = since_ns is not None and stat.st_mtime_ns >= since_ns - WINDOW_SLACK_NS
-            if not (in_session or (since_ns is None and accept(candidate.key))):
+            if not (in_session or forced(candidate.key) or (since_ns is None and accept(candidate.key))):
                 result.unattributed.append(candidate.key)
                 continue
         try:

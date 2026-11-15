@@ -133,6 +133,7 @@ from mog_client.gui.modal import FitScrollArea, ModalHost
 from mog_client.gui.overlay import MessageOverlay
 from mog_client.gui.pictures import largest_pixmap, with_play_badge
 from mog_client.gui.playing import PlayingOverlay
+from mog_client.gui.definesaves import DefineSaves
 from mog_client.gui.extsaves import ExternalSaves
 from mog_client.gui.importing import ImportFlow
 from mog_client.gui.saves_ui import SaveSync
@@ -1613,11 +1614,201 @@ class SavesOptionsPage(Page):
         add_option_button(self.win, self.actions, "Restore a saved version...", lambda: saves.restore_pick(rec), pop=0)
         if not rec.imported:  # an added game's saves are the old ones already
             add_option_button(self.win, self.actions, "Import external saves...", lambda: self.win.external_saves.start(rec), pop=0)
+        add_option_button(self.win, self.actions, "Define saves...", lambda: self.win.define_saves.start(rec), pop=0)
         if rec.game_id in saves.restoring:
             add_option_button(self.win, self.actions, "Cancel restoring saves", lambda: saves.cancel_restore(rec.game_id), pop=2)
 
     def focus_default(self) -> None:
         self.sync.setFocus()
+
+
+class DefineSavesPage(Page):
+    """What MOG backs up of one game, told by hand. The list holds the rules the server keeps: a blacklisted path (greyed, tagged
+    blacklisted) is never backed up, a path added by hand always is. Enter on a rule takes it off, so a blacklisted path is
+    backed up again the next time it is there."""
+
+    modal = True
+    title = "Define saves"
+
+    def __init__(self, win: "MainWindow", flow, rec: InstalledGame, ctx, rules):
+        super().__init__()
+        self.win, self.flow, self.rec, self.ctx, self.rules = win, flow, rec, ctx, rules
+        note = QLabel(
+            f"What MOG backs up of {rec.name}. A blacklisted path is never backed up; one you add is always backed up. "
+            "Enter on a rule takes it off. Shader and build caches that ports write are the usual ones to blacklist."
+        )
+        note.setWordWrap(True)
+        self.list = EdgeList()
+        self.list.itemActivated.connect(self._forget)
+        self.empty = QLabel("No rules yet.")
+        add = QPushButton("Add a file or folder...")
+        add.clicked.connect(lambda: self.flow.add(self.rec, self.ctx, self))
+        pattern = QPushButton("Add a pattern...")
+        pattern.clicked.connect(lambda: self.flow.add_pattern(self.rec, self.ctx, self))
+        files = QPushButton("Saved files...")
+        files.clicked.connect(lambda: self.flow.files(self.rec, self.ctx, self))
+        lay = QVBoxLayout(self)
+        lay.addWidget(note)
+        lay.addWidget(self.empty)
+        lay.addWidget(self.list, 1)
+        self.button_row = _row(add, pattern, files)
+        lay.addLayout(self.button_row)
+        self.set_rules(rules)
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def set_rules(self, rules) -> None:
+        self.rules = rules
+        self.list.clear()
+        for path in rules.blacklist:
+            item = QListWidgetItem(f"{path}    [blacklisted]")
+            item.setForeground(QBrush(QColor("#8b909c")))
+            item.setData(Qt.UserRole, path)
+            self.list.addItem(item)
+        for path in rules.whitelist:
+            item = QListWidgetItem(f"{path}    [added]")
+            item.setData(Qt.UserRole, path)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.empty.setVisible(not self.list.count())
+
+    def _forget(self, item: QListWidgetItem) -> None:
+        self.flow.forget(self.rec, self.ctx, self, [item.data(Qt.UserRole)])
+
+
+def _size_text(size: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
+
+
+class SaveFilesPage(Page):
+    """The files of one saved version on the server. Edit ticks files to take them out of the version, or to blacklist them (or
+    take them off the blacklist); outside Edit, Enter on a blacklisted file takes its rule off. A blacklisted file is greyed and
+    tagged. The server lists up to a thousand files of a version."""
+
+    modal = True
+    title = "Saved files"
+
+    def __init__(self, win: "MainWindow", flow, rec: InstalledGame, ctx, version: dict, rules, parent=None):
+        super().__init__()
+        self.win, self.flow, self.rec, self.ctx, self.rules = win, flow, rec, ctx, rules
+        self.version, self.editing, self.rules_page = version, False, parent  # the page of the rules beneath, kept up to date
+        self.more = QLabel()
+        self.more.setWordWrap(True)
+        self.list = EdgeList()
+        self.list.itemActivated.connect(self._activated)
+        self.edit = QPushButton("Edit")
+        self.edit.clicked.connect(self.toggle_edit)
+        self.pick_all = QPushButton("Select all")
+        self.pick_all.clicked.connect(self._select_all)
+        self.delete = QPushButton("Delete from the server")
+        self.delete.clicked.connect(self._delete)
+        self.black = QPushButton("Blacklist")
+        self.black.clicked.connect(lambda: self._rules(True))
+        self.unblack = QPushButton("Un-blacklist")
+        self.unblack.clicked.connect(lambda: self._rules(False))
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.more)
+        lay.addWidget(self.list, 1)
+        self.button_row = _row(self.pick_all, self.delete, self.black, self.unblack, self.edit)
+        lay.addLayout(self.button_row)
+        self._fill()
+
+    def focus_default(self) -> None:
+        self.list.setFocus()
+
+    def _files(self) -> list[dict]:
+        return (self.version or {}).get("manifest") or []
+
+    def _fill(self) -> None:
+        ticked = set(self._ticked())
+        self.list.clear()
+        for f in self._files():
+            blocked = self.rules.blocked(f["path"])
+            item = QListWidgetItem(f"{f['path']}  ({_size_text(f['size'])})" + ("    [blacklisted]" if blocked else ""))
+            item.setData(Qt.UserRole, f["path"])
+            if blocked:
+                item.setForeground(QBrush(QColor("#8b909c")))
+            if self.editing:
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if f["path"] in ticked else Qt.Unchecked)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        hidden = (self.version or {}).get("file_count", 0) - len(self._files())
+        self.more.setText(
+            f"{self.version.get('file_count', 0)} files" + (f", {hidden} more than the server lists" if hidden > 0 else "")
+            + (". Tick the files to act on, then use the buttons." if self.editing else ".")
+        )
+        for button in (self.pick_all, self.delete, self.black, self.unblack):
+            button.setVisible(self.editing)
+        self.edit.setText("Done" if self.editing else "Edit")
+
+    def _ticked(self) -> list[str]:
+        if not self.editing:
+            return []
+        return [
+            self.list.item(i).data(Qt.UserRole)
+            for i in range(self.list.count())
+            if self.list.item(i).checkState() == Qt.Checked
+        ]
+
+    def toggle_edit(self) -> None:
+        self.editing = not self.editing
+        self._fill()
+        self.list.setFocus()
+
+    def _select_all(self) -> None:
+        every = len(self._ticked()) != self.list.count()
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(Qt.Checked if every else Qt.Unchecked)
+
+    def _activated(self, item: QListWidgetItem) -> None:
+        if self.editing:
+            item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+            return
+        covering = self.rules.covering(item.data(Qt.UserRole))
+        if covering:
+            self.flow.forget(self.rec, self.ctx, self, covering)
+
+    def _delete(self) -> None:
+        keys = self._ticked()
+        if keys:
+            self.flow.delete_files(self.rec, self.ctx, self, self.version, keys)
+        else:
+            self.win.notify("Tick the files first", "warning")
+
+    def _rules(self, blacklist: bool) -> None:
+        keys = self._ticked()
+        if not keys:
+            self.win.notify("Tick the files first", "warning")
+        elif blacklist:
+            self.flow.change(self.rec, self.ctx, self, "blacklist", keys)
+        else:
+            covering = sorted({rule for key in keys for rule in self.rules.covering(key)})
+            if covering:
+                self.flow.forget(self.rec, self.ctx, self, covering)
+            else:
+                self.win.notify("None of the ticked files is blacklisted", "warning")
+
+    def set_rules(self, rules) -> None:
+        self.rules = rules
+        if self.rules_page is not None:
+            self.rules_page.set_rules(rules)
+        self._fill()
+
+    def set_version(self, version: dict | None) -> None:
+        """The version after files were taken out of it; None when nothing was left and it is gone."""
+        if version is None:
+            self.win.back()
+            return
+        self.version = version
+        self._fill()
 
 
 class UninstallOptionsPage(Page):
@@ -3628,11 +3819,14 @@ class BrowsePage(Page):
     title = "Browse for the executable"
     modal = True
 
-    def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False, text: str = ""):
+    def __init__(self, win: "MainWindow", start: Path, on_pick, folders: bool = False, text: str = "", anything: bool = False):
         super().__init__()
         if folders:
             self.title = "Choose a folder"
-        self.win, self.on_pick, self.cwd, self.folders = win, on_pick, start, folders
+        elif anything:
+            self.title = "Choose a file or a folder"
+        # `anything`: every file is listed and can be picked, and so can the folder being browsed ("Use this folder").
+        self.win, self.on_pick, self.cwd, self.folders, self.anything = win, on_pick, start, folders, anything
         self.where = QLineEdit()  # a path can be pasted here: Enter goes there
         self.where.setPlaceholderText("Paste a path and press Enter")
         self.where.returnPressed.connect(self._go_typed)
@@ -3661,7 +3855,7 @@ class BrowsePage(Page):
         self.where.setText(str(path))
         self.where.setCursorPosition(0)
         self.list.clear()
-        entries = [("[ Use this folder ]", path)] if self.folders else []
+        entries = [("[ Use this folder ]", path)] if self.folders or self.anything else []
         entries += [("..", path.parent)] if path.parent != path else []
         try:
             children = sorted(path.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))
@@ -3670,7 +3864,7 @@ class BrowsePage(Page):
         entries += [
             (c.name + ("/" if c.is_dir() else ""), c)
             for c in children
-            if c.is_dir() or (not self.folders and c.suffix.lower() == ".exe")
+            if c.is_dir() or self.anything or (not self.folders and c.suffix.lower() == ".exe")
         ]
         for label, target in entries:
             item = QListWidgetItem(label)
@@ -3704,6 +3898,8 @@ class BrowsePage(Page):
             return False
         if self.folders:
             return self.list.row(item) == 0
+        if self.anything and self.list.row(item) == 0:
+            return True
         return not Path(item.data(Qt.UserRole)).is_dir()
 
     def _sync_ok(self) -> None:
@@ -3717,13 +3913,13 @@ class BrowsePage(Page):
             self._load(Path(item.data(Qt.UserRole)))
 
     def accept(self) -> None:
-        if self.folders and self._typed_path() != self.cwd:
+        if (self.folders or self.anything) and self._typed_path() != self.cwd:
             self._go_typed()  # a path typed or pasted and not entered yet is opened first, so OK never takes another folder
             return
         item = self.list.currentItem()
         if not self._picks_here(item):
             return
-        picked = self.cwd if self.folders else Path(item.data(Qt.UserRole))
+        picked = self.cwd if self.folders or (self.anything and self.list.row(item) == 0) else Path(item.data(Qt.UserRole))
         self.win.back()
         self.on_pick(str(picked))
 
@@ -6739,6 +6935,7 @@ class MainWindow(QMainWindow):
         self.saves = SaveSync(self)
         self.importing = ImportFlow(self)
         self.external_saves = ExternalSaves(self)
+        self.define_saves = DefineSaves(self)
         self.sounds = SoundPlayer(lambda: app.settings.sounds)
         self.nav_sounds = NavigationSounds(self.sounds)
         QApplication.instance().installEventFilter(self.nav_sounds)
@@ -7029,6 +7226,15 @@ class MainWindow(QMainWindow):
 
     def browse_folder(self, start: Path, on_pick, text: str = "") -> None:
         self.push(BrowsePage(self, start, on_pick, folders=True, text=text))
+
+    def browse_any(self, start: Path, on_pick, text: str = "") -> None:
+        self.push(BrowsePage(self, start, on_pick, anything=True, text=text))
+
+    def show_define_saves(self, flow, rec: InstalledGame, ctx, rules) -> None:
+        self.push(DefineSavesPage(self, flow, rec, ctx, rules))
+
+    def show_save_files(self, flow, rec: InstalledGame, ctx, version: dict, rules, parent=None) -> None:
+        self.push(SaveFilesPage(self, flow, rec, ctx, version, rules, parent))
 
     def ask_text(self, title: str, text: str, default: str, on_done) -> None:
         self.push(NamePage(self, title, text, default, on_done))

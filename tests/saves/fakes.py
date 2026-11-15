@@ -14,6 +14,8 @@ class FakeServer:
         self.uploads = []
         self.manifest: list[str] | None = []  # what save_paths answers; None is a server that cannot say
         self.manifest_asked = 0
+        self.rules = {"blacklist": [], "whitelist": []}  # what save_rules answers; None is a server that cannot say
+        self.removed_files: list[tuple[int, list[str]]] = []
 
     def upload_save(self, game_id, device_id, archive, trigger):
         data = Path(archive).read_bytes()
@@ -28,6 +30,29 @@ class FakeServer:
         self.blobs[version["id"]] = data
         self.uploads.append((trigger, keys))
         return {"version": version, "created": True}
+
+    def save_rules(self, game_id):
+        return None if self.rules is None else {k: list(v) for k, v in self.rules.items()}
+
+    def add_save_rules(self, game_id, kind, paths):
+        other = "whitelist" if kind == "blacklist" else "blacklist"
+        self.rules[other] = [p for p in self.rules[other] if p not in paths]
+        self.rules[kind] += [p for p in paths if p not in self.rules[kind]]
+        return self.save_rules(game_id)
+
+    def remove_save_rules(self, game_id, paths):
+        for kind in ("blacklist", "whitelist"):
+            self.rules[kind] = [p for p in self.rules[kind] if p not in paths]
+        return self.save_rules(game_id)
+
+    def get_save(self, version_id):
+        keys = zipfile.ZipFile(__import__("io").BytesIO(self.blobs[version_id])).infolist()
+        files = [{"path": m.filename, "size": m.file_size} for m in keys if not m.is_dir()]
+        return {"id": version_id, "file_count": len(files), "manifest": files}
+
+    def remove_save_files(self, version_id, paths):
+        self.removed_files.append((version_id, list(paths)))
+        return self.get_save(version_id)
 
     def save_paths(self, game_id):
         self.manifest_asked += 1

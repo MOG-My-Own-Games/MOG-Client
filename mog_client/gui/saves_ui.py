@@ -19,7 +19,7 @@ from mog_client.config import InstalledGame, load_library
 from mog_client.launcher import PREFIX_DIR, detect_launcher, effective_launcher, pfx_dir
 from mog_client.saves import devices, native, sync
 from mog_client.saves import prefix as prefixes
-from mog_client.saves.locations import describe_key
+from mog_client.saves.locations import describe_path
 from mog_client.saves.state import load_state
 
 SKIP = None
@@ -41,6 +41,15 @@ class RestoreJob:
 
 # The entry of the folder list that opens the folder browser.
 OTHER_FOLDER = "*other*"
+
+
+def where_is(rec: InstalledGame, key: str) -> str:
+    """A folder key as the path it is on this machine (in the game's prefix, its own folder or the Flatpak app's), which is what
+    the person looks for on their disk; `users/USER/...` and `xdg-config/...` are not paths anywhere."""
+    state = load_state(rec.game_id)
+    found = prefixes.resolve_prefix(rec, "auto", state.prefix, state.prefix_source)
+    drive_c = prefixes.drive_c_of(found.prefix) if found else None
+    return describe_path(key, drive_c, Path(rec.install_dir), rec.in_sandbox)
 
 
 def saves_folder_note(name: str) -> str:
@@ -367,14 +376,14 @@ class SaveSync:
         self.win.checklist(
             "Which folders are this game's saves?",
             f"The prefix is shared with other programs. Tick the folders that belong to {rec.name}.",
-            [(f, f) for f in folders],
+            [(where_is(rec, f), f) for f in folders],
             done,
         )
 
     def _confirm_native_folders(self, rec: InstalledGame, folders: list[str], then: Callable[[], None]) -> None:
         """The folders a native game wrote to while it ran. The ones named like the game start ticked."""
         names = native.game_names(rec)
-        items = [(describe_key(f), f, native.folder_score(f, names) == 2) for f in folders] + [("Another folder...", OTHER_FOLDER)]
+        items = [(where_is(rec, f), f, native.folder_score(f, names) == 2) for f in folders] + [("Another folder...", OTHER_FOLDER)]
 
         def done(picked: list[str]) -> None:
             sync.confirm_folders(rec.game_id, [p for p in picked if p != OTHER_FOLDER])

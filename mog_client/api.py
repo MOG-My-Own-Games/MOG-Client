@@ -816,6 +816,40 @@ class MogClient:
             raise RuntimeError(extract_error(json.dumps(data).encode(), status))
         return data
 
+    def save_rules(self, game_id: int) -> dict | None:
+        """The game's blacklisted and whitelisted save paths (`{"blacklist": [...], "whitelist": [...]}`), or None when the
+        server cannot say (an older one, or out of reach)."""
+        try:
+            status, data = self.c.get_json(f"/api/games/{game_id}/save-rules")
+        except RuntimeError:
+            return None
+        return data if status == 200 and isinstance(data, dict) else None
+
+    def _save_rules_call(self, path: str, body: dict) -> dict:
+        status, data = self.c.post_json(path, body)
+        if status in (404, 405):
+            raise RuntimeError("this MOG Server is too old for save rules: update it")
+        if status != 200 or not isinstance(data, dict):
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data
+
+    def add_save_rules(self, game_id: int, kind: str, paths: list[str]) -> dict:
+        """Put paths on the blacklist (`kind="blacklist"`) or the whitelist; answers both lists."""
+        return self._save_rules_call(f"/api/games/{game_id}/save-rules", {"kind": kind, "paths": paths})
+
+    def remove_save_rules(self, game_id: int, paths: list[str]) -> dict:
+        """Take paths off whichever list they are on; answers both lists."""
+        return self._save_rules_call(f"/api/games/{game_id}/save-rules/remove", {"paths": paths})
+
+    def remove_save_files(self, version_id: int, paths: list[str]) -> dict | None:
+        """Take files out of one stored version. The version after it, or None when nothing was left and it is gone."""
+        status, data = self.c.post_json(f"/api/saves/{version_id}/remove-files", {"paths": paths})
+        if status in (404, 405):
+            raise RuntimeError("this MOG Server is too old to take files out of a saved version: update it")
+        if status != 200:
+            raise RuntimeError(extract_error(json.dumps(data).encode(), status))
+        return data if isinstance(data, dict) else None
+
     def upload_device_log(self, device_id: int, text: str) -> bool:
         """Replace this device's log on the server. False when the server cannot keep it (an older one) or cannot
         be reached: the log is a courtesy, never a reason to fail."""

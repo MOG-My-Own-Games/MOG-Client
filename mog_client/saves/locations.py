@@ -316,6 +316,20 @@ def describe_key(key: str, sandbox: str | None = None) -> str:
         return str(path)
 
 
+def describe_path(key: str, drive_c: Path | None, install_dir: Path, sandbox: str | None = None) -> str:
+    """Where a key really is on this machine, for a question the user answers by looking at their disk: `~/.config/Game`, the
+    folder inside the Wine prefix (`users/USER/...` is not a folder anywhere) or inside the game's own. The key itself when it
+    cannot be placed (no prefix yet)."""
+    try:
+        path = target_for_key(key, drive_c, install_dir, sandbox)
+    except (UnsafeKey, OSError):
+        return key
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def check_key(key: str) -> str:
     """A key from an archive, validated: relative, no `..`, no drive letter or backslash."""
     path = PurePosixPath(key)

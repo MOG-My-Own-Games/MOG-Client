@@ -5907,3 +5907,123 @@ def test_the_folder_picker_says_what_it_is_for_in_its_own_page(win, qapp, tmp_pa
     page = win.current_page()
     assert isinstance(page, gui.BrowsePage)
     assert any(label.text() == "Pick the folder of the game you already have" for label in page.findChildren(QLabel))
+
+
+def test_the_saves_page_has_define_saves_while_the_sync_is_on(win, qapp, tmp_path, monkeypatch):
+    from mog_client import manager
+
+    rec = _game_record(tmp_path, "g.exe", save_sync=True)
+    _rich_game(win, monkeypatch)
+    manager.save_library({4: rec})
+    win.show_game(41)
+    saves = gui.SavesOptionsPage(win, win.current_page(), rec)
+
+    assert "Define saves..." in _texts(saves)
+
+
+class _RulesFlow:
+    """What the save pages call on their flow: the pages are tested apart from the server."""
+
+    def __init__(self):
+        self.calls = []
+
+    def forget(self, rec, ctx, page, keys):
+        self.calls.append(("forget", keys))
+
+    def change(self, rec, ctx, page, kind, keys):
+        self.calls.append((kind, keys))
+
+    def delete_files(self, rec, ctx, page, version, keys):
+        self.calls.append(("delete", keys))
+
+    def add(self, rec, ctx, page):
+        self.calls.append(("add",))
+
+
+def _files_page(win, tmp_path, blacklist=()):
+    from mog_client.saves.rules import Rules
+
+    rec = _game_record(tmp_path, "g.exe")
+    version = {
+        "id": 3,
+        "file_count": 1002,
+        "manifest": [{"path": "game/slot.sav", "size": 12}, {"path": "game/cache/a.bin", "size": 4096}],
+    }
+    flow = _RulesFlow()
+    page = gui.SaveFilesPage(win, flow, rec, None, version, Rules(list(blacklist), []))
+    return page, flow
+
+
+def test_the_saved_files_edit_mode_ticks_files_to_delete_or_blacklist_and_says_when_the_server_lists_fewer(win, qapp, tmp_path):
+    page, flow = _files_page(win, tmp_path, blacklist=["game/cache"])
+    assert [page.list.item(i).text() for i in range(2)][1].endswith("[blacklisted]")
+    assert "1002 files, 1000 more than the server lists" in page.more.text()
+    assert not page.delete.isVisibleTo(page) and page.edit.text() == "Edit"
+
+    page.edit.click()
+    assert page.edit.text() == "Done" and page.delete.isVisibleTo(page)
+    page._activated(page.list.item(0))  # Enter ticks while editing
+    page._activated(page.list.item(1))
+    page.delete.click()
+    page.black.click()
+    page.unblack.click()
+
+    assert flow.calls == [
+        ("delete", ["game/slot.sav", "game/cache/a.bin"]),
+        ("blacklist", ["game/slot.sav", "game/cache/a.bin"]),
+        ("forget", ["game/cache"]),  # only the rule that covers a ticked file
+    ]
+
+
+def test_outside_edit_mode_enter_on_a_blacklisted_file_takes_its_rule_off_and_on_another_does_nothing(win, qapp, tmp_path):
+    page, flow = _files_page(win, tmp_path, blacklist=["game/cache"])
+
+    page._activated(page.list.item(0))
+    page._activated(page.list.item(1))
+
+    assert flow.calls == [("forget", ["game/cache"])]
+
+
+def test_a_version_with_nothing_left_closes_its_files_page(win, qapp, tmp_path):
+    page, _ = _files_page(win, tmp_path)
+    win.push(page)
+    pump(qapp)
+
+    page.set_version(None)
+    pump(qapp)
+
+    assert win.current_page() is not page
+
+
+def test_the_define_saves_list_greys_a_blacklisted_path_and_enter_takes_the_rule_off(win, qapp, tmp_path):
+    from mog_client.saves.rules import Rules
+
+    flow = _RulesFlow()
+    page = gui.DefineSavesPage(win, flow, _game_record(tmp_path, "g.exe"), None, Rules(["game/cache"], ["game/extra.ini"]))
+
+    assert {"Add a file or folder...", "Add a pattern...", "Saved files..."} <= set(_texts(page))
+    assert [page.list.item(i).text().split()[-1] for i in range(2)] == ["[blacklisted]", "[added]"]
+    page.list.itemActivated.emit(page.list.item(0))
+
+    assert flow.calls == [("forget", ["game/cache"])]
+    page.set_rules(Rules())
+    assert page.list.count() == 0 and not page.empty.isHidden()
+
+
+def test_the_picker_that_takes_anything_lists_every_file_and_picks_a_file_or_the_folder_it_is_in(win, qapp, tmp_path):
+    (tmp_path / "shaders").mkdir()
+    (tmp_path / "config.ini").write_text("x")
+    picked = []
+    page = gui.BrowsePage(win, tmp_path, picked.append, anything=True)
+    win.push(page)
+    pump(qapp)
+    labels = [page.list.item(i).text() for i in range(page.list.count())]
+    assert labels[0] == "[ Use this folder ]" and "config.ini" in labels and "shaders/" in labels
+
+    page.list.setCurrentRow(0)
+    page.accept()
+    page = gui.BrowsePage(win, tmp_path, picked.append, anything=True)
+    page.list.setCurrentRow(labels.index("config.ini") + 0)
+    page.accept()
+
+    assert picked == [str(tmp_path), str(tmp_path / "config.ini")]

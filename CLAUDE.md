@@ -53,7 +53,7 @@ mog_client/
   manager.py    Install / finish-setup / uninstall workflows (GUI side)
   launcher.py   Executable discovery (redists excluded), launch, standalone .desktop/Steam commands
   gameplay.py   Following a game started from here to its end, and stopping it (stdlib)
-  saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher; importer.py works out where the saves of a game added from outside MOG are (Qt-free) and makes the first sync take all of them; external.py finds a MOG game's old saves in another prefix or game folder and puts them in place of the fresh ones
+  saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher; rules.py is the server's per-game blacklist/whitelist of save paths (Qt-free): what a backup leaves out or adds, and the key of a path picked on this disk; importer.py works out where the saves of a game added from outside MOG are (Qt-free) and makes the first sync take all of them; external.py finds a MOG game's old saves in another prefix or game folder and puts them in place of the fresh ones
   quiver.py     Quiver Launcher's installed games read from its own files, 3.x (`apps.json`) and 4.x (`installs.json`) (Qt-free): data folder, install folder, program, prefix, the save places of known ports; `InstalledGame.quiver_id`/`explicit_saves` make the sync take only those places
   steam.py      shortcuts.vdf read/write + grid artwork
   selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
@@ -75,6 +75,7 @@ mog_client/
     saves_ui.py save-sync questions and messages; Qt-free (the window passes `choose`/`checklist`/`ask`/`message`/`notify`)
     importing.py the questions of adding a game from outside MOG, moving it into MOG and removing it; Qt-free like saves_ui (adds `ask_text`)
     extsaves.py the questions of Import external saves (Options > Saves...); Qt-free like saves_ui
+    definesaves.py the questions of Define saves (Options > Saves...): the rules of a game and the files of a saved version; Qt-free like saves_ui, the pages are DefineSavesPage and SaveFilesPage in app.py
     overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
     logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
     about.py    the About page's tabs (About, Changelog); legend.py builds the guide at the bottom per page, with button and key icons
