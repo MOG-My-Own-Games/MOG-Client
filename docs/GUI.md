@@ -211,8 +211,8 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
     downloaded for that), and the check follows when it is done. Saying no checks nothing. An install that needs a
     manual installer pick says so, with the address to finish it.
   - **Saves...** opens a menu (Back returns to Options) with a **Save sync (this game)** switch and, while it is on,
-    **Back up saves now**, **Restore a saved version...** and, while a restore is waiting, **Cancel restoring saves**
-    (see [SAVES.md](SAVES.md)).
+    **Back up saves now**, **Restore a saved version...**, **Define saves...** (what to back up and what never to, see
+    [SAVES.md](SAVES.md)) and, while a restore is waiting, **Cancel restoring saves**.
   - **Nuke custom settings** (red) takes away everything the game has set beyond its files and saves:
     - Its launch arguments, its engine, and its Proton or Wine build: it goes back to the defaults of Settings.
     - Its prefix, made again empty as Winetricks does when a verb is unticked (see above): no winetricks verb or setting,
@@ -298,6 +298,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 - The file and folder pickers show their path in a field at the top: paste or type a path there and press Enter to go
   straight to it (a folder is opened and "Use this folder" is what OK takes; in the file picker a file path is taken at once).
   OK with a path typed but not entered yet opens that path first, and never takes the folder the picker was in.
+- In **Define saves**, Enter on a rule takes it off, and **Add a pattern...** takes `*.png` or `re:` and a regular expression. In a version's **Saved files**, **Edit** turns the rows into ticks (Enter or
+  A ticks a row) with Select all, Delete from the server, Blacklist and Un-blacklist; outside Edit, Enter on a blacklisted file
+  takes its rule off. The picker for a file or folder to add lists every file, and "Use this folder" picks the folder shown.
 - Errors and results that matter appear in a message over the window with an OK button (A or Enter); everything else goes
   to the log.
 - The window can be made as small as about 720x460 (800x600 and a small desktop mode included). A game's page then keeps

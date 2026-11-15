@@ -154,6 +154,35 @@ the fresh saves it starts with: Options > Saves... > **Import external saves...*
   is backed up to the server as a new version. A game added with **Add local game** does not have the button: its saves are the
   old ones already.
 
+## Define saves: what to back up, by hand
+
+Some games, ports above all, write shader and build caches beside their saves, and those are taken for saves and bloat the
+server. **Options > Saves... > Define saves...** teaches MOG what to back up. The rules live on the server, per game, so
+every machine follows them and the web UI's **Files > Saves** tab edits the same list.
+
+- **Blacklist** a file or a folder (everything in it): it is never backed up, and a restore leaves it in the archive. It is
+  listed greyed with a red *blacklisted* tag. Taking the rule off (Enter on it, or the tag's x on the web) backs the path up
+  again the next time it is there.
+- A rule can also be a **pattern**, typed with **Add a pattern...**: `*.png` is every png wherever it is (capitals do not count),
+  `cache*` a folder of that name and all that is in it, `game/*/shaders` a folder at any name, `game/**.bin` crosses folders,
+  `[0-9]` is one character of a class. `re:` and a regular expression (`re:\.(png|jpg)$`) is searched in the whole path and
+  is case sensitive unless it says `(?i)`. MOG checks it before sending it and says why when it does not work. A pattern
+  on the *added* list only keeps files the scan already found: there is nowhere to look for it.
+- **Add** a file or a folder by hand: it is backed up even where the scan would not look, or would not have taken it
+  (a folder added this way is taken whole, without the cache and log rules). It is listed with a green *added* tag, taken off
+  the same way. The **added** list is stronger than the blacklist, whichever rule is more specific: blacklist `game/thisgame` and add `game/thisgame/saves`, and everything in the game is left out except its saves (a pattern added keeps what it names the same way, so `*.sav` added keeps the saves a blacklisted folder holds).
+- **Add a file or folder...** picks it on this disk; MOG names it the way an archive does (`game/...` inside the game's folder,
+  `users/USER/...` in the profile of its Wine prefix, `xdg-config/...` below the home folder) and asks which list.
+- **Saved files...** lists the files of one version kept on the server. **Edit** ticks files to **Delete from the server**
+  (they are taken out of that version's archive; the files on this machine stay), **Blacklist** or **Un-blacklist**. Delete and
+  blacklist are separate: blacklisting stops new uploads, deleting frees what is stored. The server lists up to a thousand
+  files of a version.
+- A rule never touches versions already stored, and a backup uses the rules it read last when the server cannot be asked
+  (an older server has none: nothing changes). The server also drops blacklisted files from an upload it gets, so a machine
+  that has not read the rules yet cannot put them back.
+- When MOG asks which folders are a game's saves, it shows where each one is on this disk (inside the prefix, the game's folder or
+  the Flatpak app's), not the name its archive gives it.
+
 ## Mods, patches and DLC are not saves
 
 Files a mod, a patch or a DLC adds are written into the game's install manifest when MOG installs or applies them (the same
