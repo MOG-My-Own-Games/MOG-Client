@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mog_client.saves import prefix as prefixes
+from mog_client.saves import rules as save_rules
 from mog_client.saves import sync
 from mog_client.saves.archive import build_archive
 from mog_client.saves.locations import (
@@ -94,6 +95,7 @@ def find(ctx: sync.Context, prefix: Path | None = None, folder: Path | None = No
     other_c = prefixes.drive_c_of(prefix) if prefix is not None else None
     install = Path(rec.install_dir)
     found: dict[str, Match] = {}
+    rules = save_rules.stored(rec.game_id)
     for unit in units(state):
         inside = unit == GAME_KEY or unit.startswith(f"{GAME_KEY}/")
         if inside and folder is None or not inside and other_c is None:
@@ -103,6 +105,8 @@ def find(ctx: sync.Context, prefix: Path | None = None, folder: Path | None = No
         except UnsafeKey:
             continue
         for candidate in _files(unit, root):
+            if rules.blocked(candidate.key):
+                continue
             try:
                 local = target_for_key(candidate.key, local_c, install, rec.in_sandbox)
                 source = candidate.path.stat()

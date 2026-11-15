@@ -46,8 +46,10 @@ def extract_archive(
     archive: Path,
     target_for: Callable[[str], Path],
     backup: Path | None = None,
+    skip: Callable[[str], bool] | None = None,
 ) -> list[tuple[str, Path]]:
-    """Put each file of the archive where `target_for(key)` says, returning (key, path) for those written.
+    """Put each file of the archive where `target_for(key)` says, returning (key, path) for those written. A file `skip(key)`
+    is true for is left in the archive (a path the game's save rules leave out).
 
     A file that is about to be replaced is first copied into the zip `backup`, so a restore can
     be undone. The whole archive is checked before anything is written: a bad member refuses it all."""
@@ -61,6 +63,8 @@ def extract_archive(
             for member in members:
                 if stat.S_ISLNK(member.external_attr >> 16):
                     raise ArchiveError(f"symbolic link in archive: {member.filename!r}")
+                if skip is not None and skip(member.filename):
+                    continue
                 try:
                     plan.append((member, target_for(check_key(member.filename))))
                 except UnsafeKey as e:
