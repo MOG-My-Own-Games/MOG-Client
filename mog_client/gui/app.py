@@ -298,6 +298,7 @@ class App:
         self.quiver_games: list[quiver.QuiverGame] = []  # what Quiver Launcher has installed, while its library is on
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
         self.no_space: set[int] = set()  # installs whose disk is full: paused until there is room
+        self.stages: dict[int, str] = {}  # installs past their last byte: what they are doing now (manager.STAGE_*)
         self.jobs: dict[int, str] = {}  # games with a job (see JOB_TEXT), shown on their main button
         self._icons_asked: set[int] = set()
         self.mods: dict[int, list[dict]] = {}  # each game's mods, once asked
@@ -900,6 +901,38 @@ class App:
             self.progress[gid] = (written, total, label)
             bridge.progress.emit(gid, written, total, label)
 
+        stage_meter = RateMeter()
+        last_stage = [0.0]
+        sized = [False]  # a report with the total in it has gone out: the first one always does
+
+        def on_stage(name: str, done: int, total: int) -> None:
+            """After the download the bar would stay at its end while every file is read again: it starts over, and the
+            line above says what is going on."""
+            now = time.monotonic()
+            first = self.stages.get(gid) != name
+            self.stages[gid] = name
+            if name == manager.STAGE_VERIFY and total:
+                with meter_lock:
+                    stage_meter.add(now, done)
+                    speed, eta = stage_meter.speed(), stage_meter.eta(done, total)
+                if sized[0] and not first and now - last_stage[0] < REPORT_EVERY and done < total:
+                    self.progress[gid] = (done, total, self.progress.get(gid, (0, 0, ""))[2])
+                    return
+                sized[0] = True
+                label = f"Verifying files (sha1) {fmt_bytes(done)} / {fmt_bytes(total)}"
+                if speed:
+                    label += f"  {fmt_bytes(speed)}/s"
+                if eta is not None:
+                    label += f"  ETA {format_eta(eta)}"
+            elif name == manager.STAGE_VERIFY:
+                label, done, total = "Verifying the downloaded files (sha1)...", 0, 0
+            else:
+                label, done, total = "Finishing up...", 0, 0
+            last_stage[0] = now
+            self.progress[gid] = (done, total, label)
+            bridge.progress.emit(gid, done, total, label)
+            bridge.activity.emit()  # the sidebar badge follows
+
         def on_space(short: bool) -> None:
             (self.no_space.add if short else self.no_space.discard)(gid)
             written, total, _ = self.progress.get(gid, (0, 0, ""))
@@ -926,8 +959,9 @@ class App:
                     "game's page and choose \"Open installer display\" (it opens in your browser). The server has "
                     "also sent you a notification.",
                 )
-            written, total, _ = self.progress.get(gid, (0, 0, ""))
-            report(written, total)
+            if gid not in self.stages:  # past the download its figures and label are the stage's
+                written, total, _ = self.progress.get(gid, (0, 0, ""))
+                report(written, total)
 
         def work():
             err = ""
@@ -935,7 +969,7 @@ class App:
                 manager.run_install(
                     self.client(), game, self.settings, stop,
                     lambda m: bridge.log.emit(gid, m), on_session,
-                    report, installer, root, extract_only, steps, on_space,
+                    report, installer, root, extract_only, steps, on_space, on_stage,
                 )
             except Exception as e:  # noqa: BLE001
                 err = manager.describe_error(e)
@@ -947,6 +981,7 @@ class App:
                 self.queued.pop(gid, None)
                 self.stopping.discard(gid)
                 self.no_space.discard(gid)
+                self.stages.pop(gid, None)
                 activity.remove_install(gid)
                 follow_up = self.after_stop.take(gid)
                 if follow_up:
@@ -6730,6 +6765,17 @@ class LibraryPage(Page):
         written, total, _ = self.win.app.progress.get(gid, (0, 0, ""))
         return 1000 * written // total if total else 0
 
+    def _install_text(self, gid: int) -> str:
+        """What the sidebar says of a running install: its percent of the download, or the step it is at after it."""
+        stage = self.win.app.stages.get(gid)
+        if gid in self.win.app.no_space:
+            return "Paused: no space left on device"
+        if stage == manager.STAGE_VERIFY:
+            return f"Verifying files... {(self._progress(gid) or 0) // 10}%"
+        if stage:
+            return "Finishing up..."
+        return f"Installing... {(self._progress(gid) or 0) // 10}%"
+
     def label(self, gid: int, rec: InstalledGame | None, versions: int = 1, absent: bool = False) -> str:
         name = self.win.app.games[gid]["name"]
         badges = []
@@ -6740,7 +6786,14 @@ class LibraryPage(Page):
         )
         progress = self._progress(gid)
         if progress is not None:
-            badge = "No space" if gid in self.win.app.no_space else f"Installing {progress // 10}%"
+            stage = self.win.app.stages.get(gid)
+            badge = (
+                "No space" if gid in self.win.app.no_space
+                else f"Verifying {progress // 10}%" if stage == manager.STAGE_VERIFY and progress
+                else "Verifying" if stage == manager.STAGE_VERIFY
+                else "Finishing" if stage
+                else f"Installing {progress // 10}%"
+            )
         if absent:
             badge = "Not available"
         if badge:
@@ -6893,7 +6946,7 @@ class LibraryPage(Page):
         app = self.win.app
         installing = [gid for gid in app.installs if gid in app.games]
         running = [gid for gid in installing if gid not in app.queued]
-        rows = [(gid, f"Installing... {(self._progress(gid) or 0) // 10}%", None, "install") for gid in running]
+        rows = [(gid, self._install_text(gid), None, "install") for gid in running]
         rows += [
             (gid, "Syncing saves...", None, "sync") for gid in sorted(self.syncing) if gid in app.games and gid not in installing
         ]

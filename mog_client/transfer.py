@@ -335,12 +335,19 @@ def download_all_files(
     return total(), False
 
 
-def sha1_of(path: Path) -> str:
+def sha1_of(path: Path, on_chunk: Callable[[int], None] | None = None) -> str:
+    """The file's sha1; `on_chunk(bytes)` hears each piece read (it may raise to give up: nothing is returned then)."""
     digest = hashlib.sha1()
     with path.open("rb") as f:
         while chunk := f.read(4 * 1024 * 1024):
             digest.update(chunk)
+            if on_chunk:
+                on_chunk(len(chunk))
     return digest.hexdigest()
+
+
+class _Stopped(Exception):
+    """The check was stopped between two pieces of a file."""
 
 
 @dataclass
@@ -365,12 +372,15 @@ def verify_and_repair(
     on_progress: Callable[[int, int], None] | None = None,
     stop: threading.Event | None = None,
     keep: Callable[[str], bool] | None = None,
+    on_bytes: Callable[[int, int], None] | None = None,
 ) -> RepairResult:
     """Verify every downloaded file's sha1 against the server's own finished,
     hash-verified manifest and re-fetch whatever doesn't match (and, with `fetch_missing`, whatever is not there).
     `on_manifest` gets that manifest's files ({path, size_bytes, sha1}) once it is known; `on_progress` gets
     (files looked at, files in all). A file that is there but differs is left alone, and listed in `kept`, when
-    `keep(path)` says it is not the installer's any more (a save the game wrote over one of the installer's files)."""
+    `keep(path)` says it is not the installer's any more (a save the game wrote over one of the installer's files).
+    `on_bytes(checked, total)` is told how many bytes of the list were read so far (a file of many GB takes minutes: files
+    alone would leave the bar still); `stop` is looked at between the pieces of a file, not only between files."""
     result = RepairResult()
     try:
         manifest = client.list_files(game_id, session_id=session_id)
@@ -383,7 +393,20 @@ def verify_and_repair(
     if on_manifest:
         on_manifest(files)
     log(f"verifying {len(files)} file(s) against the server's hashes...")
+    total_bytes = sum(int(e.get("size_bytes") or 0) for e in files)
+    before, inside = 0, [0]  # bytes of the files done, and of the one being read
+
+    def piece(n: int) -> None:
+        if stop is not None and stop.is_set():
+            raise _Stopped
+        inside[0] += n
+        if on_bytes:
+            on_bytes(before + inside[0], total_bytes)
+
     for index, entry in enumerate(files):
+        if index:
+            before += int(files[index - 1].get("size_bytes") or 0)
+        inside[0] = 0
         if stop is not None and stop.is_set():
             result.stopped = True
             break
@@ -395,14 +418,19 @@ def verify_and_repair(
             if not fetch_missing:
                 continue
             warn(f"  {path}: missing - downloading")
-        elif sha1_of(local_path) == entry["sha1"]:
-            result.checked += 1
-            continue
-        elif keep is not None and keep(path):
-            result.kept.append(path)
-            log(f"  {path}: changed since the install, left as it is")
-            continue
         else:
+            try:
+                same = sha1_of(local_path, piece) == entry["sha1"]
+            except _Stopped:
+                result.stopped = True
+                break
+            if same:
+                result.checked += 1
+                continue
+            if keep is not None and keep(path):
+                result.kept.append(path)
+                log(f"  {path}: changed since the install, left as it is")
+                continue
             warn(f"  {path}: hash mismatch - re-downloading")
         result.checked += 1
         try:
@@ -422,6 +450,8 @@ def verify_and_repair(
             log(f"  {path}: still mismatched after re-download")
     if on_progress and not result.stopped:
         on_progress(len(files), len(files))
+    if on_bytes and not result.stopped:
+        on_bytes(total_bytes, total_bytes)
     if not result.repaired and not result.failed and not result.stopped:
         log("all files verified OK")
     return result

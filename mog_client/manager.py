@@ -61,6 +61,10 @@ NEEDS_PICK = "needs a manual installer pick"
 
 Log = Callable[[str], None]
 
+# The steps after the last byte is downloaded, as `run_install`'s `on_stage` names them.
+STAGE_VERIFY = "verify"  # every file is read and its sha1 compared with the server's: minutes on a big game
+STAGE_FINISH = "finish"  # the files are put in place and the folder is recorded
+
 
 def describe_error(error: BaseException) -> str:
     """What to tell the person about a failure; a full disk gets words of its own, since everything after it fails too."""
@@ -147,6 +151,7 @@ def run_install(
     extract_only: bool | None = None,
     steps: list[dict] | None = None,
     on_space: Callable[[bool], None] | None = None,
+    on_stage: Callable[[str, int, int], None] | None = None,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
 
@@ -234,7 +239,15 @@ def run_install(
             raise RuntimeError(f"install failed: {server_final.get('error')}")
         return rec  # paused or cancelled: not a failure, the buttons already say so
     listed: list[dict] = []
-    verify_and_repair(client, gid, out_dir, session_id=session_id, log=log, warn=log, on_manifest=listed.extend)
+    stage = on_stage or (lambda *_: None)  # what the person is told after the download: the bar is not at its end yet
+    stage(STAGE_VERIFY, 0, 0)
+    checked = verify_and_repair(
+        client, gid, out_dir, session_id=session_id, log=log, warn=log, on_manifest=listed.extend,
+        on_bytes=lambda done, total: stage(STAGE_VERIFY, done, total), stop=stop,
+    )
+    if checked.stopped:
+        return rec  # paused or cancelled while checking: it stays "installing", and the next start checks again
+    stage(STAGE_FINISH, 0, 0)
     if listed and rec.files_dir is None and rec.executable is None and is_loose(listed):
         folder, listed = tuck_into_folder(out_dir, listed, safe_dirname(rec.name))
         log(f"the game came without a folder of its own: its files are in {folder.name}/")

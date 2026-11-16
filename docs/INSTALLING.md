@@ -26,6 +26,15 @@ example, `/media/deck/decksd/mog-games`, `/media/deck/decksd2/mog-games` and `/h
   the list says later.
 - The sidebar shows the free space left across the registered folders.
 
+### After the last byte
+
+- The download at its end is not the install's end: every file is read again and its sha1 compared with the server's, which
+  takes minutes on a big game and reads the whole install from the disk. The bar starts over then and the line above it reads
+  `Verifying files (sha1) <read> / <total>` with the speed and the time left (the sidebar says "Verifying files... N%"), and
+  then "Finishing up..." while the files are put in place.
+- Pause works during the check, in the middle of a big file too: the game stays partly installed and the next start checks
+  again (the files are already there, so nothing is downloaded).
+
 ### Temporary files of the installer
 
 - An installer often makes files for its own use and deletes them before it ends (a decompressor's scratch space can be

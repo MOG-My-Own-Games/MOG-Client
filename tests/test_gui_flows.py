@@ -6509,3 +6509,43 @@ def test_r2_from_the_sidebar_goes_to_the_games_and_leaves_the_sidebar_open(win, 
 
     win.on_pad(gamepad.TRIGGER_R)  # on the games it is what it was: it clears the search
     assert win.search.text() == ""
+
+
+def test_after_the_download_the_bar_starts_over_and_says_it_is_checking_the_files(win, qapp, monkeypatch):
+    from mog_client import manager
+
+    seen = []
+    win.app.bridge.progress.connect(lambda gid, written, total, label: seen.append((written, total, label)))
+    inside = {}
+
+    def installing(client, game, settings, stop, log, on_session, report, *rest):
+        on_stage = rest[-1]
+        report(100, 100)  # the download is at its end
+        on_session({"state": "done"})  # the server's poll must not bring "Downloading" back over a check
+        on_stage(manager.STAGE_VERIFY, 0, 0)
+        on_stage(manager.STAGE_VERIFY, 30 * 1024**3, 70 * 1024**3)
+        on_session({"state": "done"})
+        inside["label"] = win.app.progress[5][2]
+        inside["stage"] = win.app.stages.get(5)
+        inside["sidebar"] = win.library._install_text(5)
+        on_stage(manager.STAGE_FINISH, 0, 0)
+        inside["finish"] = win.app.progress[5][2]
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(manager, "run_install", installing)
+    game = {"id": 5, "name": "Eta", "library_id": None, "igdb_id": None}
+    win.app.set_games([game])
+    win.app.start_install(game)
+    for _ in range(100):
+        if 5 not in win.app.installs:
+            break
+        pump(qapp)
+        time.sleep(0.02)
+    pump(qapp)
+
+    assert inside["stage"] == manager.STAGE_VERIFY
+    assert inside["label"].startswith("Verifying files (sha1) 30.0 GiB / 70.0 GiB")
+    assert inside["sidebar"] == "Verifying files... 42%"
+    assert inside["finish"] == "Finishing up..."
+    assert (0, 0, "Verifying the downloaded files (sha1)...") in seen  # the bar is busy until the size is known
+    assert 5 not in win.app.stages  # and nothing is left once the install ended

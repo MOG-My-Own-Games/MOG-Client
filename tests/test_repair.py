@@ -180,3 +180,37 @@ def test_repair_leaves_the_files_the_save_sync_tracks(tmp_path, monkeypatch):
 
     assert result.kept == ["save.dat"] and server.downloaded == []
     assert (tmp_path / "G" / "save.dat").read_bytes() == b"progress"
+
+
+def test_the_check_tells_how_many_bytes_it_has_read_so_the_bar_can_move(tmp_path):
+    files = {"a.bin": b"a" * 5_000_000, "b.bin": b"b" * 3_000_000, "gone.bin": b"c" * 700}
+    for name in ("a.bin", "b.bin"):
+        (tmp_path / name).write_bytes(files[name])  # gone.bin is not there: fetch_missing is off, it is passed over
+    seen = []
+
+    result = verify_and_repair(
+        Server(files), 1, tmp_path, 7, log=lambda t: None, warn=lambda t: None, on_bytes=lambda done, total: seen.append((done, total))
+    )
+
+    total = sum(len(d) for d in files.values())
+    assert result.checked == 2
+    assert all(t == total for _, t in seen)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen)  # never backwards
+    assert seen[-1] == (total, total)  # and it ends at the end
+    assert any(0 < d < 5_000_000 for d, _ in seen)  # inside a big file too, not only between files
+
+
+def test_the_check_can_be_stopped_in_the_middle_of_a_big_file_without_calling_it_wrong(tmp_path):
+    data = {"big.bin": b"x" * 20_000_000, "next.bin": b"y"}
+    (tmp_path / "big.bin").write_bytes(data["big.bin"])
+    server = Server(data)
+    stop = threading.Event()
+
+    result = verify_and_repair(
+        server, 1, tmp_path, 7, log=lambda t: None, warn=lambda t: None, fetch_missing=True,
+        stop=stop, on_bytes=lambda done, total: stop.set() if done >= 4_000_000 else None,
+    )
+
+    assert result.stopped
+    assert result.checked == 0 and result.failed == [] and result.repaired == 0
+    assert server.downloaded == []  # a half-read file is not a corrupt one: nothing is fetched again

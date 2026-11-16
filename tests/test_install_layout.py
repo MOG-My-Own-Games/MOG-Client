@@ -7,6 +7,7 @@ import pytest
 from mog_client import config, manager
 from mog_client.config import Settings, load_library
 from mog_client.saves.state import load_install_manifest
+from mog_client.transfer import RepairResult
 
 
 def entry(path, size=1):
@@ -59,6 +60,7 @@ def install(tmp_path, monkeypatch):
 
         def verify(client, gid, out_dir, on_manifest=None, **k):
             on_manifest(files)
+            return RepairResult()
 
         monkeypatch.setattr(manager, "download_all_files", download)
         monkeypatch.setattr(manager, "verify_and_repair", verify)
