@@ -15,7 +15,7 @@ from PySide6.QtGui import QKeyEvent, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from mog_client import config, connectivity, installdirs, launcher, logstore, winetricks  # noqa: E402
+from mog_client import config, connectivity, installdirs, launcher, logstore, spacecheck, winetricks  # noqa: E402
 from mog_client.api import fmt_bytes  # noqa: E402
 from mog_client.config import Settings, load_settings  # noqa: E402
 from mog_client.gui import app as gui  # noqa: E402
@@ -36,6 +36,7 @@ def win(qapp, monkeypatch, tmp_path):
     config.save_settings(Settings(base="http://server:5000", user="u", password="p"))
     app = gui.App()
     monkeypatch.setattr(app, "fetch_videos", lambda game_id: None)  # no test reaches for the network
+    monkeypatch.setattr(spacecheck, "check", lambda *a, **k: None)  # the room check asks the server: a test says its own
     window = gui.MainWindow(app)
     window.resize(1100, 640)
     window.show()
@@ -76,7 +77,7 @@ def test_escape_closes_a_message_instead_of_going_back_a_page(win, qapp):
     assert not win.overlay.showing and win.current_page() is page
 
 
-def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qapp):
+def test_the_shoulders_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qapp):
     for n in range(80):
         logstore.info(f"line {n}")
     win.open_settings()
@@ -84,10 +85,10 @@ def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qa
     name = lambda: page.tabs.tabText(page.tabs.currentIndex())  # noqa: E731
     assert name() == "General"
 
-    win.on_pad(gamepad.TRIGGER_R)
-    win.on_pad(gamepad.TRIGGER_R)
+    win.on_pad(gamepad.PAGE_NEXT)
+    win.on_pad(gamepad.PAGE_NEXT)
     assert name() == "Library"
-    win.on_pad(gamepad.TRIGGER_R)
+    win.on_pad(gamepad.PAGE_NEXT)
     assert name() == "Logs" and win.legend_context() == "logs"
     pump(qapp)
     bar = page.logview.view.verticalScrollBar()
@@ -98,7 +99,7 @@ def test_the_triggers_switch_settings_tabs_and_the_stick_scrolls_the_log(win, qa
     assert bar.value() > end - 60
 
     for _ in range(4):
-        win.on_pad(gamepad.TRIGGER_L)
+        win.on_pad(gamepad.PAGE_PREV)
     assert name() == "Logs" and win.legend_context() == "logs"  # wraps round, and About is not a tab any more
 
 
@@ -243,7 +244,7 @@ def test_the_pad_does_nothing_while_this_window_is_not_the_one_in_front(win, qap
 
     with monkeypatch.context() as behind_a_game:  # no window of ours is the active one
         behind_a_game.setattr(QApplication, "activeWindow", staticmethod(lambda: None))
-        for name in (gamepad.TRIGGER_R, gamepad.DOWN, gamepad.ACCEPT, gamepad.QUIT):
+        for name in (gamepad.PAGE_NEXT, gamepad.DOWN, gamepad.ACCEPT, gamepad.QUIT):
             win.on_pad_event(name)
         pump(qapp)
         assert played == [] and page.tabs.currentIndex() == first and win.isVisible()
@@ -251,7 +252,7 @@ def test_the_pad_does_nothing_while_this_window_is_not_the_one_in_front(win, qap
     win.activateWindow()
     pump(qapp)
     monkeypatch.setattr(QApplication, "activeWindow", staticmethod(lambda: win))  # in front again
-    win.on_pad_event(gamepad.TRIGGER_R)
+    win.on_pad_event(gamepad.PAGE_NEXT)
     assert page.tabs.currentIndex() != first and played == ["navigate.wav"]
 
 
@@ -1189,6 +1190,7 @@ def test_a_game_that_was_extracted_on_purpose_is_not_asked_again(win, qapp, monk
     started = _extraction_win(win, monkeypatch, server)
     config.save_library({7: config.InstalledGame(7, "Game", str(tmp_path / "Game"), state="installing", extract_only=True)})
     win.install_game({"id": 7, "name": "Game"})
+    assert _wait_for(qapp, lambda: started)  # the room on the disk is looked at first, in the background
     assert started == [None] and server.asked == []  # it resumes; its record remembers the choice
 
 
@@ -2468,7 +2470,7 @@ def test_extracting_from_the_picker_goes_straight_to_the_install_without_asking_
     win.app.sizes[41] = 1
 
     win.install_game(win.app.games[41], None, None, extract=True)
-    pump(qapp)
+    assert _wait_for(qapp, lambda: started)  # the room on the disk is looked at first, in the background
 
     assert started == [(None, True)] and asked == []
 
@@ -3139,6 +3141,146 @@ def test_about_has_an_about_and_a_changelog_tab_and_the_pad_switches_them(win, q
 
     page.switch_tab(1)  # wraps round
     assert page.tabs.currentWidget() is page.about
+
+
+def test_l1_and_r1_change_tab_in_settings_and_about(win, qapp):
+    win.open_settings()
+    page = win.current_page()
+    assert page.tabs.currentIndex() == 0
+    win.on_pad(gamepad.PAGE_NEXT)  # R1
+    assert page.tabs.currentIndex() == 1
+    win.on_pad(gamepad.PAGE_PREV)  # L1
+    win.on_pad(gamepad.PAGE_PREV)  # wraps to the last
+    assert page.tabs.currentIndex() == page.tabs.count() - 1
+    assert page.tabs.currentIndex() == page.tabs.count() - 1
+    win.on_pad(gamepad.PAGE_NEXT)
+    assert page.tabs.currentIndex() == 0
+    for trigger in (gamepad.TRIGGER_R, gamepad.TRIGGER_L):  # L2/R2 are not tab keys
+        win.on_pad(trigger)
+        assert page.tabs.currentIndex() == 0
+
+    win.back()
+    win.open_about()
+    about = win.current_page()
+    win.on_pad(gamepad.PAGE_NEXT)
+    assert about.tabs.currentWidget() is about.changelog
+    win.on_pad(gamepad.PAGE_PREV)
+    assert about.tabs.currentWidget() is about.about
+
+
+def test_a_tab_switched_with_the_shoulders_selects_its_first_entry_even_from_the_tab_bar_and_on_library(win, qapp):
+    win.open_settings()
+    page = win.current_page()
+    win.activateWindow()
+    page.sync_saves_box.setFocus()
+    pump(qapp)
+    firsts = {
+        "Server": page.base,
+        "Library": page.library_tab.rows[0].control,
+    }
+    for from_the_bar in (False, True):
+        page.tabs.setCurrentIndex(0)
+        page.sync_saves_box.setFocus()
+        if from_the_bar:
+            win.on_pad(gamepad.UP)  # the focus goes up onto the tab bar: the shoulders must still land on an entry
+            pump(qapp)
+            assert QApplication.focusWidget() is page.tabs.tabBar()
+        for name, widget in firsts.items():
+            win.on_pad(gamepad.PAGE_NEXT)
+            pump(qapp)
+            assert page.tabs.tabText(page.tabs.currentIndex()) == name
+            assert QApplication.focusWidget() is widget, (name, from_the_bar)
+
+
+def test_the_library_tab_keeps_the_focus_on_its_row_when_the_sizes_come_in(win, qapp, monkeypatch):
+    win.open_settings()
+    page = win.current_page()
+    win.activateWindow()
+    rec = gui.InstalledGame(game_id=9, name="Nu", install_dir="/nowhere/nu", state="installed")
+    monkeypatch.setattr(page, "_library_records", lambda: [rec])
+    page.render_library()
+    page.tabs.setCurrentIndex(2)
+    pump(qapp)
+    button = page._library_rows[0].control
+    button.setFocus()
+    pump(qapp)
+    assert QApplication.focusWidget() is button
+
+    page._sizes[9] = 123  # measured: the rows are made again
+    page.render_library()
+    pump(qapp)
+    assert QApplication.focusWidget() is page._library_rows[0].control
+
+
+def _begin(win, qapp, monkeypatch, found, rec=None):
+    """install_game for game 7 with the room check answering `found`; what started and what was asked."""
+    started, asked = [], []
+    monkeypatch.setattr(spacecheck, "check", lambda *a, **k: found)
+    monkeypatch.setattr(win.app, "start_install", lambda game, installer=None, root=None, extract_only=False: started.append(root))
+    monkeypatch.setattr(win, "_ask_extraction", lambda game, installer, proceed: proceed(False))
+    monkeypatch.setattr(win, "ask", lambda text, yes, no=None, **k: asked.append((text, yes, no)))
+    _Drive(monkeypatch, {"/a": 100 * 1024**3})
+    win.app.settings.install_dirs = ["/a"]
+    win.app.sizes[7] = 1
+    win.install_game({"id": 7, "name": "Beta"})
+    pump(qapp)
+    return started, asked
+
+
+def test_an_install_that_will_not_fit_asks_first_and_goes_on_only_if_the_person_says_so(win, qapp, monkeypatch):
+    found = spacecheck.Shortage(needed=70 * 1024**3, have=0, free=20 * 1024**3, basis=spacecheck.BASIS_CACHE)
+    started, asked = _begin(win, qapp, monkeypatch, found)
+    assert started == [] and len(asked) == 1
+    text, yes, no = asked[0]
+    assert "Beta takes 70.0 GiB" in text and "20.0 GiB free" in text and "Continue anyway?" in text
+    yes()
+    assert started == [Path("/a")]
+
+
+def test_the_question_says_when_it_is_only_the_installer_that_was_weighed(win, qapp, monkeypatch):
+    found = spacecheck.Shortage(needed=5 * 1024**3, have=2 * 1024**3, free=1024**3, basis=spacecheck.BASIS_INSTALLER)
+    _, asked = _begin(win, qapp, monkeypatch, found)
+    assert "installer of Beta weighs 5.0 GiB (2.0 GiB of it already downloaded)" in asked[0][0]
+    assert "usually larger" in asked[0][0]
+
+
+def test_an_install_that_fits_starts_without_a_question(win, qapp, monkeypatch):
+    started, asked = _begin(win, qapp, monkeypatch, None)
+    assert started == [Path("/a")] and asked == []
+
+
+def test_an_install_whose_room_could_not_be_looked_at_still_starts(win, qapp, monkeypatch):
+    def broken(*_a, **_k):
+        raise RuntimeError("the server is not there")
+
+    started, asked = [], []
+    monkeypatch.setattr(spacecheck, "check", broken)
+    monkeypatch.setattr(win.app, "start_install", lambda game, installer=None, root=None, extract_only=False: started.append(root))
+    monkeypatch.setattr(win, "_ask_extraction", lambda game, installer, proceed: proceed(False))
+    _Drive(monkeypatch, {"/a": 100 * 1024**3})
+    win.app.settings.install_dirs = ["/a"]
+    win.app.sizes[7] = 1
+    win.install_game({"id": 7, "name": "Beta"})
+    pump(qapp)
+    assert started == [Path("/a")]
+
+
+def test_the_line_above_the_bar_turns_red_while_the_install_waits_for_room(win, qapp):
+    game = {"id": 7, "name": "Beta", "library_id": None, "igdb_id": None}
+    win.app.set_games([game])
+    win.app.installs[7] = threading.Event()
+    win.app.progress[7] = (43 * 1024**3, 66 * 1024**3, "Downloading")
+    page = gui.GamePage(win, game)
+    pump(qapp)
+
+    page._on_progress(7, 43 * 1024**3, 66 * 1024**3, "Paused: no space left on device 43.0 GiB / 66.0 GiB")
+    assert "color" not in page.status.styleSheet()
+    win.app.no_space.add(7)
+    page._on_progress(7, 43 * 1024**3, 66 * 1024**3, "Paused: no space left on device 43.0 GiB / 66.0 GiB")
+    assert "#e2574c" in page.status.styleSheet()
+    win.app.no_space.discard(7)
+    page._on_progress(7, 44 * 1024**3, 66 * 1024**3, "Downloading 44.0 GiB / 66.0 GiB")
+    assert page.status.styleSheet() == ""
 
 
 def test_the_changelog_opens_once_after_an_update_and_not_in_a_new_install(win, qapp, monkeypatch):

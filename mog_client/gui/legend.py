@@ -40,7 +40,7 @@ MOVE = Entry("Move", (G.DPAD,), ("arrows",), keys_chord=False)
 SELECT = Entry("Select", (G.SOUTH,), ("enter",))
 BACK = Entry("Back", (G.EAST,), ("escape",))
 QUIT = Entry("Quit", (G.START, G.SELECT), ("ctrl", "q"), pad_chord=True)
-TABS = Entry("Tabs", (G.TRIGGER_L_GLYPH, G.TRIGGER_R_GLYPH), ("ctrl", "page_up", "page_down"))
+TABS = Entry("Tabs", (G.SHOULDER_L, G.SHOULDER_R), ("ctrl", "page_up", "page_down"))
 
 LEGENDS: dict[str, tuple[Entry, ...]] = {
     LIBRARY: (  # with the sidebar open: Back closes it

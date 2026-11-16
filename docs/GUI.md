@@ -323,7 +323,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   Notifications (with the unread count), Refresh library, Add local game (see [SAVES.md](SAVES.md)), Go offline / Go online, About and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.
-- Four tabs, switched with L2 and R2 (Ctrl+Page Up/Down): General (saves, launcher, updates, sounds), Server, Library and
+- Four tabs, switched with L1 and R1 (Ctrl+Page Up/Down; the triggers do not switch them), each one landing on its first entry: General (saves, launcher, updates, sounds), Server, Library and
   Logs.
 - The Library tab holds the install folders and "Scan for launchers", and below them every game installed on this device
   with the space it takes, the biggest first, and an Uninstall button (the same questions as Uninstall in the game's own
@@ -331,7 +331,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   (a drive that is not connected) is listed last, without a size.
 - The Logs tab shows everything the client logged (white for info, yellow for warnings, red for errors), filterable by
   level and scrollable with the right stick. The same log is kept in `logs/client.log` in the client's data folder.
-- About (in the user menu) has two tabs, About and Changelog, switched with L2 and R2. Changelog lists what changed in the
+- About (in the user menu) has two tabs, About and Changelog, switched with L1 and R1. Changelog lists what changed in the
   version that is running, under *Changes* and *Fixes*, each with a link to its commit, and has the Ko-fi button. It opens by
   itself once after an update (a build made by hand carries no notes and links to the releases page instead).
 

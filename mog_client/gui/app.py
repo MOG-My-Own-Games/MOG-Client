@@ -97,6 +97,7 @@ from mog_client import (
     quiver,
     selfsteam,
     snapshot,
+    spacecheck,
     steam,
     timeago,
     trace,
@@ -296,6 +297,7 @@ class App:
         self.server_games: list[dict] = []  # the list as the server sent it, before the Quiver games are put among them
         self.quiver_games: list[quiver.QuiverGame] = []  # what Quiver Launcher has installed, while its library is on
         self.stopping: set[int] = set()  # installs asked to stop, still winding down
+        self.no_space: set[int] = set()  # installs whose disk is full: paused until there is room
         self.jobs: dict[int, str] = {}  # games with a job (see JOB_TEXT), shown on their main button
         self._icons_asked: set[int] = set()
         self.mods: dict[int, list[dict]] = {}  # each game's mods, once asked
@@ -875,25 +877,34 @@ class App:
 
         last_report = [0.0]
 
-        def report(written: int, total: int) -> None:
+        def report(written: int, total: int, force: bool = False) -> None:
             with meter_lock:
                 now = time.monotonic()
                 meter.add(now, written)
-                if now - last_report[0] < REPORT_EVERY and not (total and written >= total):
+                if not force and now - last_report[0] < REPORT_EVERY and not (total and written >= total):
                     self.progress[gid] = (written, total, self.progress.get(gid, (0, 0, ""))[2])
                     return  # every chunk of every file reports: the window is told a few times a second
                 last_report[0] = now
                 speed, eta = meter.speed(), meter.eta(written, total)
-            label = f"Downloading {fmt_bytes(written)} / {fmt_bytes(total)}"
-            if speed:
-                label += f"  {fmt_bytes(speed)}/s"
-            if eta is not None:
-                # The total grows while the server is still producing files, so this is a floor.
-                label += f"  ETA {format_eta(eta)}"
+            if gid in self.no_space:
+                label = f"Paused: no space left on device {fmt_bytes(written)} / {fmt_bytes(total)}"
+            else:
+                label = f"Downloading {fmt_bytes(written)} / {fmt_bytes(total)}"
+                if speed:
+                    label += f"  {fmt_bytes(speed)}/s"
+                if eta is not None:
+                    # The total grows while the server is still producing files, so this is a floor.
+                    label += f"  ETA {format_eta(eta)}"
             if server_state["label"]:
                 label += f"  (server: {server_state['label']})"
             self.progress[gid] = (written, total, label)
             bridge.progress.emit(gid, written, total, label)
+
+        def on_space(short: bool) -> None:
+            (self.no_space.add if short else self.no_space.discard)(gid)
+            written, total, _ = self.progress.get(gid, (0, 0, ""))
+            report(written, total, force=True)  # the label turns red (or back) now, not at the next chunk
+            bridge.activity.emit()
 
         def on_session(s: dict) -> None:
             if s.get("state") == "queued":
@@ -924,7 +935,7 @@ class App:
                 manager.run_install(
                     self.client(), game, self.settings, stop,
                     lambda m: bridge.log.emit(gid, m), on_session,
-                    report, installer, root, extract_only, steps,
+                    report, installer, root, extract_only, steps, on_space,
                 )
             except Exception as e:  # noqa: BLE001
                 err = manager.describe_error(e)
@@ -935,6 +946,7 @@ class App:
                 self.progress.pop(gid, None)
                 self.queued.pop(gid, None)
                 self.stopping.discard(gid)
+                self.no_space.discard(gid)
                 activity.remove_install(gid)
                 follow_up = self.after_stop.take(gid)
                 if follow_up:
@@ -3213,7 +3225,7 @@ class AddonsPage(Page):
 
 class AboutPage(Page):
     """Two tabs, opened from the user menu: About (what MOG is, who made it, under what licence and where to find it) and
-    Changelog (what changed in this version, which is also what an update opens once); the pad's L2 and R2 switch them."""
+    Changelog (what changed in this version, which is also what an update opens once); the pad's L1 and R1 switch them."""
 
     title = "About"
 
@@ -3249,7 +3261,7 @@ class AboutPage(Page):
 
 
 class SettingsPage(Page):
-    """Settings in tabs (General, Server, Library, Logs); the pad's L2 and R2 switch between them."""
+    """Settings in tabs (General, Server, Library, Logs); the pad's L1 and R1 switch between them."""
 
     title = "Settings"
     SAVED_TABS = (0, 1)  # the tabs with fields to save
@@ -3574,6 +3586,11 @@ class SettingsPage(Page):
     def render_library(self) -> None:
         """The installed games, the biggest first, each with its size and a button to uninstall it."""
         menu = self._library_menu
+        focus = QApplication.focusWidget()
+        held = next(
+            (i for i, row in enumerate(self._library_rows) if focus is not None and (row is focus or row.isAncestorOf(focus))),
+            None,
+        )  # the rows are made again as the sizes come in: the focus must not be lost with the one that had it
         for row in self._library_rows:
             menu.remove(row)
         self._library_rows = []
@@ -3603,6 +3620,8 @@ class SettingsPage(Page):
             self._library_rows.append(menu.add(row))
             for widget in (button, *button.findChildren(QWidget)):
                 widget.installEventFilter(self)  # Up and Down walk through the rows, as on the other tabs
+        if held is not None and self._library_rows:
+            self._library_rows[min(held, len(self._library_rows) - 1)].control.setFocus()
 
     def uninstall_game(self, rec: InstalledGame) -> None:
         gid = rec.game_id
@@ -3702,6 +3721,9 @@ class SettingsPage(Page):
             tab.focus_default()
         elif tab is self.server:
             self.base.setFocus()
+        elif tab is self.library_tab:
+            if self.library_tab.rows:  # its first row: the install folders (the games below are rebuilt as they are measured)
+                self.library_tab.rows[0].control.setFocus()
         else:
             self.sync_saves_box.setFocus()
 
@@ -4602,6 +4624,7 @@ class GamePage(Page):
         self.shots.itemActivated.connect(self._open_shot)
 
         self.status = QLabel()
+        self._status_red = False
         self.bar = QProgressBar()
         self.buttons = QHBoxLayout()
         self.first: QPushButton | None = None
@@ -4829,7 +4852,14 @@ class GamePage(Page):
             self.bar.setFormat(f"{pct * 100:.1f}%")
         else:
             self.bar.setRange(0, 0)
+        self._set_status_red(gid in self.app.no_space)
         self.status.setText(label)
+
+    def _set_status_red(self, red: bool) -> None:
+        """The line above the bar is red while the install waits for room on the disk."""
+        if red != self._status_red:
+            self._status_red = red
+            self.status.setStyleSheet("color: #e2574c; font-weight: bold;" if red else "")
 
     def _on_log(self, gid: int, msg: str) -> None:
         if gid == self.game["id"]:
@@ -4973,6 +5003,8 @@ class GamePage(Page):
         rec = load_library().get(gid)
         self._shown_key = self._buttons_key()
         self.first = None
+        if gid not in self.app.installs:
+            self._set_status_red(False)
         if job := self.app.jobs.get(gid):
             doing = JOB_TEXT[job]
             self.status.setText(doing)
@@ -6708,7 +6740,7 @@ class LibraryPage(Page):
         )
         progress = self._progress(gid)
         if progress is not None:
-            badge = f"Installing {progress // 10}%"
+            badge = "No space" if gid in self.win.app.no_space else f"Installing {progress // 10}%"
         if absent:
             badge = "Not available"
         if badge:
@@ -7423,20 +7455,24 @@ class MainWindow(QMainWindow):
             self.message(f"{rec.name} was being installed in {rec.install_dir}, which is not available now. Connect it and try again.")
             return
 
-        def go(root: Path | None = None, extract: bool | None = None) -> None:
-            if steps:
-                self.app.start_install(game, installer, root, extract, steps)
-            else:
-                self.app.start_install(game, installer, root, extract)
-            if then:
-                then()
+        def go(root: Path | None = None, extract: bool | None = None, confirmed: bool = False) -> None:
+            def start() -> None:
+                if steps:
+                    self.app.start_install(game, installer, root, extract, steps)
+                else:
+                    self.app.start_install(game, installer, root, extract)
+                if then:
+                    then()
+
+            # `confirmed`: the person was just asked about this folder's room (see `_place`), once is enough.
+            start() if confirmed else self._check_space(game, installer, root, start)
 
         if rec and rec.extract_only:
             go()  # decided when it began
             return
 
         def place(extract: bool) -> None:
-            self._place(game, self.app.sizes.get(gid) or 0, lambda root=None: go(root, extract))
+            self._place(game, self.app.sizes.get(gid) or 0, lambda root=None, confirmed=False: go(root, extract, confirmed))
 
         def size_then_place(extract: bool) -> None:
             if gid in self.app.sizes:
@@ -7464,6 +7500,35 @@ class MainWindow(QMainWindow):
         # A game that was begun is asked too when its session is not running (an attempt that failed
         # leaves its record behind, and starting it again would only fail the same way).
         self._ask_extraction(game, installer, proceed)
+
+    def _check_space(self, game: dict, installer: dict | None, root: Path | None, start) -> None:
+        """Before an install starts or resumes: when the disk it goes to is estimated too small (see `spacecheck`), say
+        so and let the person go on anyway or not. The look never gets in the way: when it fails the install starts."""
+        gid = game["id"]
+        rec = load_library().get(gid)
+        folder = Path(rec.files_dir or rec.install_dir) if rec else (root or installdirs.default_root(self.app.settings))
+
+        def work() -> None:
+            found = spacecheck.check(self.app.client(), gid, folder, installer)
+            self.app.bridge.call.emit(lambda: self._space_answer(game, folder, found, start))
+
+        self.app.run_bg(work, on_error=lambda _m: self.app.bridge.call.emit(start))
+
+    def _space_answer(self, game: dict, folder: Path, found, start) -> None:
+        if found is None:
+            start()
+            return
+        have = f" ({fmt_bytes(found.have)} of it already downloaded)" if found.have else ""
+        if found.basis == spacecheck.BASIS_CACHE:
+            what = f"{game['name']} takes {fmt_bytes(found.needed)}{have}"
+        else:
+            what = f"The installer of {game['name']} weighs {fmt_bytes(found.needed)}{have}, and the installed game is usually larger"
+        self.ask(
+            f"{what}, but {folder} has only {fmt_bytes(found.free)} free. The install will stop when the disk is full "
+            "and go on once there is room. Continue anyway?",
+            start,
+            game=game["id"],
+        )
 
     def _ask_extraction(self, game: dict, installer: dict | None, proceed) -> None:
         """A game that is an archive with no installer in it (one that needs none) can be extracted as it is and
@@ -7514,7 +7579,7 @@ class MainWindow(QMainWindow):
             self.ask(
                 f"{game['name']} takes about {fmt_bytes(needed)} on the server (all of its folder), and {best.path} has "
                 f"{fmt_bytes(best.free)} free. The install itself may need less. Install it there anyway?",
-                lambda: go(best.path),
+                lambda: go(best.path, confirmed=True),
                 game=game["id"],
             )
             return
@@ -7698,8 +7763,9 @@ class MainWindow(QMainWindow):
         if isinstance(page, NotificationsPage) and name == gamepad.REFRESH:
             page.delete_current()
             return
-        if isinstance(page, (SettingsPage, AboutPage)) and name in (gamepad.TRIGGER_L, gamepad.TRIGGER_R):
-            page.switch_tab(-1 if name == gamepad.TRIGGER_L else 1)
+        if isinstance(page, (SettingsPage, AboutPage)) and name in (gamepad.PAGE_PREV, gamepad.PAGE_NEXT):
+            page.switch_tab(-1 if name == gamepad.PAGE_PREV else 1)  # L1/R1 only: the triggers are not tab keys
+            page.focus_default()  # the first entry of the new tab, wherever the focus was (even on the tab bar)
             self.sounds.play(NAVIGATE)
             return
         if name == gamepad.TRIGGER_L:
