@@ -26,6 +26,27 @@ example, `/media/deck/decksd/mog-games`, `/media/deck/decksd2/mog-games` and `/h
   the list says later.
 - The sidebar shows the free space left across the registered folders.
 
+### Temporary files of the installer
+
+- An installer often makes files for its own use and deletes them before it ends (a decompressor's scratch space can be
+  gigabytes). The server tells the client when that happens (`removed` in the manifest) and the client drops what it has of
+  them at once, finished or partial, even while one is being fetched, so they take neither disk nor bandwidth.
+- Files that look temporary (`.tmp`, `.temp`, `.part`, `.partial`, ending in `~`, or in a `tmp`/`temp` folder) are fetched
+  after all the others: by the time the queue reaches them they may be gone.
+
+### Room for an install
+
+- Starting or resuming an install first compares the room on its disk with an estimate of what is still to download: the
+  size of the server's install cache once it is finished (what is already on disk is taken off), otherwise the weight of the
+  installer (the one picked, else what the game's folder holds on the server), which is a floor, as the installed game is
+  usually larger. A cache still being made counts when it is already bigger than that.
+- When it will not fit, a question says so (what it takes, what is free) and the person chooses to continue anyway or not.
+  It does not block: a server that cannot say, or a disk that cannot be read, starts the install as usual.
+- When the disk fills up during the download, the install is not failed: the line above the progress bar turns red and reads
+  `Paused: no space left on device <downloaded> / <total>` (the server's state follows in brackets), the game's sidebar badge
+  says "No space", and nothing more is asked of the server. The disk is looked at every few seconds, and the download goes on
+  by itself from what is on disk once 256 MiB are free. Pause and Cancel work as ever.
+
 When a game's folder is not there (the drive is unplugged) the game stays in the library with a grey cover and "Not
 available". Its page offers "Check again" instead of Play, nothing is backed up or restored for it, and it comes back by
 itself when the drive does. Resuming a half-finished install waits for its drive too.

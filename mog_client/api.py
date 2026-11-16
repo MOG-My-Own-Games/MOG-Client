@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import glob
 import http.client
 import json
@@ -551,6 +552,11 @@ class MogClient:
                             net.discard(url)  # the rest of the body is still on the wire
                             return written
             except (OSError, http.client.HTTPException) as e:
+                if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+                    # The disk is full, not the network: it must reach the caller as it is (wrapped in a "connection
+                    # lost" it was retried for hours), which then waits for room instead of asking again at once.
+                    net.discard(url)  # the rest of the body is still on the wire
+                    raise
                 if net.failed(url):
                     trace.event(f"{path}: connection dropped on purpose mid-body, resuming from {written}")
                     continue  # our own reset: resume from what is on disk over a new connection

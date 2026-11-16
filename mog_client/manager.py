@@ -146,6 +146,7 @@ def run_install(
     root: Path | None = None,
     extract_only: bool | None = None,
     steps: list[dict] | None = None,
+    on_space: Callable[[bool], None] | None = None,
 ) -> InstalledGame:
     """Start-or-resume the server-side install and stream it to disk.
 
@@ -222,6 +223,7 @@ def run_install(
     # The download, not the server's installer, decides when we're finished.
     _, finished = download_all_files(
         client, gid, out_dir, stop, session_id, log=log, warn=log, on_bytes=on_bytes, server_done=server_done,
+        on_space=on_space,
     )
     watcher.join(timeout=10)
     if not finished:

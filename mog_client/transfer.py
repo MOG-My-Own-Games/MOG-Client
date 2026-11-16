@@ -6,8 +6,10 @@ route the same messages to its own widgets.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import shutil
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -20,6 +22,29 @@ from mog_client.api import ACTIVE_STATES, MANIFEST_INTERVAL, POLL_INTERVAL, MogC
 
 
 STALL_SECONDS = 15.0
+NO_SPACE_POLL = 5.0  # seconds between looks at the disk while the download waits for room
+NO_SPACE_RESUME = 256 * 1024**2  # free bytes that end the wait: less would only fill up again at once
+QUEUE_PER_WORKER = 8  # transfers asked for ahead of the workers: few enough that a file turning up later still goes soon
+# What an installer makes for its own use and usually deletes before it ends: fetched last, so that by the time the
+# queue gets there it may be gone (and the server says so), instead of costing disk and bandwidth for nothing.
+SCRATCH_SUFFIXES = (".tmp", ".temp", ".part", ".partial", "~")
+SCRATCH_FOLDERS = ("tmp", "temp")
+
+
+def is_scratch(path: str) -> bool:
+    """Whether a file looks like a temporary one of the installer: by its ending or by a folder of its path."""
+    parts = path.lower().split("/")
+    return parts[-1].endswith(SCRATCH_SUFFIXES) or any(p in SCRATCH_FOLDERS for p in parts[:-1])
+
+
+class _Either:
+    """Two events as one for `stream_file`'s stop: the whole download's, and the one of a single file."""
+
+    def __init__(self, *events: threading.Event) -> None:
+        self.events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self.events)
 
 
 def download_all_files(
@@ -32,6 +57,7 @@ def download_all_files(
     warn: Callable[[str], None] = warn,
     on_bytes: Callable[[int, int], None] | None = None,
     server_done: threading.Event | None = None,
+    on_space: Callable[[bool], None] | None = None,
 ) -> tuple[int, bool]:
     """Poll manifest and stream every file to out_dir.
 
@@ -44,6 +70,9 @@ def download_all_files(
     that does not say gets one file at a time.
     `on_bytes(downloaded, known_total)` fires as data arrives; the known
     total grows while the server is still producing files.
+    A full disk pauses the download instead of failing it: `on_space(True)` is called when it happens, nothing new is
+    asked for while the disk is checked every few seconds, and `on_space(False)` follows once room is back (the files
+    carry on from what is on disk).
     """
     stop_event = stop_event or threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +89,71 @@ def download_all_files(
     connections_reset = False
     failed_at: dict[str, tuple[float, int]] = {}  # path -> (when it may be tried again, failures so far)
     fetched: set[str] = set()  # files this download started writing, the only ones it may delete
+    no_space = {"on": False}  # the disk is full: waiting for room, asking for nothing
+    cancels: dict[str, threading.Event] = {}  # a transfer's own stop, set when the server says the installer deleted it
+    doomed: set[str] = set()  # transfers told to stop for that reason: their files go once they have
+    purged: set[str] = set()  # paths already dropped for that reason: the list repeats them, the disk is not asked again
+
+    def hold_for_space(error: OSError) -> None:
+        if no_space["on"]:
+            return
+        no_space["on"] = True
+        warn(f"no space left on device ({out_dir}): paused until some is freed")
+        trace.event(f"no space left: {error}")
+        if on_space:
+            on_space(True)
+
+    def room_is_back() -> bool:
+        try:
+            return shutil.disk_usage(out_dir).free >= NO_SPACE_RESUME
+        except OSError:
+            return False
+
+    def delete_local(path: str) -> None:
+        local = out_dir / path
+        local.unlink(missing_ok=True)
+        for parent in local.parents:  # empty folders the old layout left behind
+            if parent == out_dir or not parent.is_relative_to(out_dir):
+                break
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+
+    def purge(path: str) -> None:
+        """A file the installer deleted: nothing of it is kept, whole or partial, and nothing more is asked for it."""
+        on_disk.pop(path, None)
+        done_paths.discard(path)
+        failed_at.pop(path, None)
+        cancels.pop(path, None)
+        doomed.discard(path)
+        purged.add(path)
+        delete_local(path)
+        trace.event(f"{path}: deleted by the installer, dropped")
+        log(f"{path}: the installer deleted it, dropped")
+        if on_bytes:
+            on_bytes(total(), known["total"])
+
+    def drop_deleted(removed: list, files_by_path: dict[str, dict]) -> None:
+        """What the server says the installer deleted goes first: a file in flight is told to stop, one that never
+        started is cancelled, and what is on disk of it is removed (freeing room for the files that matter)."""
+        purged.intersection_update(removed)  # a path that left the list may come back, and be dropped again
+        for path in removed:
+            if not isinstance(path, str) or path in files_by_path or path in purged:  # listed again: written once more
+                continue
+            parts = Path(path).parts
+            if Path(path).is_absolute() or ".." in parts:
+                continue
+            future = running.get(path)
+            if future is not None:
+                if future.cancel():  # still queued
+                    del running[path]
+                    purge(path)
+                else:
+                    cancels[path].set()
+                    doomed.add(path)
+            elif path in on_disk or (out_dir / path).is_file():
+                purge(path)
 
     def drop_vanished(files_by_path: dict[str, dict], final: bool) -> None:
         """The manifest is a snapshot while the installer runs, and its paths can change by the time
@@ -77,15 +171,7 @@ def download_all_files(
             done_paths.discard(path)
             failed_at.pop(path, None)
             if path in fetched:
-                local = out_dir / path
-                local.unlink(missing_ok=True)
-                for parent in local.parents:  # empty folders the old layout left behind
-                    if parent == out_dir or not parent.is_relative_to(out_dir):
-                        break
-                    try:
-                        parent.rmdir()
-                    except OSError:
-                        break
+                delete_local(path)
         if gone:
             trace.event(f"final manifest: dropped {len(gone)} path(s) that are not in it")
             log(f"the install ended with a different file layout: {len(gone)} early file(s) dropped")
@@ -93,7 +179,7 @@ def download_all_files(
     def total() -> int:
         return sum(on_disk.values())
 
-    def fetch(f: dict) -> int:
+    def fetch(f: dict, cancel: threading.Event) -> int:
         path = f["path"]
 
         def in_flight(written_now: int) -> None:
@@ -106,7 +192,9 @@ def download_all_files(
         fetched.add(path)
         trace.event(f"start {path} from {on_disk.get(path, 0)}")
         try:
-            written = client.stream_file(game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=stop_event)
+            written = client.stream_file(
+                game_id, path, out_dir, session_id=session_id, on_chunk=in_flight, stop=_Either(stop_event, cancel)
+            )
         except Exception as e:  # noqa: BLE001 - recorded, then handled by the caller
             trace.event(f"fail {path} after {time.monotonic() - began:.1f}s: {e}")
             raise
@@ -120,6 +208,9 @@ def download_all_files(
             if not future.done():
                 continue
             del running[path]
+            if path in doomed:  # the installer deleted it while it was being fetched
+                purge(path)
+                continue
             f = files_by_path.get(path, {})
             try:
                 written = future.result()
@@ -127,6 +218,12 @@ def download_all_files(
                 warn(str(e))
                 count = failed_at.get(path, (0.0, 0))[1] + 1
                 failed_at[path] = (time.monotonic() + min(MANIFEST_INTERVAL * 2**count, 30), count)
+                continue
+            except OSError as e:
+                if e.errno != errno.ENOSPC:
+                    raise
+                failed_at.pop(path, None)  # not the file's fault: it goes on from what is on disk when there is room
+                hold_for_space(e)
                 continue
             failed_at.pop(path, None)
             moved = moved or written != on_disk.get(path)
@@ -176,7 +273,21 @@ def download_all_files(
                 log(f"manifest: {len(files)} file(s)")
             known["total"] = sum(f.get("size_bytes", 0) for f in files)
 
+            drop_deleted(manifest.get("removed", []) if manifest else [], files_by_path)
             moved = reap(files_by_path)
+            if no_space["on"]:
+                if room_is_back():
+                    no_space["on"] = False
+                    last_data["at"] = time.monotonic()
+                    log("room is back: the download goes on")
+                    trace.event("room is back")
+                    if on_space:
+                        on_space(False)
+                else:
+                    last_data["at"] = time.monotonic()  # waiting is not a stall
+                    if stop_event.wait(NO_SPACE_POLL):
+                        break
+                    continue
             # The final list has every file complete; until it shows up after the server finished,
             # what the endpoint returns is the stale snapshot from the install itself.
             manifest_final = bool(files) and all(f.get("complete") for f in files)
@@ -186,7 +297,9 @@ def download_all_files(
                 if on_bytes:
                     on_bytes(total(), known["total"])
             now = time.monotonic()
-            for f in files:
+            # Scratch files last (the sort is stable: the rest keep the server's order), and only a few transfers asked
+            # for ahead, so a file that turns up later is not left behind a long queue of them.
+            for f in sorted(files, key=lambda f: is_scratch(f["path"])):
                 if server_was_done and not manifest_final:
                     break
                 path, size, complete = f["path"], f.get("size_bytes", 0), f.get("complete", False)
@@ -201,7 +314,10 @@ def download_all_files(
                     if on_bytes:
                         on_bytes(total(), known["total"])
                 elif complete or on_disk[path] < f.get("sealed_bytes", 0):
-                    running[path] = pool.submit(fetch, f)  # nothing new to ask for on a growing file that is caught up
+                    if len(running) >= max(1, workers) * QUEUE_PER_WORKER:
+                        break
+                    cancels[path] = threading.Event()
+                    running[path] = pool.submit(fetch, f, cancels[path])  # nothing new to ask for on a growing file that is caught up
 
             quiet = time.monotonic() - last_data["at"]
             if running and quiet > STALL_SECONDS and time.monotonic() - last_data["warned"] > STALL_SECONDS:
