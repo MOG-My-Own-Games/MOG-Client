@@ -63,9 +63,16 @@ BUTTON_FOR = {
     TRIGGER_L: TRIGGER_L_GLYPH,
 }
 
-# Start (7) and Select (6) are handled by _Combo.
-_JS_BUTTONS = {0: ACCEPT, 1: BACK, 2: REFRESH, 3: SEARCH, 4: PAGE_PREV, 5: PAGE_NEXT}
-_JS_SELECT, _JS_START = 6, 7
+# What an Xbox-style pad numbers (joydev numbers the buttons a pad has in the order of their evdev codes). Start and
+# Select go through _Combo, the triggers through _Trigger.
+_JS_DEFAULT = {0: ACCEPT, 1: BACK, 2: REFRESH, 3: SEARCH, 4: PAGE_PREV, 5: PAGE_NEXT, 6: ACCOUNT, 7: MENU}
+# The same by evdev code. A pad with L2/R2 as buttons (a PlayStation one) numbers them 6 and 7 and puts Select and Start
+# after them, so the numbers alone would take a pulled L2 for Select and open the user menu beside the sidebar.
+_JS_CODES = {
+    0x130: ACCEPT, 0x131: BACK, 0x133: REFRESH, 0x134: SEARCH, 0x136: PAGE_PREV, 0x137: PAGE_NEXT,
+    0x138: TRIGGER_L, 0x139: TRIGGER_R, 0x13A: ACCOUNT, 0x13B: MENU,
+}
+_BTN_MISC, _KEY_MAX = 0x100, 0x2FF
 XBOX, PLAYSTATION, NINTENDO, STEAM = "xbox", "playstation", "nintendo", "steam"
 _FAMILY_PATTERNS = (
     (STEAM, re.compile(r"steam|valve")),
@@ -95,8 +102,9 @@ def _joydev_name(path: str) -> str:
 
 
 _DEADZONE = 16000
-_TRIGGER_ON = 8000
+_TRIGGER_ON, _TRIGGER_OFF = 8000, 4000  # pulled past the first, let go below the second: a trigger resting near one does not flutter
 _JS_TRIGGER_L_AXIS, _JS_TRIGGER_R_AXIS = 2, 5
+_TRIGGER_AXIS = {TRIGGER_L: _JS_TRIGGER_L_AXIS, TRIGGER_R: _JS_TRIGGER_R_AXIS}
 _REPEAT_DELAY, _REPEAT_RATE = 0.4, 0.09
 _SCROLL_RATE = 0.05
 _JS_RIGHT_STICK_Y = 4
@@ -141,6 +149,27 @@ class _Scroller:
         if self.tilt and now >= self.due:
             self.due = now + _SCROLL_RATE
             self.emit(f"{SCROLL}:{self.tilt:.3f}")
+
+
+def _joydev_table(fd: int, family: str = "xbox") -> dict[int, str]:
+    """The function of each button number of this pad, read from the codes the driver gives them (JSIOCGBTNMAP); the Xbox
+    numbering when the driver will not say. The Xbox driver calls the left face button BTN_NORTH (it is BTN_X), where the
+    PlayStation and Nintendo ones name the buttons by where they are: the top one is BTN_NORTH."""
+    try:
+        import fcntl
+
+        count = bytearray(1)
+        fcntl.ioctl(fd, (2 << 30) | (1 << 16) | (ord("j") << 8) | 0x12, count)  # JSIOCGBUTTONS
+        size = (_KEY_MAX - _BTN_MISC + 1) * 2
+        raw = bytearray(size)
+        fcntl.ioctl(fd, (2 << 30) | (size << 16) | (ord("j") << 8) | 0x34, raw)  # JSIOCGBTNMAP
+        codes = struct.unpack(f"<{size // 2}H", bytes(raw))
+    except (ImportError, OSError, struct.error):
+        return dict(_JS_DEFAULT)
+    functions = dict(_JS_CODES)
+    if family in (PLAYSTATION, NINTENDO):
+        functions[0x133], functions[0x134] = SEARCH, REFRESH  # top: search, left: refresh, as the glyphs say
+    return {number: functions[code] for number, code in enumerate(codes[: count[0]]) if code in functions}
 
 
 class _Combo:
@@ -219,7 +248,10 @@ def _run_joydev(
     scroller = _Scroller(emit)
     combo = _Combo(emit)
     rest: dict[int, int] = {}  # axis rest values; analog triggers rest at their minimum
-    triggers = {_JS_TRIGGER_L_AXIS: _Trigger(emit, TRIGGER_L), _JS_TRIGGER_R_AXIS: _Trigger(emit, TRIGGER_R)}
+    # One state per trigger, whether the pad reports it as an axis, as a button or both: a pull is one press.
+    pulls = {TRIGGER_L: _Trigger(emit, TRIGGER_L), TRIGGER_R: _Trigger(emit, TRIGGER_R)}
+    triggers = {_JS_TRIGGER_L_AXIS: pulls[TRIGGER_L], _JS_TRIGGER_R_AXIS: pulls[TRIGGER_R]}
+    tables: dict[int, dict[int, str]] = {}  # per device: the function of each button number
     connected = False
     sticks, hats = _Axes(rep), _Axes(rep)
     fds: dict[int, str] = {}
@@ -230,9 +262,11 @@ def _run_joydev(
             for path in glob.glob("/dev/input/js*"):
                 if path not in fds.values():
                     try:
-                        fds[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = path
+                        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
                     except OSError:
-                        pass
+                        continue
+                    fds[fd] = path
+                    tables[fd] = _joydev_table(fd, family_of(_joydev_name(path)))
         if bool(fds) != connected:
             connected = bool(fds)
             on_connection(connected, family_of(_joydev_name(next(iter(fds.values())))) if fds else XBOX)
@@ -246,6 +280,7 @@ def _run_joydev(
             except OSError:
                 os.close(fd)
                 del fds[fd]
+                tables.pop(fd, None)
                 continue
             for off in range(0, len(data) - 7, 8):
                 _, value, kind, number = struct.unpack_from("<IhBB", data, off)
@@ -254,12 +289,18 @@ def _run_joydev(
                         rest[number] = value
                     continue
                 if kind == 0x01:
-                    if number == _JS_START:
+                    function = tables.get(fd, _JS_DEFAULT).get(number)
+                    if function == MENU:
                         combo.set_start(bool(value))
-                    elif number == _JS_SELECT:
+                    elif function == ACCOUNT:
                         combo.set_select(bool(value))
-                    elif value and number in _JS_BUTTONS:
-                        emit(_JS_BUTTONS[number])
+                    elif function in pulls:
+                        # A pad that reports the pull as an axis as well is read from the axis only: the button goes down and
+                        # up while the axis is still past its threshold, and the two together would press twice.
+                        if rest.get(_TRIGGER_AXIS[function], 0) >= -_DEADZONE:
+                            pulls[function].set(bool(value))
+                    elif value and function:
+                        emit(function)
                 elif kind == 0x02:
                     if number == 0:
                         sticks.set("x", value, LEFT, RIGHT)
@@ -272,7 +313,7 @@ def _run_joydev(
                     elif number == 7:
                         hats.set("y", value, UP, DOWN)
                     elif number in triggers and rest.get(number, 0) < -_DEADZONE:
-                        triggers[number].set(value > _TRIGGER_ON)
+                        triggers[number].set(value > (_TRIGGER_OFF if triggers[number].down else _TRIGGER_ON))
         rep.tick()
         scroller.tick()
 
