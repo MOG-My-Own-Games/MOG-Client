@@ -172,7 +172,7 @@ def standin(game: QuiverGame) -> dict:
 
 
 def _pretty(folder: str) -> str:
-    """A name from the install folder when the catalog is not there: `TheLegendOfZelda-Recomp` is `The Legend Of Zelda`."""
+    """A name from the install folder when the catalog is not there: `TheQuestOfLight-Recomp` is `The Quest Of Light`."""
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", folder.split("-")[0]).strip() or folder
 
 

@@ -163,9 +163,10 @@ class OptionDelegate(QStyledItemDelegate):
         if index.data(ROLE_DIVIDER):
             painter.setPen(QColor("#2c333d"))
             painter.drawLine(option.rect.left() + 8, option.rect.top(), option.rect.right() - 8, option.rect.top())
-        if option.state & QStyle.State_Selected:
-            painter.setPen(QPen(QColor("#4c8dff"), 3))
-            painter.setBrush(QColor("#1e2733"))
+        if option.state & QStyle.State_Selected and option.widget is not None and option.widget.hasFocus():
+            # Only while the pad is on this list: the row it is on is the one framed, the others are just switches.
+            painter.setPen(QPen(QColor("white"), 3))
+            painter.setBrush(QColor("#25406b"))
             painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 10, 10)
         on = bool(index.data(ROLE_ON))
         top = rect.top() + (rect.height() - self.MARK_H) / 2
@@ -191,7 +192,9 @@ class OptionDelegate(QStyledItemDelegate):
                 painter.drawEllipse(dot)
             text_left = left + self.MARK_W + self.PAD
         painter.setPen(QColor("#e8eaed") if on else QColor("#b8bfca"))
-        painter.drawText(QRectF(text_left, rect.top(), rect.right() - text_left - 4, rect.height()), Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        room = rect.right() - text_left - 4
+        text = painter.fontMetrics().elidedText(index.data(Qt.DisplayRole), Qt.ElideRight, max(0, int(room)))  # a long name is cut, not run over the edge
+        painter.drawText(QRectF(text_left, rect.top(), room, rect.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()
 
 

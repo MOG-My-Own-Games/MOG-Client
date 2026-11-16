@@ -23,10 +23,10 @@ def names(root: Path) -> list[str]:
 
 GOG_LINUX = (
     "start.sh",
-    "uninstall-Lost Ruins.sh",
+    "uninstall-Zelmoor Ruins.sh",
     "gameinfo",
-    "game/LostRuins.x86_64",
-    "game/LostRuins_Data/data.bin",
+    "game/ZelmoorRuins.x86_64",
+    "game/ZelmoorRuins_Data/data.bin",
     "support/gog-system-report.sh",
     "support/postinst.sh",
     "support/preuninst.sh",
@@ -90,10 +90,10 @@ def test_which_executables_run_as_they_are():
 
 
 def native_game(tmp_path, mode=0o644):
-    folder = tmp_path / "Lost Ruins"
+    folder = tmp_path / "Zelmoor Ruins"
     make(folder, "start.sh")
     (folder / "start.sh").chmod(mode)
-    return InstalledGame(17, "Lost Ruins", str(folder), state="installed", executable=str(folder / "start.sh"))
+    return InstalledGame(17, "Zelmoor Ruins", str(folder), state="installed", executable=str(folder / "start.sh"))
 
 
 def test_a_native_game_needs_no_launcher_and_runs_its_script_itself(tmp_path, monkeypatch):
@@ -164,7 +164,7 @@ def test_the_programs_a_download_left_unmarked_get_their_executable_bit_back(tmp
 def test_a_native_game_is_given_its_permissions_once_when_it_is_launched(tmp_path):
     game = native_game(tmp_path, mode=0o644)
     folder = Path(game.install_dir)
-    binary = _unmarked(folder / "lib/Lost Ruins", b"\x7fELF" + b"\0" * 8)
+    binary = _unmarked(folder / "lib/Zelmoor Ruins", b"\x7fELF" + b"\0" * 8)
 
     command, extra = launcher.launch_command(game)
 
@@ -190,8 +190,8 @@ def make_elf(root: Path, name: str, size: int = 0, mode: int = 0o755) -> Path:
 def test_a_game_with_no_exe_and_no_script_offers_its_binary_not_its_libraries(tmp_path):
     """An itch.io Unity game (`Game.x86_64` beside `GameAssembly.so` and `UnityPlayer.so`, all marked executable) had nothing to
     pick: the programs are found by their header as the last resort, shared libraries left out."""
-    game = tmp_path / "My Dystopian Robot Girlfriend"
-    make_elf(game, "My Dystopian Robot Girlfriend.x86_64", 1000)
+    game = tmp_path / "Copper Lantern"
+    make_elf(game, "Copper Lantern.x86_64", 1000)
     make_elf(game, "GameAssembly.so", 90000)
     make_elf(game, "UnityPlayer.so", 40000)
     make_elf(game, "libdecor-0.so.0", 100)
@@ -199,18 +199,18 @@ def test_a_game_with_no_exe_and_no_script_offers_its_binary_not_its_libraries(tm
     make(game, "README.html", "CHANGELOG.html")
     (game / "unity.lock").write_text("lock")
 
-    assert names(game) == ["My Dystopian Robot Girlfriend.x86_64"]
+    assert names(game) == ["Copper Lantern.x86_64"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux programs")
 def test_the_binary_named_like_the_game_comes_before_the_others_and_a_file_without_the_mode_is_no_program(tmp_path):
-    game = tmp_path / "Lost Ruins"
+    game = tmp_path / "Zelmoor Ruins"
     make_elf(game, "tools/editor", 9000)
-    make_elf(game, "LostRuins", 100)
+    make_elf(game, "ZelmoorRuins", 100)
     make_elf(game, "other", 5000)
     make_elf(game, "notmarked", 100, mode=0o644)
 
-    assert names(game) == ["LostRuins", "other", "tools/editor"]
+    assert names(game) == ["ZelmoorRuins", "other", "tools/editor"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux programs")
@@ -234,11 +234,11 @@ def test_a_chosen_binary_makes_the_game_native(tmp_path):
 def test_an_appimage_is_offered_even_when_the_download_left_it_unmarked(tmp_path):
     """A downloaded AppImage has no executable bit yet: it is still the game, and launching it marks it. A file that only
     has the name is no program."""
-    game = tmp_path / "Lost Ruins"
-    make_elf(game, "Lost Ruins-x86_64.AppImage", 100, mode=0o644)
+    game = tmp_path / "Zelmoor Ruins"
+    make_elf(game, "Zelmoor Ruins-x86_64.AppImage", 100, mode=0o644)
     make(game, "broken.AppImage", "README.txt")
 
-    assert names(game) == ["Lost Ruins-x86_64.AppImage"]
+    assert names(game) == ["Zelmoor Ruins-x86_64.AppImage"]
 
 
 def desktop(path: Path, exec_line: str) -> None:

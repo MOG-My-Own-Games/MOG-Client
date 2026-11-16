@@ -58,9 +58,9 @@ def test_cache_log_and_system_noise_is_skipped(drive_c):
 @pytest.mark.parametrize(
     "path",
     [
-        "users/USER/AppData/Local/PokemonEmerald/Saved/Config/CrashReportClient/UECC-Windows-08C5/CrashReportClient.ini",
+        "users/USER/AppData/Local/CritterJade/Saved/Config/CrashReportClient/UECC-Windows-08C5/CrashReportClient.ini",
         "ProgramData/Package Cache/{b49c10dd-4d54-45f8-ad13-fa25704456a4}/state.rsm",
-        "game/PokemonEmerald/Binaries/Win64/vkd3d-proton.cache",
+        "game/CritterJade/Binaries/Win64/vkd3d-proton.cache",
         "users/USER/AppData/Local/Game/shader_Cache.bin",
         "users/USER/AppData/LocalLow/Eek/House Party/Unity/08e3df3f/Analytics/ArchivedEvents/1791.52393e08/c",
     ],
@@ -70,7 +70,7 @@ def test_launcher_telemetry_installer_and_shader_files_are_never_saves(path):
 
 
 def test_real_saves_next_to_that_noise_are_still_saves():
-    for path in ("users/USER/Saved Games/Game/slot1.sav", "users/USER/AppData/Local/PokemonEmerald/Saved/SaveGames/slot0.sav"):
+    for path in ("users/USER/Saved Games/Game/slot1.sav", "users/USER/AppData/Local/CritterJade/Saved/SaveGames/slot0.sav"):
         assert not locations.is_denied(tuple(PurePosixPath(path).parts))
 
 
@@ -119,7 +119,7 @@ def test_symbolic_links_are_never_followed(drive_c, tmp_path):
     _touch(home_documents / "private.txt")
     user = drive_c / "users/steamuser"
     (user / "Documents" / "Linked").symlink_to(home_documents)
-    (drive_c / "users/xargon").symlink_to(user)  # Wine and Proton name the user twice this way
+    (drive_c / "users/player").symlink_to(user)  # Wine and Proton name the user twice this way
     (user / "My Documents").symlink_to(user / "Documents")
     _touch(user / "Documents/real.txt")
     link_file = user / "Saved Games" / "elsewhere.sav"
@@ -129,7 +129,7 @@ def test_symbolic_links_are_never_followed(drive_c, tmp_path):
 
     assert not any("private" in k or "Linked" in k or "elsewhere" in k for k in found)
     assert "users/USER/Documents/real.txt" in found
-    assert len([k for k in found if k.endswith("slot1.sav")]) == 1  # xargon -> steamuser is not scanned twice
+    assert len([k for k in found if k.endswith("slot1.sav")]) == 1  # player -> steamuser is not scanned twice
 
 
 def test_a_documents_folder_that_is_itself_a_link_is_not_scanned(tmp_path):
@@ -224,7 +224,7 @@ def test_the_windows_launch_file_is_not_a_save(tmp_path):
 
 def _game_folder(tmp_path):
     install = tmp_path / "Game"
-    folder = install / "Living With Sister"
+    folder = install / "Sharing The Cabin"
     (folder / "Data").mkdir(parents=True)
     (folder / "Data" / "map.dat").write_bytes(b"data")
     (folder / "Save").mkdir()
@@ -242,21 +242,21 @@ def test_a_manifest_kept_with_paths_from_the_games_own_folder_still_tells_its_fi
     install, folder = _game_folder(tmp_path)
     old_style = {"Data/map.dat": _entry("", b"data")}  # what an earlier client kept: no folder in the path
     keys = [c.key for c in locations.install_candidates(install, old_style, files_dir=folder)]
-    assert keys == ["game/Living With Sister/Save/slot1.sav"]  # the game's data is not offered, the save is
+    assert keys == ["game/Sharing The Cabin/Save/slot1.sav"]  # the game's data is not offered, the save is
 
 
 def test_without_knowing_the_games_folder_that_old_manifest_takes_everything_for_saves(tmp_path):
     install, _folder = _game_folder(tmp_path)
     old_style = {"Data/map.dat": _entry("", b"data")}
     keys = sorted(c.key for c in locations.install_candidates(install, old_style))
-    assert "game/Living With Sister/Data/map.dat" in keys  # the bug a files_dir fixes
+    assert "game/Sharing The Cabin/Data/map.dat" in keys  # the bug a files_dir fixes
 
 
 def test_a_manifest_with_the_folder_in_its_paths_works_as_before(tmp_path):
     install, folder = _game_folder(tmp_path)
-    right = {"Living With Sister/Data/map.dat": _entry("", b"data")}
+    right = {"Sharing The Cabin/Data/map.dat": _entry("", b"data")}
     keys = [c.key for c in locations.install_candidates(install, right, files_dir=folder)]
-    assert keys == ["game/Living With Sister/Save/slot1.sav"]
+    assert keys == ["game/Sharing The Cabin/Save/slot1.sav"]
 
 
 def test_a_game_file_already_checked_is_not_read_again_until_it_changes(tmp_path, monkeypatch):

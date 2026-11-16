@@ -53,26 +53,26 @@ def test_the_machine_gets_one_uid_for_good():
 
 
 def test_registering_remembers_the_device_the_server_names():
-    server = FakeServer([(200, {"id": 3, "name": "karasu"})])
+    server = FakeServer([(200, {"id": 3, "name": "desktop"})])
     record = register(server)
-    assert (record.device_id, record.name) == (3, "karasu")
+    assert (record.device_id, record.name) == (3, "desktop")
     assert load_device().device_id == 3 and server.calls[0][0] == record.client_uid
 
 
 def test_a_taken_hostname_is_raised_with_the_devices_and_suggestions():
-    detail = {"code": "hostname_taken", "devices": [{"id": 1, "name": "karasu"}], "suggested_names": ["karasu-fedora"]}
+    detail = {"code": "hostname_taken", "devices": [{"id": 1, "name": "desktop"}], "suggested_names": ["desktop-fedora"]}
     with pytest.raises(HostnameTaken) as asked:
         register(FakeServer([(409, {"detail": detail})]))
-    assert asked.value.devices[0]["id"] == 1 and asked.value.suggested_names == ["karasu-fedora"]
+    assert asked.value.devices[0]["id"] == 1 and asked.value.suggested_names == ["desktop-fedora"]
     assert load_device().device_id is None
 
 
 def test_the_answer_can_be_this_is_that_machine_or_a_new_name(monkeypatch):
-    server = FakeServer([(200, {"id": 1, "name": "karasu"}), (200, {"id": 2, "name": "karasu-fedora"})])
+    server = FakeServer([(200, {"id": 1, "name": "desktop"}), (200, {"id": 2, "name": "desktop-fedora"})])
     assert register(server, adopt_device_id=1).device_id == 1
     assert server.calls[0][-2:] == (1, None)
-    assert register(server, name="karasu-fedora").name == "karasu-fedora"
-    assert server.calls[1][-2:] == (None, "karasu-fedora")
+    assert register(server, name="desktop-fedora").name == "desktop-fedora"
+    assert server.calls[1][-2:] == (None, "desktop-fedora")
 
 
 def test_a_name_in_use_and_other_errors():

@@ -26,7 +26,7 @@ def world(tmp_path, monkeypatch):
     exe.write_bytes(b"exe")
     rec = InstalledGame(game_id=7, name="G", install_dir=str(install), executable=str(exe), state="installed")
     server = FakeServer()
-    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), engine="faugus")
+    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), engine="faugus")
     return SimpleNamespace(tmp=tmp_path, rec=rec, server=server, ctx=ctx, install=install)
 
 
@@ -219,7 +219,7 @@ def test_a_newer_save_from_another_machine_is_offered_until_applied_or_declined(
 
     other = world.server.add_foreign_version({"game/a.sav": b"b"})
     version, device = sync.newer_elsewhere(world.ctx)
-    assert (version["id"], device["name"]) == (other["id"], "karasu-2")
+    assert (version["id"], device["name"]) == (other["id"], "desktop-2")
 
     sync.decline(world.ctx, other["id"])
     assert sync.newer_elsewhere(world.ctx) is None
@@ -247,7 +247,7 @@ def test_the_saves_of_the_version_installed_here_come_first_then_those_of_the_ot
 def test_versions_are_listed_newest_first_with_their_device(world):
     a = world.server.add_foreign_version({"game/a": b"1"}, device_id=2)
     b = world.server.add_foreign_version({"game/a": b"2"}, device_id=1)
-    assert [(v["id"], d["name"]) for v, d in sync.versions_of(world.ctx)] == [(b["id"], "karasu"), (a["id"], "karasu-2")]
+    assert [(v["id"], d["name"]) for v, d in sync.versions_of(world.ctx)] == [(b["id"], "desktop"), (a["id"], "desktop-2")]
 
 
 def _zip(tmp_path: Path, files: dict[str, bytes]) -> Path:
@@ -303,7 +303,7 @@ def test_a_prefix_seen_while_the_game_runs_never_replaces_the_one_the_game_has(w
     world.rec.prefix = str(pfx)
     save_state(7, SaveState(prefix=str(pfx), prefix_source="game-folder", tracked={"k": FileInfo(1, 2, "h")}))
     monkeypatch.setattr(runner.devices, "known_device", lambda: world.ctx.device)
-    monkeypatch.setattr(runner, "wait_for_game", lambda install, on_prefix, stop, native, log, on_session=None: on_prefix(Path("/home/x/Jazz")) or True)
+    monkeypatch.setattr(runner, "wait_for_game", lambda install, on_prefix, stop, native, log, on_session=None: on_prefix(Path("/home/x/Zippy")) or True)
     monkeypatch.setattr(sync, "backup", lambda ctx, trigger, since_ns=None, force=False: sync.BackupResult("unchanged"))
 
     runner.watch_session(world.rec, world.ctx.settings, world.server, since_ns=0, log=lambda m: None)
@@ -336,12 +336,12 @@ def test_nothing_new_anywhere_means_nothing_to_do_and_a_local_change_is_sent(wor
 
 def test_a_newer_save_from_another_machine_is_taken_when_nothing_changed_here(world, monkeypatch):
     save = _synced_game(world, monkeypatch)
-    newer = world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"from karasu-2"}, device_id=2)
+    newer = world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"from desktop-2"}, device_id=2)
 
     outcome = sync.startup_check(world.ctx)
 
-    assert (outcome.status, outcome.from_device, outcome.files) == ("restored", "karasu-2", 1)
-    assert save.read_bytes() == b"from karasu-2"
+    assert (outcome.status, outcome.from_device, outcome.files) == ("restored", "desktop-2", 1)
+    assert save.read_bytes() == b"from desktop-2"
     assert load_state(7).seen_version_id == newer["id"]
     backups = list((world.tmp / "data/saves/7/backups").glob("*.zip"))
     assert len(backups) == 1 and zipfile.ZipFile(backups[0]).read("users/USER/Saved Games/slot1.sav") == b"mine"
@@ -356,7 +356,7 @@ def test_when_both_sides_changed_nothing_is_overwritten_and_the_user_is_told(wor
 
     outcome = sync.startup_check(world.ctx)
 
-    assert (outcome.status, outcome.from_device) == ("conflict", "karasu-2")
+    assert (outcome.status, outcome.from_device) == ("conflict", "desktop-2")
     assert save.read_bytes() == b"played here since" and len(world.server.uploads) == uploads
     assert sync.newer_elsewhere(world.ctx) is not None  # still offered when the game is started from here
 
@@ -364,7 +364,7 @@ def test_when_both_sides_changed_nothing_is_overwritten_and_the_user_is_told(wor
 def test_a_machine_that_does_not_know_where_the_saves_go_waits_for_setup(world):
     world.server.add_foreign_version({"users/USER/Saved Games/slot1.sav": b"theirs"}, device_id=2)
     outcome = sync.startup_check(world.ctx)
-    assert (outcome.status, outcome.from_device) == ("setup", "karasu-2")
+    assert (outcome.status, outcome.from_device) == ("setup", "desktop-2")
     assert world.server.uploads == [] and not (world.install / "pfx").exists()
 
 

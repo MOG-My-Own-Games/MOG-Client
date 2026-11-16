@@ -16,7 +16,27 @@ from mog_client import config, launcher, manager, quiver  # noqa: E402
 from mog_client.config import Settings, load_library  # noqa: E402
 from mog_client.gui import app as gui  # noqa: E402
 
-QID = "github:Zelda64Recomp/Zelda64Recomp"
+QID = "github:Quest64Recomp/Quest64Recomp"
+
+
+@pytest.fixture(autouse=True)
+def invented_ports(monkeypatch):
+    """The known ports' save places, with invented names: the tests check the mechanism, not any one game's table."""
+    monkeypatch.setattr(
+        quiver,
+        "PORTS",
+        [
+            (
+                ("quest64recomp",),
+                {
+                    "portable": ["game/saves"],
+                    "linux": ["xdg-config/Quest64Remixed/saves"],
+                    "windows": ["users/USER/AppData/Local/Quest64Remixed/saves"],
+                },
+            ),
+            (("bladearena2-recomp", "bladearenaiirecomp"), {"linux": ["xdg-data/Blade Arena II/saves"]}),
+        ],
+    )
 
 
 @pytest.fixture(scope="module")
@@ -29,11 +49,11 @@ def qapp():
 @pytest.fixture
 def quiver_data(tmp_path):
     data = tmp_path / "quiver"
-    program = data / "apps" / "Zelda64Recompiled" / "Zelda64Recompiled"
+    program = data / "apps" / "Quest64Remixed" / "Quest64Remixed"
     program.parent.mkdir(parents=True)
     program.write_bytes(b"\x7fELF....")
-    (data / "library.json").write_text(json.dumps([{"id": QID, "overrides": {"name": "Zelda 64: Recompiled"}}]))
-    (data / "installs.json").write_text(json.dumps({QID: {"folder": "Zelda64Recompiled", "executables": ["Zelda64Recompiled"]}}))
+    (data / "library.json").write_text(json.dumps([{"id": QID, "overrides": {"name": "Quest 64: Remixed"}}]))
+    (data / "installs.json").write_text(json.dumps({QID: {"folder": "Quest64Remixed", "executables": ["Quest64Remixed"]}}))
     return data
 
 
@@ -83,6 +103,7 @@ def test_the_games_quiver_installed_are_a_library_of_their_own_next_to_the_serve
     assert stand["id"] < 0 and stand["library_id"] == quiver.LIBRARY_ID
 
     win.library.libs.setCurrentRow(2)
+    win.library.libs.itemActivated.emit(win.library.libs.item(2))  # A on it
     pump(qapp)
     assert list(win.library.items) == [stand["id"]]
 
@@ -103,7 +124,7 @@ def test_turning_the_library_on_adds_its_games_and_off_takes_them_away_but_keeps
     win.use_quiver(False)
     assert not [g for g in win.app.games.values() if g.get("quiver")] and config.load_settings().quiver_library is False
     win.use_quiver(True)
-    assert [g["name"] for g in win.app.games.values() if g.get("quiver")] == ["Zelda 64: Recompiled"]
+    assert [g["name"] for g in win.app.games.values() if g.get("quiver")] == ["Quest 64: Remixed"]
     assert config.load_settings().quiver_library is True
 
 
@@ -137,7 +158,7 @@ def test_the_first_start_from_here_makes_the_server_entry_and_a_record_and_then_
     page.play_quiver()
 
     assert wait_for(qapp, lambda: played)
-    assert asked == ["Zelda 64: Recompiled"] and played == [77]
+    assert asked == ["Quest 64: Remixed"] and played == [77]
     rec = load_library()[77]
     assert (rec.quiver_id, rec.imported, rec.explicit_saves) == (QID, True, True)
     assert 77 in win.app.games and win.app.games[77]["library_id"] == quiver.LIBRARY_ID

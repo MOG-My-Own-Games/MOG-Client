@@ -18,6 +18,9 @@ class MessageOverlay(QWidget):
     Esc (or the pad's A and B, which the window forwards here) show the next one or close it."""
 
     changed = Signal()  # shown or hidden, so the guide at the bottom can follow
+    # The last message went away; True when the focus is back on what had it before, False when that is gone and the
+    # page has to take it (see MainWindow.refocus_page).
+    closed = Signal(bool)
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
@@ -82,7 +85,9 @@ class MessageOverlay(QWidget):
         left of the text."""
         self.queue.append((level, text, action, icon))
         if not self.isVisible():
-            self._returns_to = QApplication.focusWidget()
+            # The window's own record of the focus, not the application's: that is empty while the window is not the
+            # active one (a game or the Steam overlay in front), and the focus would then never go back.
+            self._returns_to = self.window().focusWidget()
             self._next()
 
     def _next(self) -> None:
@@ -90,12 +95,7 @@ class MessageOverlay(QWidget):
             self.current = None
             self.hide()
             self.changed.emit()
-            if self._returns_to is not None:
-                try:
-                    self._returns_to.setFocus()
-                except RuntimeError:  # the widget it came from is gone
-                    pass
-                self._returns_to = None
+            self.closed.emit(self._give_focus_back())
             return
         level, text, action, icon = self.queue.popleft()
         self.current = (level, text)
@@ -119,6 +119,20 @@ class MessageOverlay(QWidget):
         self.raise_()
         (self.action_button if action else self.ok).setFocus()
         self.changed.emit()
+
+    def _give_focus_back(self) -> bool:
+        """Put the focus on what had it when the first message came. False when it cannot take it: it is gone (a page
+        that makes its buttons again while the message is up drops the ones it had), hidden or greyed."""
+        target, self._returns_to = self._returns_to, None
+        if target is None:
+            return False
+        try:
+            if not (target.isVisible() and target.isEnabled()):
+                return False
+            target.setFocus()
+            return target.window().focusWidget() is target
+        except RuntimeError:  # the widget it came from is gone
+            return False
 
     def dismiss(self) -> None:
         self._next()

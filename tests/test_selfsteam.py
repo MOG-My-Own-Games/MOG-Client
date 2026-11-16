@@ -179,10 +179,10 @@ def test_the_question_comes_once_per_version_and_never_once_answered(world):
 
 LOGINUSERS = '''"users"
 {
-	"76561198025058569"
+	"76561198000000001"
 	{
-		"AccountName"		"xargon_login"
-		"PersonaName"		"Xargon"
+		"AccountName"		"player_login"
+		"PersonaName"		"Player One"
 		"RememberPassword"		"1"
 	}
 	"76561197960265729"
@@ -198,23 +198,23 @@ def test_a_steam_account_is_called_by_its_name(tmp_path):
     root = tmp_path / "Steam"
     (root / "config").mkdir(parents=True)
     (root / "config" / "loginusers.vdf").write_text(LOGINUSERS)
-    xargon = root / "userdata" / str(76561198025058569 - steam.STEAMID64_BASE)
+    mine = root / "userdata" / str(76561198000000001 - steam.STEAMID64_BASE)
     other = root / "userdata" / "1"
     stranger = root / "userdata" / "99"
-    for d in (xargon, other, stranger):
+    for d in (mine, other, stranger):
         (d / "config").mkdir(parents=True)
 
-    assert steam.persona_name(xargon) == "Xargon" and steam.persona_name(other) == 'Say "Hi"'
+    assert steam.persona_name(mine) == "Player One" and steam.persona_name(other) == 'Say "Hi"'
     assert steam.persona_name(stranger) is None
-    assert selfsteam.label(xargon, [xargon, other]) == "Xargon"
-    assert selfsteam.label(stranger, [xargon, stranger]) == "Account 99"
+    assert selfsteam.label(mine, [mine, other]) == "Player One"
+    assert selfsteam.label(stranger, [mine, stranger]) == "Account 99"
 
 
 def test_the_account_s_own_settings_name_it_when_the_login_list_does_not(tmp_path):
     user = tmp_path / "Steam" / "userdata" / "5"
     (user / "config").mkdir(parents=True)
-    (user / "config" / "localconfig.vdf").write_text('"UserLocalConfigStore"\n{\n\t"PersonaName"\t\t"Xargon"\n}\n')
-    assert steam.persona_name(user) == "Xargon"
+    (user / "config" / "localconfig.vdf").write_text('"UserLocalConfigStore"\n{\n\t"PersonaName"\t\t"Player One"\n}\n')
+    assert steam.persona_name(user) == "Player One"
 
 
 def test_two_accounts_with_one_name_are_told_apart_by_their_number(tmp_path):

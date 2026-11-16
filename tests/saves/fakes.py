@@ -10,7 +10,7 @@ class FakeServer:
     def __init__(self, own_device=1):
         self.versions: list[dict] = []
         self.blobs: dict[int, bytes] = {}
-        self.devices = {1: {"id": 1, "name": "karasu"}, 2: {"id": 2, "name": "karasu-2"}}
+        self.devices = {1: {"id": 1, "name": "desktop"}, 2: {"id": 2, "name": "desktop-2"}}
         self.uploads = []
         self.manifest: list[str] | None = []  # what save_paths answers; None is a server that cannot say
         self.manifest_asked = 0

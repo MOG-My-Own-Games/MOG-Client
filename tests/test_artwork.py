@@ -13,7 +13,7 @@ class Server:
 
 GAME = {
     "id": 138,
-    "name": "Jazz",
+    "name": "Zippy",
     "cover_path": "https://cdn/cover.jpg",
     "igdb_metadata": {"screenshots": [{"url": "https://cdn/shot1.jpg"}, {"url": "https://cdn/shot2.jpg"}]},
 }

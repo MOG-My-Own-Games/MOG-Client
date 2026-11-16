@@ -65,6 +65,7 @@ class ModalHost(QWidget):
             self._place_close_button(page)
             self.close_button.setVisible(getattr(page, "show_close", True))
             page.show()
+            self._chain_close_button(page)
         self.close_button.setText(getattr(page, "close_text", None) or ("Back" if back else "Close"))
         danger = bool(getattr(page, "close_danger", False))  # a card whose way out abandons something reads in red
         self.close_button.setProperty("danger", danger)
@@ -85,6 +86,30 @@ class ModalHost(QWidget):
         if index and row.itemAt(index - 1).spacerItem() is not None:
             index -= 1  # before the stretch that centres the row
         row.insertWidget(index, self.close_button)
+
+    def _chain_close_button(self, page: QWidget) -> None:
+        """Put the Close button right after the page's last control in the focus chain. The button is made once and reused,
+        so its place in the chain is where the first page left it, and a page built later comes after it: Down from that
+        page's last control would then leave the card, and the pad could never reach Close."""
+        if self.close_button.parentWidget() is not self.card:
+            return  # in the page's own row of buttons: already in its chain
+
+        controls = [w for w in page.findChildren(QWidget) if w.focusPolicy() != Qt.NoFocus and w.isVisibleTo(self)]
+        if not controls:
+            return
+        run = controls[0]  # walk back to the start of the page's stretch of the chain, then forward to its end
+        for _ in range(10000):
+            before = run.previousInFocusChain()
+            if before is None or before is run or not page.isAncestorOf(before):
+                break
+            run = before
+        last = run
+        for _ in range(10000):
+            after = last.nextInFocusChain()
+            if after is None or after is run or not page.isAncestorOf(after):
+                break
+            last = after
+        QWidget.setTabOrder(last, self.close_button)
 
     def release(self, page: QWidget | None = None) -> None:
         """Take the page out of the card (it is going away, or another one is taking its place)."""

@@ -28,8 +28,8 @@ def cache_path() -> Path:
 
 
 def _key(text: str) -> str:
-    """A title as it is compared: the case, the punctuation and the spaces do not count ("Heroes of Might & Magic" is the same
-    as "heroes of might and magic")."""
+    """A title as it is compared: the case, the punctuation and the spaces do not count ("Knights of Dawn & Dusk" is the same
+    as "knights of dawn and dusk")."""
     return re.sub(r"[^a-z0-9]+", "", text.casefold().replace("&", "and"))
 
 

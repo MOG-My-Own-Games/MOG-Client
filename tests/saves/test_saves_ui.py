@@ -113,7 +113,7 @@ def ui(tmp_path, monkeypatch):
     rec = InstalledGame(game_id=7, name="Some Game", install_dir=str(install), executable=str(exe), state="installed")
     save_library({7: rec})
     server = Server()
-    save_device(DeviceRecord("uid-aaaaaaaa", 1, "karasu"))
+    save_device(DeviceRecord("uid-aaaaaaaa", 1, "desktop"))
     win = FakeWin(server)
     return SimpleNamespace(win=win, ui=SaveSync(win), rec=rec, server=server, tmp=tmp_path, install=install)
 
@@ -172,15 +172,15 @@ def test_a_server_that_cannot_be_reached_never_stops_the_game(ui):
 
 def test_a_machine_whose_name_is_taken_is_asked_who_it_is_then_carries_on(ui):
     save_device(DeviceRecord("uid-aaaaaaaa", None, None))
-    taken = {"code": "hostname_taken", "devices": [{"id": 4, "name": "karasu"}], "suggested_names": ["karasu-fedora"]}
-    ui.server.register_replies = [(409, {"detail": taken}), (200, {"id": 4, "name": "karasu"})]
+    taken = {"code": "hostname_taken", "devices": [{"id": 4, "name": "desktop"}], "suggested_names": ["desktop-fedora"]}
+    ui.server.register_replies = [(409, {"detail": taken}), (200, {"id": 4, "name": "desktop"})]
     seen = []
 
     ui.ui.with_context(ui.rec, lambda ctx: seen.append(ctx.device.device_id), ask=True)
 
     title, options, answer = ui.win.choices[0]
     assert title == "Is this machine one of these?"
-    assert [v for _, v in options] == [("adopt", 4), ("name", "karasu-fedora")]
+    assert [v for _, v in options] == [("adopt", 4), ("name", "desktop-fedora")]
     assert seen == []
     answer(("adopt", 4))
     assert ui.server.registered == [(None, None), (4, None)]  # asked as itself, then "this is device 4"
@@ -238,7 +238,7 @@ def test_picking_the_prefix_tells_sync_where_to_look_without_touching_how_the_ga
 
 def test_saves_waiting_for_a_prefix_ask_for_one_before_the_game_starts_then_apply(ui):
     version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
-    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), "faugus")
     assert sync.restore(ctx, version["id"]).status == "needs-prefix"
     sync.decline(ctx, version["id"])  # already offered: only the pending restore remains
     started = []
@@ -259,7 +259,7 @@ def test_a_prefix_the_game_has_not_made_yet_is_not_asked_about_when_saves_are_re
     pfx_dir(ui.rec).mkdir(parents=True)  # MOG's own folder for it: there, and empty until the game first runs
     ui.rec.prefix = str(pfx_dir(ui.rec))
     version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
-    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), "faugus")
     done = []
 
     ui.ui._restore(ui.rec, ctx, version["id"], lambda: done.append(1))
@@ -273,7 +273,7 @@ def test_starting_a_game_whose_prefix_is_not_made_yet_says_what_to_do_with_the_w
     pfx_dir(ui.rec).mkdir(parents=True)
     ui.rec.prefix = str(pfx_dir(ui.rec))
     version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
-    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), "faugus")
     sync.restore(ctx, version["id"])
     sync.decline(ctx, version["id"])
     started = []
@@ -285,7 +285,7 @@ def test_starting_a_game_whose_prefix_is_not_made_yet_says_what_to_do_with_the_w
 
 def test_not_now_still_starts_the_game(ui):
     version = ui.server.add_foreign_version({"users/USER/Saved Games/s.sav": b"x"})
-    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), "faugus")
     sync.restore(ctx, version["id"])
     sync.decline(ctx, version["id"])
     started = []
@@ -349,7 +349,7 @@ def test_the_startup_check_runs_once_and_says_what_needs_the_user_in_one_message
     ui.ui.check_all()
     assert len(ui.win.messages) == 1
     level, text = ui.win.messages[0]
-    assert level == "warning" and text == "Saves: needs setup: Some Game (from karasu-2)"
+    assert level == "warning" and text == "Saves: needs setup: Some Game (from desktop-2)"
 
 
 def test_the_startup_check_can_be_switched_off_and_does_nothing_when_saves_are_not_synced(ui):
@@ -380,9 +380,9 @@ def test_a_quiet_startup_only_goes_to_the_log(ui, monkeypatch):
 
 def test_labels_name_the_machine_the_time_and_the_size(ui):
     label = saves_ui.version_label(
-        {"created_at": "2026-10-04T20:51:30Z", "trigger": "quit", "file_count": 1}, {"name": "karasu"}
+        {"created_at": "2026-10-04T20:51:30Z", "trigger": "quit", "file_count": 1}, {"name": "desktop"}
     )
-    assert label.startswith("karasu: 2026-10-04") or label.startswith("karasu: 2026-10-05")
+    assert label.startswith("desktop: 2026-10-04") or label.startswith("desktop: 2026-10-05")
     assert label.endswith("(quit, 1 file)")
 
 
@@ -390,8 +390,8 @@ def test_a_save_of_another_version_of_the_game_says_which_version_made_it(ui):
     other = {"created_at": "2026-10-04T20:51:30Z", "trigger": "quit", "game_id": 99, "fs_name": "Game GOG"}
     own = dict(other, game_id=7, fs_name="Game")
 
-    assert "[Game GOG]" in saves_ui.version_label(other, {"name": "karasu"}, own_game_id=7)
-    assert "[" not in saves_ui.version_label(own, {"name": "karasu"}, own_game_id=7)
+    assert "[Game GOG]" in saves_ui.version_label(other, {"name": "desktop"}, own_game_id=7)
+    assert "[" not in saves_ui.version_label(own, {"name": "desktop"}, own_game_id=7)
 
 
 def test_the_games_folder_is_the_first_choice_and_is_taken_even_before_the_prefix_exists(ui):
@@ -466,7 +466,7 @@ def test_a_native_game_asks_for_the_folders_it_wrote_to_with_the_likely_ones_tic
     ui = native_ui
     ui.wrote(".local/share/SomeGame/slot.sav")
     ui.wrote(".config/browser/state.json")
-    result = sync.backup(sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu")), sync.QUIT, since_ns=0)
+    result = sync.backup(sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop")), sync.QUIT, since_ns=0)
     assert result.status == "needs-confirmation"
 
     ui.ui.backup_now(ui.rec)
@@ -485,7 +485,7 @@ def test_a_native_game_asks_for_the_folders_it_wrote_to_with_the_likely_ones_tic
 def test_ticking_another_folder_opens_the_folder_browser_and_remembers_the_pick(native_ui):
     ui = native_ui
     ui.wrote(".config/browser/state.json")
-    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"))
+    ctx = sync.Context(ui.rec, ui.win.settings, ui.server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"))
     sync.backup(ctx, sync.QUIT, since_ns=0)
     ui.ui.backup_now(ui.rec)
     done = ui.win.checklists[0][2]

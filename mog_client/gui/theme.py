@@ -23,6 +23,8 @@ QComboBox QAbstractItemView::item:selected { color: white; background: #1e2733; 
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { color: #e8eaed; border: 3px solid transparent; border-radius: 10px; padding: 6px; }
 QListWidget::item:selected { border-color: #4c8dff; background: #1e2733; }
+#sideList::item:selected { border-color: transparent; background: transparent; }  /* the row the pad was on, while it is elsewhere */
+#sideList[held="true"]::item:selected { border-color: white; background: #25406b; }  /* the row the pad is on */
 *:focus { border-color: #4c8dff; }
 QTabBar::tab { background: #1e232b; color: #9aa3b0; padding: 10px 24px; margin: 8px 6px 0 0; border-top-left-radius: 10px; border-top-right-radius: 10px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 QTabBar::tab:hover { color: #e8eaed; }

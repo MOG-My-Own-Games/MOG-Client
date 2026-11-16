@@ -51,8 +51,8 @@ def test_the_prefix_comes_from_the_environment_of_the_process(tmp_path):
 
 
 def test_a_prefix_path_with_spaces_is_read_whole(tmp_path):
-    _proc(tmp_path, 4, "x", "HOME=/home/x|WINEPREFIX=/home/x/mog-installed/Jazz Jackrabbit 2_ The Secret Files/pfx|PATH=/bin")
-    assert watcher.prefix_from_environ(4, tmp_path) == Path("/home/x/mog-installed/Jazz Jackrabbit 2_ The Secret Files/pfx")
+    _proc(tmp_path, 4, "x", "HOME=/home/x|WINEPREFIX=/home/x/mog-installed/Zippy Rabbit 2_ The Hidden Files/pfx|PATH=/bin")
+    assert watcher.prefix_from_environ(4, tmp_path) == Path("/home/x/mog-installed/Zippy Rabbit 2_ The Hidden Files/pfx")
 
 
 class Clock:

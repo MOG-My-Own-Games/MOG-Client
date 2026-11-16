@@ -73,7 +73,7 @@ def test_a_file_already_there_is_never_overwritten(tmp_path):
 
 
 def test_mods_go_in_the_mods_folder_of_the_games_own_folder():
-    assert mods.mods_dir(Path("/games/Gothic II")) == Path("/games/Gothic II/mods")
+    assert mods.mods_dir(Path("/games/Amber Keep II")) == Path("/games/Amber Keep II/mods")
 
 
 def test_a_cancel_during_the_zip_tells_the_server_and_leaves_nothing(tmp_path):
@@ -266,14 +266,14 @@ def test_a_cancelled_resumable_download_leaves_nothing_and_old_attempt_files_are
 
 
 def test_the_local_files_of_a_mod_are_its_own_and_its_numbered_copies(tmp_path):
-    (tmp_path / "Gothic Online.zip").write_bytes(b"1")
-    (tmp_path / "Gothic Online (2).zip").write_bytes(b"2")
-    (tmp_path / "Gothic Online (10).zip").write_bytes(b"3")
-    (tmp_path / "Gothic Online (final).zip").write_bytes(b"x")  # somebody else's file, not a copy
+    (tmp_path / "Amber Keep Online.zip").write_bytes(b"1")
+    (tmp_path / "Amber Keep Online (2).zip").write_bytes(b"2")
+    (tmp_path / "Amber Keep Online (10).zip").write_bytes(b"3")
+    (tmp_path / "Amber Keep Online (final).zip").write_bytes(b"x")  # somebody else's file, not a copy
     (tmp_path / "Other.zip").write_bytes(b"y")
-    mod = {"name": "Gothic Online", "kind": "folder"}
+    mod = {"name": "Amber Keep Online", "kind": "folder"}
 
-    assert [p.name for p in mods.local_files(tmp_path, mod)] == ["Gothic Online.zip", "Gothic Online (10).zip", "Gothic Online (2).zip"]
+    assert [p.name for p in mods.local_files(tmp_path, mod)] == ["Amber Keep Online.zip", "Amber Keep Online (10).zip", "Amber Keep Online (2).zip"]
     assert mods.local_files(tmp_path, {"name": "Missing", "kind": "folder"}) == []
     assert mods.local_files(tmp_path / "nowhere", mod) == []
 

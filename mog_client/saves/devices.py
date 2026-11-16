@@ -72,7 +72,7 @@ _DISTRO_ID = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
 def os_id() -> str | None:
-    """A short name of the operating system, to suggest 'karasu-fedora' for a second machine."""
+    """A short name of the operating system, to suggest 'desktop-fedora' for a second machine."""
     if sys.platform == "win32":
         return "windows"
     found = None

@@ -9,7 +9,7 @@ from mog_client.config import InstalledGame
 CSV = (
     "TITLE,STORE,CODENAME,UMU_ID,COMMON ACRONYM (Optional),NOTE (Optional),EXE_STRINGS (Optional)\n"
     "Zero Zone,none,none,umu-zerozone,,Zero Zone (1998) by Cryo Interactive Entertainment,ZeroZone.exe\n"
-    "Heroes of Might and Magic III,gog,1207658787,umu-1207658787,HoMM3,,\n"
+    "Knights of Dawn and Dusk III,gog,1234567890,umu-1234567890,KDD3,,\n"
     "Some Game,none,none,umu-somegame,,,game.exe\n"
     "No Fix Known,none,none,,,,\n"
 )
@@ -26,8 +26,8 @@ def database(tmp_path):
 def test_a_game_is_found_by_its_title_however_it_is_written(database):
     assert umudb.find("Zero Zone") == "umu-zerozone"
     assert umudb.find("zero  zone!") == "umu-zerozone"
-    assert umudb.find("Heroes of Might & Magic III") == "umu-1207658787"
-    assert umudb.find("HoMM3") == "umu-1207658787"  # its common acronym
+    assert umudb.find("Knights of Dawn & Dusk III") == "umu-1234567890"
+    assert umudb.find("KDD3") == "umu-1234567890"  # its common acronym
 
 
 def test_a_game_with_another_title_is_found_by_the_name_of_its_exe(database):

@@ -106,7 +106,7 @@ def test_a_game_that_is_extracted_remembers_it_and_a_restart_does_too(tmp_path, 
             raise RuntimeError("stop here")  # what follows is the download, not under test
 
     settings = Settings(install_dirs=[str(tmp_path / "games")])
-    game = {"id": 3, "name": "Hearthlands"}
+    game = {"id": 3, "name": "Mossglen"}
     for extract in (True, False):
         try:
             manager.run_install(Server(), game, settings, SimpleNamespace(is_set=lambda: False), lambda m: None, lambda s: None, lambda a, b: None, None, None, extract)

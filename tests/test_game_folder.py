@@ -20,11 +20,11 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "client_command", lambda: "/opt/mog/mog")
     art = {"icon": b"PNG"}  # what the server's artwork endpoint returns; tests change it in place
     monkeypatch.setattr(manager, "fetch_artwork", lambda meta, client=None: dict(art))
-    folder = tmp_path / "games" / "Jazz Jackrabbit 2_ The Secret Files"
-    (folder / "Jazz Jackrabbit 2").mkdir(parents=True)
-    exe = folder / "Jazz Jackrabbit 2" / "Jazz2.exe"
+    folder = tmp_path / "games" / "Zippy Rabbit 2_ The Hidden Files"
+    (folder / "Zippy Rabbit 2").mkdir(parents=True)
+    exe = folder / "Zippy Rabbit 2" / "Zippy2.exe"
     exe.write_bytes(b"exe")
-    rec = InstalledGame(game_id=138, name="Jazz Jackrabbit 2: The Secret Files", install_dir=str(folder), executable=str(exe))
+    rec = InstalledGame(game_id=138, name="Zippy Rabbit 2: The Hidden Files", install_dir=str(folder), executable=str(exe))
     save_library({138: rec})
     return SimpleNamespace(rec=rec, folder=folder, exe=exe, tmp=tmp_path, art=art)
 
@@ -36,7 +36,7 @@ def finish(h, desktop=True):
 def test_everything_the_game_needs_sits_in_its_folder(home):
     finish(home)
 
-    stem = "Jazz Jackrabbit 2_ The Secret Files"  # the name, safe as a file name
+    stem = "Zippy Rabbit 2_ The Hidden Files"  # the name, safe as a file name
     assert (home.folder / "pfx").is_dir()
     script = home.folder / f"{stem}.sh"
     assert script.is_file() and os.access(script, os.X_OK) and launcher.launch_script_path(home.rec) == script
@@ -64,7 +64,7 @@ def test_a_game_without_artwork_gets_no_folder_icon(home):
     home.art.clear()
     finish(home)
     assert not (home.folder / ".directory").exists() and not (home.folder / ".mog-icon").exists()
-    assert "Icon=" not in (home.folder / "Jazz Jackrabbit 2_ The Secret Files.desktop").read_text()
+    assert "Icon=" not in (home.folder / "Zippy Rabbit 2_ The Hidden Files.desktop").read_text()
 
 
 def test_an_icon_already_there_survives_a_refresh_that_finds_no_artwork(home):
@@ -77,7 +77,7 @@ def test_an_icon_already_there_survives_a_refresh_that_finds_no_artwork(home):
 def test_without_a_desktop_entry_only_the_script_remains(home):
     finish(home)
     finish(home, desktop=False)
-    stem = "Jazz Jackrabbit 2_ The Secret Files"
+    stem = "Zippy Rabbit 2_ The Hidden Files"
     assert (home.folder / f"{stem}.sh").is_file()
     assert not (home.folder / f"{stem}.desktop").exists() and not (home.tmp / "xdg/applications/mog-138.desktop").is_symlink()
 
@@ -132,7 +132,7 @@ def test_refreshing_metadata_rebuilds_from_the_servers_new_data_and_edits_the_st
     monkeypatch.setattr(manager.steam, "add_shortcut", lambda *a, **k: pytest.fail("the shortcut must not be recreated"))
     home.art.clear()
     home.art["icon"] = b"NEW ICON"
-    server = SimpleNamespace(get_game=lambda gid: {"id": gid, "name": "Jazz 2", "igdb_metadata": {"changed": True}})
+    server = SimpleNamespace(get_game=lambda gid: {"id": gid, "name": "Zippy 2", "igdb_metadata": {"changed": True}})
 
     game, changed = manager.refresh_metadata(rec, server)
 
@@ -142,8 +142,8 @@ def test_refreshing_metadata_rebuilds_from_the_servers_new_data_and_edits_the_st
 
 
 def test_a_windows_shortcut_is_made_with_powershell(monkeypatch, tmp_path):
-    script = launcher.windows_shortcut_script(tmp_path / "G O'Brien.lnk", "C:\\Games\\G\\g.exe", "C:\\Games\\G")
-    assert "CreateShortcut('" in script and "G O''Brien.lnk" in script
+    script = launcher.windows_shortcut_script(tmp_path / "Game's Name.lnk", "C:\\Games\\G\\g.exe", "C:\\Games\\G")
+    assert "CreateShortcut('" in script and "Game''s Name.lnk" in script
     assert "$s.TargetPath='C:\\Games\\G\\g.exe'" in script and script.endswith("$s.Save()")
     assert "$s.WindowStyle=7" in script and "IconLocation" not in script
     with_icon = launcher.windows_shortcut_script(tmp_path / "x.lnk", "g.cmd", ".", icon="C:\\Games\\G\\g.exe")
@@ -162,7 +162,7 @@ def test_on_windows_the_entry_is_a_lnk_next_to_the_game(home, monkeypatch):
     monkeypatch.setattr(launcher.sys, "platform", "win32")
     monkeypatch.setattr(launcher, "create_windows_shortcut", lambda lnk, target, workdir, icon=None: made.append((lnk, target, workdir, icon)))
     recorded = launcher.create_desktop_entry(home.rec)
-    stem = "Jazz Jackrabbit 2_ The Secret Files"
+    stem = "Zippy Rabbit 2_ The Hidden Files"
     assert recorded == str(home.folder / f"{stem}.lnk")
     assert made == [(home.folder / f"{stem}.lnk", str(home.folder / f"{stem}.cmd"), str(home.exe.parent), str(home.exe))]
 
@@ -212,7 +212,7 @@ def test_a_shortcut_steam_has_rewritten_is_still_updated_and_not_given_a_second_
     manager.regenerate_entries(load_library()[138], {"id": 138}, "auto", None)
 
     entry = _entry(steam_home.vdf, appid)
-    assert entry["exe"].endswith('Secret Files.sh"') and entry["appname"] == steam_home.rec.name
+    assert entry["exe"].endswith('Hidden Files.sh"') and entry["appname"] == steam_home.rec.name
     assert sorted(k for k in entry if k.lower() in ("exe", "appname")) == ["appname", "exe"]  # one of each
 
 
@@ -358,7 +358,7 @@ def test_a_shortcut_on_the_desktop_is_a_copy_of_the_entry_and_goes_with_the_game
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home.tmp / "cfg"))
     (home.tmp / "cfg").mkdir()
     (home.tmp / "cfg" / "user-dirs.dirs").write_text(f'XDG_DESKTOP_DIR="{home.tmp}/Escritorio"\n')
-    stem = "Jazz Jackrabbit 2_ The Secret Files"
+    stem = "Zippy Rabbit 2_ The Hidden Files"
 
     manager.finish_setup(home.rec, {"id": 138}, str(home.exe), [], True, "auto", None, on_desktop=True)
 
@@ -387,7 +387,7 @@ def test_the_launch_script_mog_wrote_is_not_offered_as_an_executable_to_choose(h
     offered = [p.name for p in launcher.list_executables(home.folder)]
 
     assert script.is_file() and script.name not in offered
-    assert "start.sh" in offered and "Jazz2.exe" in offered
+    assert "start.sh" in offered and "Zippy2.exe" in offered
     assert launcher.is_mog_script(script) and not launcher.is_mog_script(home.folder / "start.sh")
 
 

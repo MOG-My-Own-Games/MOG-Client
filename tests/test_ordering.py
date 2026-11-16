@@ -110,13 +110,13 @@ def test_a_game_was_last_played_where_the_newest_start_or_save_is():
     group = Group(members=[server], versions=[server])
     saved_at = ordering.iso_to_epoch("2026-10-05T10:00:00Z")
 
-    assert ordering.last_played_on(group, {}, "karasu") == (saved_at, "deck")  # only the server saw it
-    assert ordering.last_played_on(group, {7: saved_at + 60}, "karasu") == (saved_at + 60, "karasu")  # started here since
-    assert ordering.last_played_on(group, {7: saved_at - 60}, "karasu") == (saved_at, "deck")  # the other machine is newer
+    assert ordering.last_played_on(group, {}, "desktop") == (saved_at, "deck")  # only the server saw it
+    assert ordering.last_played_on(group, {7: saved_at + 60}, "desktop") == (saved_at + 60, "desktop")  # started here since
+    assert ordering.last_played_on(group, {7: saved_at - 60}, "desktop") == (saved_at, "deck")  # the other machine is newer
     assert ordering.last_played_on(group, {7: saved_at + 60}, None) == (saved_at + 60, None)  # this machine has no name yet
 
     never = Group(members=[{"id": 8, "name": "N"}], versions=[{"id": 8, "name": "N"}])
-    assert ordering.last_played_on(never, {}, "karasu") == (None, None)
+    assert ordering.last_played_on(never, {}, "desktop") == (None, None)
 
 
 def extra(gid, name, **fields):

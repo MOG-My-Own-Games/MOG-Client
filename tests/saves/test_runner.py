@@ -107,9 +107,9 @@ def test_when_both_sides_changed_the_user_chooses(monkeypatch):
     monkeypatch.setattr(runner.sync, "decline", lambda ctx, vid: calls.append(("decline", vid)))
 
     ui = Asker("use")
-    assert runner.take_newer(_ctx("Jazz"), ui).status == "restored" and calls == [("restore", 9)]
+    assert runner.take_newer(_ctx("Zippy"), ui).status == "restored" and calls == [("restore", 9)]
     _title, text, labels = ui.asked[0]
-    assert "steamdeck" in text and "Jazz" in text and labels == ["Use it", "Keep this machine's saves", "Ask me next time"]
+    assert "steamdeck" in text and "Zippy" in text and labels == ["Use it", "Keep this machine's saves", "Ask me next time"]
 
     calls.clear()
     assert runner.take_newer(_ctx(), Asker("keep")).status == "kept" and calls == [("decline", 9)]
@@ -215,7 +215,7 @@ def waiting(tmp_path, monkeypatch):
     rec.prefix = str(pfx_dir(rec))
     pfx_dir(rec).mkdir()
     server = FakeServer()
-    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), "faugus")
+    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), "faugus")
     version = server.add_foreign_version({"users/USER/Saved Games/s.sav": b"theirs"})
     assert sync.restore(ctx, version["id"]).status == "needs-prefix"
     return SimpleNamespace(ctx=ctx, rec=rec, server=server, prefix=pfx_dir(rec))

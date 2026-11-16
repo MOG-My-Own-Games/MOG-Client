@@ -1847,6 +1847,35 @@ class UninstallOptionsPage(Page):
             self.first.setFocus()
 
 
+class UserMenuPage(Page):
+    """The menu under the user's picture as a card of the window, with the same rows (the actions of `MainWindow.user_menu`,
+    as they are when it opens). The pad and the keyboard open this one: on Wayland a popup menu needs input the window
+    itself received, which a pad read from the device never is, so the popup would not appear."""
+
+    modal = True
+    compact = True
+
+    title = "Menu"
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.first: QPushButton | None = None
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        for action in win.user_menu.actions():
+            if action.isSeparator() or not action.isVisible() or not action.isEnabled():
+                continue
+            button = add_option_button(win, lay, action.text(), action.trigger)
+            self.first = self.first or button
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(FitScrollArea(content))
+
+    def focus_default(self) -> None:
+        if self.first:
+            self.first.setFocus()
+
+
 class OptionsPage(Page):
     """The less common actions of a game: launch engine, shortcuts, and deleting it here or on the server."""
 
@@ -4182,13 +4211,35 @@ class EdgeList(QListWidget):
         size = super().minimumSizeHint()
         return QSize(size.width(), min(self._natural, self.MIN_HEIGHT)) if self._natural else size
 
+    step = None  # (widget, direction) -> bool: where Down from the last row and Up from the first go (the sidebar walks round)
+
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Down and self.currentRow() >= self.count() - 1:
-            self.focusNextChild()
+            if not (self.step and self.step(self, 1)):
+                self.focusNextChild()
         elif e.key() == Qt.Key_Up and self.currentRow() <= 0:
-            self.focusPreviousChild()
+            if not (self.step and self.step(self, -1)):
+                self.focusPreviousChild()
         else:
             super().keyPressEvent(e)
+
+    def _hold(self, held: bool) -> None:
+        """The stylesheet draws the row the pad is on brighter than the one that is only chosen (see `theme.STYLE`)."""
+        self.setProperty("held", held)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def focusInEvent(self, e) -> None:  # noqa: N802 - Qt's name
+        super().focusInEvent(e)
+        if self.count() and self.currentRow() < 0:
+            self.setCurrentRow(0)  # a list that was drawn again has no row: the pad has to be seen on one
+        self._hold(True)
+        self.viewport().update()
+
+    def focusOutEvent(self, e) -> None:  # noqa: N802
+        super().focusOutEvent(e)
+        self._hold(False)
+        self.viewport().update()
 
 
 class GradientHeading(QPushButton):
@@ -4199,6 +4250,13 @@ class GradientHeading(QPushButton):
         self.setFlat(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    step = None  # as EdgeList's: Up and Down walk the sidebar
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802
+        direction = {Qt.Key_Down: 1, Qt.Key_Up: -1}.get(e.key())
+        if direction is None or not (self.step and self.step(self, direction)):
+            super().keyPressEvent(e)
 
     def _font(self) -> QFont:
         font = self.font()
@@ -4273,6 +4331,7 @@ class StripList(QListWidget):
         self.setIconSize(SHOT_SIZE)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._last_row = 0
+        self.below = lambda: None  # the control Down goes to (the page's buttons); the focus chain when it says none
 
     def focusInEvent(self, e) -> None:
         super().focusInEvent(e)
@@ -4289,7 +4348,11 @@ class StripList(QListWidget):
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Down:
-            self.focusNextChild()
+            target = self.below()
+            if target is not None and target.isVisibleTo(self.window()) and target.isEnabled():
+                target.setFocus(Qt.TabFocusReason)  # the buttons are rebuilt as a game moves on, which leaves them out of the chain's order
+            else:
+                self.focusNextChild()
         elif e.key() == Qt.Key_Up:
             self.focusPreviousChild()
         else:
@@ -4531,6 +4594,7 @@ class GamePage(Page):
 
         self.shots = StripList()
         self.shots.setFixedHeight(SHOT_SIZE.height() + 30)
+        self.shots.below = lambda: self.first
         self.shot_urls = screenshot_urls(game)
         self.shot_pix: dict[str, QPixmap] = {}
         self._videos = 0  # video thumbnails at the front of the strip
@@ -4809,6 +4873,30 @@ class GamePage(Page):
         if self.first:
             self.first.setFocus()
 
+    def walk(self, focus: QWidget, key: int) -> bool:
+        """The arrows on a game's page, as it is laid out: the cover on top, the media strip under it, the buttons at the
+        bottom. Left and Right go round the buttons, never out to the window's header; Up from the buttons goes to the
+        media, or the cover where there are none, and Down comes back. True when the key was taken."""
+        buttons = [
+            w
+            for w in (self.buttons.itemAt(i).widget() for i in range(self.buttons.count()))
+            if isinstance(w, QPushButton) and w.isVisibleTo(self) and w.isEnabled()
+        ]
+        media = self.shots if self.shots.isVisibleTo(self) and self.shots.count() else None
+        if focus in buttons:
+            if key in (Qt.Key_Left, Qt.Key_Right):
+                buttons[(buttons.index(focus) + (1 if key == Qt.Key_Right else -1)) % len(buttons)].setFocus(Qt.TabFocusReason)
+            elif key == Qt.Key_Up:
+                (media or self.cover).setFocus(Qt.TabFocusReason)
+            return True
+        if focus is self.cover:
+            if key == Qt.Key_Down:
+                target = media or (buttons[0] if buttons else None)
+                if target is not None:
+                    target.setFocus(Qt.TabFocusReason)
+            return True
+        return False
+
     def focus_default(self) -> None:
         # Entering a game lands on its first button (Play, Install, Resume...), as the pad expects.
         if self.first:
@@ -4849,6 +4937,7 @@ class GamePage(Page):
                 while self.buttons.count():
                     w = self.buttons.takeAt(0).widget()
                     if w:
+                        w.hide()  # until it is gone it must not take the focus (a message closing hands it back to what had it)
                         w.deleteLater()
                 self.buttons.addStretch()  # the buttons sit in the middle, none wider than the stylesheet allows
                 self.play_ring = None
@@ -6296,9 +6385,13 @@ class LibraryPage(Page):
         self.sidebar = QWidget()
         self.sidebar.setFixedWidth(SIDEBAR_WIDTH)
         self.libs = EdgeList()
+        self.libs.setObjectName("sideList")
         self.libs.keep(LIBS_KEEP_HEIGHT)
-        self.libs.currentRowChanged.connect(self._library_chosen)
+        self.libs.setItemDelegate(OptionDelegate(self.libs))  # a radio on the chosen library: the row the pad is on is another thing
+        self.libs.itemActivated.connect(self._library_picked)
+        self.libs.itemClicked.connect(self._library_picked)
         self.installs = EdgeList()
+        self.installs.setObjectName("sideList")
         self.installs.keep(300)  # whole while the window allows: the first to keep its room
         self.installs.setIconSize(ACTIVE_ICON)
         self.installs.setWordWrap(True)  # a long game or mod name goes over lines, never cut
@@ -6314,6 +6407,7 @@ class LibraryPage(Page):
         self.installs_section = SidebarSection("installs", "Active installs", self.installs, win.app.settings, self._share_room)
         box.addWidget(self.installs_section)
         self.sorts = EdgeList()
+        self.sorts.setObjectName("sideList")
         self.sorts.setItemDelegate(OptionDelegate(self.sorts))
         for side_list in (self.libs, self.sorts):  # the sidebar has a width of its own: a list never scrolls sideways
             side_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -6323,6 +6417,8 @@ class LibraryPage(Page):
         side.setContentsMargins(0, 0, 0, 0)
         self.libs_section = SidebarSection("libraries", "Libraries", self.libs, win.app.settings, self._share_room)
         self.sorts_section = SidebarSection("sorts", "Sort and filter", self.sorts, win.app.settings, self._share_room)
+        for control in (self.installs, self.libs, self.sorts, self.installs_section.heading, self.libs_section.heading, self.sorts_section.heading):
+            control.step = self.side_step
         # Where there is not room for everything the active installs have it first, then the libraries, then the sorts.
         self.side = side
         side.addWidget(self.installs_box, SIDEBAR_SHARES["installs"])
@@ -6378,14 +6474,16 @@ class LibraryPage(Page):
     def _fill_libraries(self) -> None:
         self.libs.blockSignals(True)
         self.libs.clear()
-        self.libs.addItem("All games")
-        for lib in self.libraries:
-            self.libs.addItem(lib["name"])
+        for name in ("All games", *(lib["name"] for lib in self.libraries)):
+            item = QListWidgetItem(name)
+            item.setData(ROLE_KIND, "radio")
+            self.libs.addItem(item)
         row = 0
         if self.library_filter is not None and self.libraries:  # no list yet (offline, an older server): the choice waits
             row = next((i + 1 for i, lib in enumerate(self.libraries) if lib["id"] == self.library_filter), 0)
             self.library_filter = self.libraries[row - 1]["id"] if row else None
             self._remember_library()
+        self._mark_library(row)
         self.libs.setCurrentRow(row)
         self.libs.blockSignals(False)
         # At least a few rows tall and as tall as its rows up to a limit, so "Sort and filter" sits right under it and the space left is at the bottom.
@@ -6471,10 +6569,46 @@ class LibraryPage(Page):
             if isinstance(page, GamePage):
                 page.open_mods()
 
+    def _mark_library(self, row: int) -> None:
+        for i in range(self.libs.count()):
+            self.libs.item(i).setData(ROLE_ON, i == row)
+
+    def _library_picked(self, item: QListWidgetItem) -> None:
+        """A on a row (or a click): that library is the one shown. Moving over the rows chooses nothing."""
+        self._library_chosen(self.libs.row(item))
+
     def _library_chosen(self, row: int) -> None:
-        self.library_filter = self.libraries[row - 1]["id"] if row > 0 else None
+        if not 0 <= row < self.libs.count():
+            return
+        self._mark_library(row)
+        library = self.libraries[row - 1]["id"] if row > 0 else None
+        if library == self.library_filter:
+            return
+        self.library_filter = library
         self._remember_library()
         self.populate(self.win.search.text().lower())
+
+    def _side_controls(self) -> list[QWidget]:
+        """What the pad walks in the sidebar, from the top: each heading and, below an open one, its list."""
+        controls: list[QWidget] = []
+        for section in (self.installs_section, self.libs_section, self.sorts_section):
+            if not section.isVisibleTo(self.sidebar):
+                continue
+            controls.append(section.heading)
+            if not section.folded and section.body.count():
+                controls.append(section.body)
+        return controls
+
+    def side_step(self, widget: QWidget, direction: int) -> bool:
+        """Down past the last control of the sidebar is its first again, and Up past the first is the last."""
+        controls = self._side_controls()
+        if widget not in controls:
+            return False
+        target = controls[(controls.index(widget) + direction) % len(controls)]
+        if isinstance(target, QListWidget):
+            target.setCurrentRow(0 if direction > 0 else target.count() - 1)
+        target.setFocus(Qt.TabFocusReason)
+        return True
 
     def _remember_library(self) -> None:
         settings = self.win.app.settings
@@ -6540,6 +6674,19 @@ class LibraryPage(Page):
         settings.show_sidebar = shown
         save_settings(settings)
         (self.libs if shown else self.grid).setFocus()
+
+    def focus_in_sidebar(self) -> bool:
+        focus = QApplication.focusWidget()
+        return self.sidebar.isVisibleTo(self) and focus is not None and self.sidebar.isAncestorOf(focus)
+
+    def cycle_sidebar(self) -> None:
+        """L2: a closed sidebar opens, an open one the pad is not on takes the focus, and one the pad is on closes."""
+        if not self.sidebar.isVisibleTo(self) or self.focus_in_sidebar():
+            self.toggle_sidebar()
+            return
+        target = next((w for w in (self.installs, self.libs, self.sorts) if w.isVisibleTo(self.sidebar)), self.libs_section.heading)
+        target.setFocus(Qt.TabFocusReason)
+        self.win.refresh_legend()
 
     def focus_default(self) -> None:
         self.grid.setFocus()
@@ -6924,6 +7071,7 @@ class MainWindow(QMainWindow):
         self.modal.dismissed.connect(self.back)
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
         self.overlay.changed.connect(self.refresh_legend)
+        self.overlay.closed.connect(lambda restored: None if restored else self.refocus_page())
         self.covers: dict[int, QPixmap] = {}
         self.icons: dict[int, QPixmap] = {}
         self.icon_art: dict[int, QPixmap] = {}
@@ -7139,7 +7287,10 @@ class MainWindow(QMainWindow):
             return
         if e.key() == Qt.Key_Escape:
             if self.current_page() is self.library and self.library.sidebar.isVisibleTo(self.library):
-                self.library.toggle_sidebar()  # Back (B, Esc) closes the sidebar before it would leave the library
+                if self.library.focus_in_sidebar():
+                    self.library.grid.setFocus()  # Back from the sidebar is back to the games
+                else:
+                    self.library.toggle_sidebar()  # from the games it closes the sidebar before it would leave the library
             else:
                 self.back()
         else:
@@ -7401,7 +7552,7 @@ class MainWindow(QMainWindow):
 
     def _shortcut_menu(self) -> None:
         page = self.current_page()
-        if page is self.library or isinstance(page, GamePage):
+        if page is self.library or isinstance(page, (GamePage, UserMenuPage)):
             self.open_menu()
 
     def _add_shortcuts(self) -> None:
@@ -7479,8 +7630,8 @@ class MainWindow(QMainWindow):
             self.close()
 
     def refocus_page(self) -> None:
-        """An overlay that held the focus is gone (the game ended, the backup is done): the page gets its default
-        control back, Play on a game's page, instead of nothing having the focus."""
+        """An overlay that held the focus is gone (the game ended, the backup is done, a message was read): the page gets
+        its default control back, Play on a game's page, instead of nothing having the focus."""
         if self.overlay.showing or self.playing.showing or self.busy.showing:
             return  # what is still over the page has the focus
         self.current_page().focus_default()
@@ -7553,11 +7704,14 @@ class MainWindow(QMainWindow):
             return
         if name == gamepad.TRIGGER_L:
             if page is self.library:
-                self.library.toggle_sidebar()
+                self.library.cycle_sidebar()
             return
         if name == gamepad.TRIGGER_R:
             if page is self.library:
-                self.search.clear()
+                if self.library.focus_in_sidebar():
+                    self.library.grid.setFocus()  # R2 from the sidebar is over to the games, which leaves the sidebar open
+                else:
+                    self.search.clear()
             return
         if name in (gamepad.REFRESH, gamepad.SEARCH):
             if self.current_page() is self.library:
@@ -7572,7 +7726,7 @@ class MainWindow(QMainWindow):
             self.open_game_options(gid)  # Select on a game in the list is its Options; elsewhere it is the user menu
             return
         if name in (gamepad.MENU, gamepad.ACCOUNT):  # Start, and Select as well: the user menu
-            if page is self.library or isinstance(page, GamePage):
+            if page is self.library or isinstance(page, (GamePage, UserMenuPage)):
                 self.open_menu()
             return
         popup = QApplication.activePopupWidget()
@@ -7594,8 +7748,21 @@ class MainWindow(QMainWindow):
         self._post_key(name)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt's name
-        """Up from the first entry of a card (its list of buttons, as Linux Options is) goes to its last entry, not to the
+        """On a game's page the arrows walk its cover, media and buttons (`GamePage.walk`). Up from the first entry of a card (its list of buttons, as Linux Options is) goes to its last entry, not to the
         card's own buttons below: the keyboard's Up and the pad's, which is posted as the same key."""
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right)
+            and not event.modifiers()
+            and not self.modal.showing
+            and not (self.overlay.showing or self.playing.showing or self.busy.showing)
+            and isinstance(page := self.current_page(), GamePage)
+            and obj is QApplication.focusWidget()
+            and QApplication.activePopupWidget() is None
+            and page.isAncestorOf(obj)
+            and page.walk(obj, event.key())
+        ):
+            return True
         if (
             event.type() == QEvent.KeyPress
             and event.key() == Qt.Key_Up
@@ -7666,10 +7833,12 @@ class MainWindow(QMainWindow):
             QApplication.postEvent(target, QKeyEvent(kind, key, Qt.NoModifier))
 
     def open_menu(self) -> None:
-        """The user menu, whose first row (Settings) is ready for Enter; without a signed-in user there is no menu to
-        show, and the key goes straight to Settings so the server can be set up."""
-        if self.user_btn.isVisibleTo(self):
-            self.open_user_menu()
+        """The user menu as a card, whose first row (Settings) is ready for Enter; the same again closes it. Without a
+        signed-in user there is no menu to show, and the key goes straight to Settings so the server can be set up."""
+        if isinstance(self.current_page(), UserMenuPage):
+            self.back()
+        elif self.user_btn.isVisibleTo(self):
+            self.push(UserMenuPage(self))
         elif self.current_page() is self.library:
             self.open_settings()
 

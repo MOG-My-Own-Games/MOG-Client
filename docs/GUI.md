@@ -6,7 +6,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 ## The library
 
 - The sidebar on the left holds the library filter and what is going on in the background; it stays put while the games
-  scroll. L2 shows or hides it, B (Esc) closes it while it is open.
+  scroll. L2 opens it; with it open and the pad on the games L2 moves the pad onto it, and with the pad on it L2 closes it.
+  R2 from the sidebar goes to the games and leaves it open; B (Esc) from the sidebar is back to the games, and from the games it closes the sidebar. The row the pad is on has a white
+  frame. A library is chosen with A (or a click), not by moving over it: the chosen one carries the filled radio. Down from
+  the last row of the sidebar comes round to its top, Up from the top to its bottom.
 - The sidebar's sections (active installs, libraries, sort and filter) fold with a click, Enter or A on their heading, and
   stay folded between runs. Where the sidebar is too short for all of them the active installs keep their room first, then
   the libraries, then the sort and filter list.
@@ -314,7 +317,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
 
 ## The user menu and Settings
 
-- The user menu (picture and name at the top right; Start or Ctrl+Comma, also Select or Ctrl+U) holds Settings,
+- The user menu (picture and name at the top right; Start or Ctrl+Comma, also Select or Ctrl+U) opens as a card of the window
+  (a popup menu would not open from the pad on Wayland, which only grants one to a window that got input of its own; a click
+  on the picture still opens the popup) and holds Settings,
   Notifications (with the unread count), Refresh library, Add local game (see [SAVES.md](SAVES.md)), Go offline / Go online, About and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.

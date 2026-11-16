@@ -15,8 +15,8 @@ def entry(path, size=1):
 
 def test_files_at_the_top_or_in_several_folders_are_loose_one_folder_is_not():
     assert manager.is_loose([entry("Game.exe"), entry("data/a.pak")])
-    assert manager.is_loose([entry("Engine/a.dll"), entry("PokemonEmerald/b.pak")])
-    assert not manager.is_loose([entry("Mad Island/Mad Island.exe"), entry("Mad Island/data/a.pak")])
+    assert manager.is_loose([entry("Engine/a.dll"), entry("CritterJade/b.pak")])
+    assert not manager.is_loose([entry("Amber Isle/Amber Isle.exe"), entry("Amber Isle/data/a.pak")])
     assert not manager.is_loose([])
 
 
@@ -26,12 +26,12 @@ def test_loose_files_are_moved_into_a_folder_named_for_the_game(tmp_path):
     (tmp_path / "Game.exe").write_bytes(b"x")
     files = [entry("Engine/a.dll"), entry("Game.exe")]
 
-    folder, moved = manager.tuck_into_folder(tmp_path, files, "Pokemon Gamma Emerald")
+    folder, moved = manager.tuck_into_folder(tmp_path, files, "Critter Gamma Jade")
 
-    assert folder == tmp_path / "Pokemon Gamma Emerald"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["Pokemon Gamma Emerald"]
+    assert folder == tmp_path / "Critter Gamma Jade"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Critter Gamma Jade"]
     assert (folder / "Engine" / "a.dll").is_file() and (folder / "Game.exe").is_file()
-    assert [e["path"] for e in moved] == ["Pokemon Gamma Emerald/Engine/a.dll", "Pokemon Gamma Emerald/Game.exe"]
+    assert [e["path"] for e in moved] == ["Critter Gamma Jade/Engine/a.dll", "Critter Gamma Jade/Game.exe"]
 
 
 def test_a_folder_among_the_files_with_the_games_own_name_is_not_overwritten(tmp_path):
@@ -77,38 +77,38 @@ def install(tmp_path, monkeypatch):
         if prior:
             config.save_library({5: prior})
         return manager.run_install(
-            Server(), game or {"id": 5, "name": "Pokemon Gamma Emerald"}, settings, SimpleNamespace(is_set=lambda: False),
+            Server(), game or {"id": 5, "name": "Critter Gamma Jade"}, settings, SimpleNamespace(is_set=lambda: False),
             lambda m: None, lambda s: None, lambda a, b: None,
         )
 
-    return SimpleNamespace(run=run, root=tmp_path / "games" / "Pokemon Gamma Emerald")
+    return SimpleNamespace(run=run, root=tmp_path / "games" / "Critter Gamma Jade")
 
 
 def test_a_game_that_came_without_a_folder_is_kept_in_one_of_its_own(install):
-    rec = install.run([entry("PokemonEmerald.exe"), entry("Engine/a.dll")])
+    rec = install.run([entry("CritterJade.exe"), entry("Engine/a.dll")])
 
-    game_folder = install.root / "Pokemon Gamma Emerald"
-    assert (game_folder / "PokemonEmerald.exe").is_file() and (game_folder / "Engine" / "a.dll").is_file()
-    assert [p.name for p in install.root.iterdir()] == ["Pokemon Gamma Emerald"]
+    game_folder = install.root / "Critter Gamma Jade"
+    assert (game_folder / "CritterJade.exe").is_file() and (game_folder / "Engine" / "a.dll").is_file()
+    assert [p.name for p in install.root.iterdir()] == ["Critter Gamma Jade"]
     assert rec.files_dir == str(game_folder) and load_library()[5].files_dir == str(game_folder)
     manifest = load_install_manifest(5)
-    assert "Pokemon Gamma Emerald/PokemonEmerald.exe" in manifest and "PokemonEmerald.exe" not in manifest
+    assert "Critter Gamma Jade/CritterJade.exe" in manifest and "CritterJade.exe" not in manifest
 
 
 def test_a_game_that_came_in_a_folder_of_its_own_is_left_as_it_is(install):
-    rec = install.run([entry("Mad Island/Mad Island.exe"), entry("Mad Island/data/a.pak")])
+    rec = install.run([entry("Amber Isle/Amber Isle.exe"), entry("Amber Isle/data/a.pak")])
 
-    assert (install.root / "Mad Island" / "Mad Island.exe").is_file() and rec.files_dir is None
-    assert "Mad Island/Mad Island.exe" in load_install_manifest(5)
+    assert (install.root / "Amber Isle" / "Amber Isle.exe").is_file() and rec.files_dir is None
+    assert "Amber Isle/Amber Isle.exe" in load_install_manifest(5)
 
 
 def test_a_game_already_installed_is_not_moved_by_a_second_run(install):
-    first = install.run([entry("PokemonEmerald.exe")])
-    first.executable = str(install.root / "Pokemon Gamma Emerald" / "PokemonEmerald.exe")
+    first = install.run([entry("CritterJade.exe")])
+    first.executable = str(install.root / "Critter Gamma Jade" / "CritterJade.exe")
     config.save_library({5: first})
 
-    again = install.run([entry("PokemonEmerald.exe")], prior=first)
+    again = install.run([entry("CritterJade.exe")], prior=first)
 
     assert again.files_dir == first.files_dir
-    assert (install.root / "Pokemon Gamma Emerald" / "PokemonEmerald.exe").is_file()
-    assert not (install.root / "PokemonEmerald.exe").exists()  # fetched into its folder, not beside MOG's files
+    assert (install.root / "Critter Gamma Jade" / "CritterJade.exe").is_file()
+    assert not (install.root / "CritterJade.exe").exists()  # fetched into its folder, not beside MOG's files

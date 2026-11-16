@@ -23,13 +23,13 @@ def world(tmp_path, monkeypatch):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [])
     monkeypatch.setattr(prefixes, "steam_roots", lambda: [])
-    install = tmp_path / "games" / "Lost Ruins"
+    install = tmp_path / "games" / "Zelmoor Ruins"
     install.mkdir(parents=True)
     script = install / "start.sh"
     script.write_bytes(b"#!/bin/sh")
-    rec = InstalledGame(game_id=7, name="Lost Ruins", install_dir=str(install), executable=str(script), state="installed")
+    rec = InstalledGame(game_id=7, name="Zelmoor Ruins", install_dir=str(install), executable=str(script), state="installed")
     server = FakeServer()
-    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "karasu"), engine="auto")
+    ctx = sync.Context(rec, Settings(), server, DeviceRecord("uid-aaaaaaaa", 1, "desktop"), engine="auto")
     return SimpleNamespace(home=home, rec=rec, server=server, ctx=ctx, install=install)
 
 
@@ -45,49 +45,49 @@ def session_ns() -> int:
 
 
 def test_a_session_offers_the_folders_the_game_wrote_to_and_uploads_nothing_unconfirmed(world):
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
     write(world.home / ".config/browser-thing/state.json", b"other")
-    write(world.home / ".local/share/LostRuins/old.sav", b"old", mtime=STARTED - 500)
+    write(world.home / ".local/share/ZelmoorRuins/old.sav", b"old", mtime=STARTED - 500)
 
     result = sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
     assert result.status == "needs-confirmation"
-    assert result.folders == ["xdg-data/LostRuins", "xdg-config/browser-thing"]
+    assert result.folders == ["xdg-data/ZelmoorRuins", "xdg-config/browser-thing"]
     assert world.server.uploads == []
     assert load_state(7).pending_folders == result.folders
 
 
 def test_the_offer_survives_until_the_user_answers_even_without_a_session(world):
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
     sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
     again = sync.backup(world.ctx, sync.SYNC)
 
-    assert again.status == "needs-confirmation" and again.folders == ["xdg-data/LostRuins"]
+    assert again.status == "needs-confirmation" and again.folders == ["xdg-data/ZelmoorRuins"]
 
 
 def test_confirmed_folders_are_backed_up_and_then_left_alone_until_they_change(world):
-    slot = write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    slot = write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
     write(world.home / ".config/browser-thing/state.json", b"other")
     sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
-    sync.confirm_folders(7, ["xdg-data/LostRuins"])
+    sync.confirm_folders(7, ["xdg-data/ZelmoorRuins"])
     first = sync.backup(world.ctx, sync.MANUAL, force=True)
 
     assert first.status == "uploaded"
-    assert world.server.uploads == [("manual", ["xdg-data/LostRuins/slot1.sav"])]
+    assert world.server.uploads == [("manual", ["xdg-data/ZelmoorRuins/slot1.sav"])]
     assert load_state(7).pending_folders == []
     assert sync.backup(world.ctx, sync.SYNC).status == "unchanged"
 
     write(slot, b"two, longer", mtime=STARTED + 900)
-    write(world.home / ".local/share/LostRuins/slot2.sav", b"new", mtime=STARTED + 900)
+    write(world.home / ".local/share/ZelmoorRuins/slot2.sav", b"new", mtime=STARTED + 900)
     again = sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
     assert again.status == "uploaded"
-    assert world.server.uploads[1][1] == ["xdg-data/LostRuins/slot1.sav", "xdg-data/LostRuins/slot2.sav"]
+    assert world.server.uploads[1][1] == ["xdg-data/ZelmoorRuins/slot1.sav", "xdg-data/ZelmoorRuins/slot2.sav"]
 
 
 def test_once_folders_are_confirmed_a_session_does_not_look_around_again(world):
-    sync.confirm_folders(7, ["xdg-data/LostRuins"])
+    sync.confirm_folders(7, ["xdg-data/ZelmoorRuins"])
     write(world.home / ".config/browser-thing/state.json", b"other")
 
     result = sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
@@ -116,12 +116,12 @@ def test_a_game_that_wrote_nothing_is_not_nagged_but_a_manual_backup_asks_for_th
 
 
 def test_a_folder_the_user_picks_is_remembered_by_its_key(world):
-    write(world.home / ".lostruins/profile.dat", b"p")
-    assert sync.add_folder(7, world.home / ".lostruins") == "home/.lostruins"
+    write(world.home / ".zelmoorruins/profile.dat", b"p")
+    assert sync.add_folder(7, world.home / ".zelmoorruins") == "home/.zelmoorruins"
 
     result = sync.backup(world.ctx, sync.MANUAL, force=True)
 
-    assert result.status == "uploaded" and world.server.uploads == [("manual", ["home/.lostruins/profile.dat"])]
+    assert result.status == "uploaded" and world.server.uploads == [("manual", ["home/.zelmoorruins/profile.dat"])]
 
 
 def test_a_folder_outside_home_or_a_whole_root_is_refused(world, tmp_path):
@@ -133,21 +133,21 @@ def test_a_folder_outside_home_or_a_whole_root_is_refused(world, tmp_path):
 
 def test_a_save_from_another_machine_is_put_back_and_its_folders_become_the_games(world):
     version = world.server.add_foreign_version(
-        {"xdg-config/unity3d/Studio/Game/prefs": b"p", "xdg-data/LostRuins/slot1.sav": b"s"}
+        {"xdg-config/unity3d/Studio/Game/prefs": b"p", "xdg-data/ZelmoorRuins/slot1.sav": b"s"}
     )
 
     result = sync.restore(world.ctx, version["id"])
 
     assert result.status == "restored"
     assert (world.home / ".config/unity3d/Studio/Game/prefs").read_bytes() == b"p"
-    assert (world.home / ".local/share/LostRuins/slot1.sav").read_bytes() == b"s"
-    assert load_state(7).includes == ["xdg-config/unity3d/Studio/Game", "xdg-data/LostRuins"]
+    assert (world.home / ".local/share/ZelmoorRuins/slot1.sav").read_bytes() == b"s"
+    assert load_state(7).includes == ["xdg-config/unity3d/Studio/Game", "xdg-data/ZelmoorRuins"]
     assert sync.backup(world.ctx, sync.SYNC).status == "unchanged"
 
 
 def test_a_restore_keeps_what_it_replaces(world):
-    mine = write(world.home / ".local/share/LostRuins/slot1.sav", b"mine")
-    version = world.server.add_foreign_version({"xdg-data/LostRuins/slot1.sav": b"theirs"})
+    mine = write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"mine")
+    version = world.server.add_foreign_version({"xdg-data/ZelmoorRuins/slot1.sav": b"theirs"})
 
     result = sync.restore(world.ctx, version["id"])
 
@@ -167,32 +167,32 @@ def test_a_save_made_for_the_other_kind_of_game_is_not_applied(world):
 
 
 def test_the_start_of_the_client_sends_a_native_games_confirmed_saves(world):
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
-    sync.confirm_folders(7, ["xdg-data/LostRuins"])
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
+    sync.confirm_folders(7, ["xdg-data/ZelmoorRuins"])
 
     outcome = sync.startup_check(world.ctx)
 
-    assert outcome.status == "uploaded" and world.server.uploads == [("sync", ["xdg-data/LostRuins/slot1.sav"])]
+    assert outcome.status == "uploaded" and world.server.uploads == [("sync", ["xdg-data/ZelmoorRuins/slot1.sav"])]
 
 
 def test_the_start_of_the_client_says_when_a_native_game_waits_for_its_folders(world):
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
     sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
     assert sync.startup_check(world.ctx).status == "setup"
 
 
 def test_the_folders_the_server_knows_are_the_games_without_asking_anyone(world):
-    world.server.manifest = ["<xdgData>/LostRuins/saves", "<storeUserId>/x"]
-    write(world.home / ".local/share/LostRuins/saves/slot1.sav", b"one")
-    write(world.home / ".local/share/LostRuins/cache.bin", b"not in the named folder")
+    world.server.manifest = ["<xdgData>/ZelmoorRuins/saves", "<storeUserId>/x"]
+    write(world.home / ".local/share/ZelmoorRuins/saves/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/cache.bin", b"not in the named folder")
     write(world.home / ".config/browser-thing/state.json", b"other")
 
     result = sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
     assert result.status == "uploaded"
-    assert world.server.uploads == [("quit", ["xdg-data/LostRuins/saves/slot1.sav"])]
-    assert load_state(7).manifest_folders == ["xdg-data/LostRuins/saves"] and load_state(7).pending_folders == []
+    assert world.server.uploads == [("quit", ["xdg-data/ZelmoorRuins/saves/slot1.sav"])]
+    assert load_state(7).manifest_folders == ["xdg-data/ZelmoorRuins/saves"] and load_state(7).pending_folders == []
 
 
 def test_the_server_is_asked_once_and_an_answer_of_none_is_asked_again(world):
@@ -214,15 +214,15 @@ def test_the_server_is_asked_once_and_an_answer_of_none_is_asked_again(world):
 
 def test_when_the_known_folder_holds_nothing_the_session_still_looks_around(world):
     world.server.manifest = ["<xdgData>/Wrong/saves"]
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
 
     result = sync.backup(world.ctx, sync.QUIT, since_ns=session_ns())
 
-    assert result.status == "needs-confirmation" and result.folders == ["xdg-data/LostRuins"]
+    assert result.status == "needs-confirmation" and result.folders == ["xdg-data/ZelmoorRuins"]
 
 
 def test_a_server_that_cannot_say_changes_nothing(world):
     world.server.manifest = None
-    write(world.home / ".local/share/LostRuins/slot1.sav", b"one")
+    write(world.home / ".local/share/ZelmoorRuins/slot1.sav", b"one")
 
     assert sync.backup(world.ctx, sync.QUIT, since_ns=session_ns()).status == "needs-confirmation"

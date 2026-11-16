@@ -11,7 +11,7 @@ from mog_client.gui import syncwindow
 
 @pytest.fixture
 def rec(tmp_path):
-    return InstalledGame(game_id=3, name="Jazz Jackrabbit 2", install_dir=str(tmp_path), state="installed")
+    return InstalledGame(game_id=3, name="Zippy Rabbit 2", install_dir=str(tmp_path), state="installed")
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +66,7 @@ def test_the_window_tells_the_game_and_then_the_outcome(rec, tmp_path):
 
     QApplication.instance() or QApplication([])
     window = syncwindow.SyncWindow(rec.name, syncwindow._cover(rec))
-    assert window.name.text() == "Jazz Jackrabbit 2" and window.heading.text() == "Syncing saves"
+    assert window.name.text() == "Zippy Rabbit 2" and window.heading.text() == "Syncing saves"
     window.show_result("Saves backed up", True)
     assert window.heading.text() == "Saves backed up" and window.card.property("level") == ""
     window.show_result("Save sync failed: x", False)

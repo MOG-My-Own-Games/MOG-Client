@@ -121,8 +121,8 @@ def ui(tmp_path, monkeypatch):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(prefixes, "faugus_games_files", lambda: [])
     monkeypatch.setattr(prefixes, "steam_roots", lambda: [])
-    save_device(DeviceRecord("uid-aaaaaaaa", 1, "karasu"))
-    folder = tmp_path / "itch" / "Lost Ruins"
+    save_device(DeviceRecord("uid-aaaaaaaa", 1, "desktop"))
+    folder = tmp_path / "itch" / "Zelmoor Ruins"
     folder.mkdir(parents=True)
     server = Server()
     win = FakeWin(server)
@@ -139,7 +139,7 @@ def write(path: Path, data: bytes) -> Path:
 
 def test_adding_a_linux_game_asks_target_name_and_folders_and_sends_every_save(ui):
     for i in range(3):
-        write(ui.home / f".local/share/LostRuins/slot{i}.sav", f"s{i}".encode())
+        write(ui.home / f".local/share/ZelmoorRuins/slot{i}.sav", f"s{i}".encode())
     write(ui.folder / "start.sh", b"#!/bin/sh")
 
     ui.flow.start()
@@ -148,33 +148,33 @@ def test_adding_a_linux_game_asks_target_name_and_folders_and_sends_every_save(u
     title, _text, options, answer = ui.win.choices[-1]
     assert title == "What is this game made for?" and options[0][1] == importer.LINUX  # found in the folder, so first
     answer(importer.LINUX)
-    assert ui.win.texts[-1][1] == "Lost Ruins"  # the folder's name, ready to change
-    ui.win.texts[-1][2]("Lost Ruins")
+    assert ui.win.texts[-1][1] == "Zelmoor Ruins"  # the folder's name, ready to change
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     title, _text, options, answer = ui.win.choices[-1]
-    assert title == "Which library is Lost Ruins in?"
+    assert title == "Which library is Zelmoor Ruins in?"
     assert [v for _l, v in options] == [1, importing.NEW_LIBRARY]
     answer(1)
 
-    assert ui.server.entries[0]["name"] == "Lost Ruins" and ui.win.games_signal  # no like-named game: a new entry, listed at once
+    assert ui.server.entries[0]["name"] == "Zelmoor Ruins" and ui.win.games_signal  # no like-named game: a new entry, listed at once
     assert ui.server.entries[0]["library_id"] == 1  # filed under the library picked
     title, items, done = ui.win.checklists[-1]
-    assert [(v, checked) for _l, v, checked in items if v != importing.ANOTHER_FOLDER] == [("xdg-data/LostRuins", True)]
-    done(["xdg-data/LostRuins"])
+    assert [(v, checked) for _l, v, checked in items if v != importing.ANOTHER_FOLDER] == [("xdg-data/ZelmoorRuins", True)]
+    done(["xdg-data/ZelmoorRuins"])
 
     rec = load_library()[40]
     assert (rec.imported, rec.target, rec.install_dir) == (True, "linux", str(ui.folder))
-    assert ui.server.uploads == [("import", [f"xdg-data/LostRuins/slot{i}.sav" for i in range(3)])]
-    assert load_state(40).includes == ["xdg-data/LostRuins"]
+    assert ui.server.uploads == [("import", [f"xdg-data/ZelmoorRuins/slot{i}.sav" for i in range(3)])]
+    assert load_state(40).includes == ["xdg-data/ZelmoorRuins"]
     assert ui.win.shown == [40] and "Its saves are on the server" in ui.win.messages[-1][1]
     assert sorted(p.name for p in ui.folder.iterdir()) == ["start.sh"]  # nothing written into the game's folder
 
 
 def test_a_name_like_one_on_the_server_offers_it_and_picking_it_makes_no_new_entry(ui):
-    ui.win.app.games = {9: {"id": 9, "name": "Lost Ruins: Director's Cut", "library_id": 1}}
+    ui.win.app.games = {9: {"id": 9, "name": "Zelmoor Ruins: Director's Cut", "library_id": 1}}
     flow = ui.flow
     flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
 
     title, _text, options, answer = ui.win.choices[-1]
     assert title == "Is it one of these games?" and options[0][1]["id"] == 9 and options[-1][1] == importing.NEW_ENTRY
@@ -184,7 +184,7 @@ def test_a_name_like_one_on_the_server_offers_it_and_picking_it_makes_no_new_ent
 
 
 def test_already_added_folders_are_refused(ui):
-    manager.import_game({"id": 5, "name": "Lost Ruins"}, ui.folder, importer.LINUX)
+    manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.LINUX)
 
     ui.flow.folder_chosen(str(ui.folder))
 
@@ -195,12 +195,12 @@ def test_a_windows_game_asks_for_the_prefix_and_marks_default_ones(ui):
     shared = ui.home / ".wine"
     write(shared / "drive_c/users/me/Documents/other.sav", b"x")
     own = ui.home / "Faugus/lost"
-    write(own / "pfx/drive_c/users/steamuser/Documents/My Games/Lost Ruins/s.sav", b"x")
+    write(own / "pfx/drive_c/users/steamuser/Documents/My Games/Zelmoor Ruins/s.sav", b"x")
     write(ui.folder / "lost.exe", b"MZ")
 
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.WINDOWS)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
     title, text, options, answer = ui.win.choices[-1]
     assert title == "Where is the Wine prefix of this game?" and "Do not pick a Default prefix" in text
@@ -215,17 +215,17 @@ def test_a_windows_game_asks_for_the_prefix_and_marks_default_ones(ui):
     assert "Default prefix" in ui.win.asks[-1][0] and ui.win.checklists == []
     answer(own)
     title, items, done = ui.win.checklists[-1]
-    assert [v for _l, v, _c in items][:1] == ["users/USER/Documents/My Games/Lost Ruins"]
-    done(["users/USER/Documents/My Games/Lost Ruins"])
+    assert [v for _l, v, _c in items][:1] == ["users/USER/Documents/My Games/Zelmoor Ruins"]
+    done(["users/USER/Documents/My Games/Zelmoor Ruins"])
     rec = load_library()[40]
     assert rec.prefix == str(own) and not rec.prefix_dedicated
-    assert ui.server.uploads[0][1] == ["users/USER/Documents/My Games/Lost Ruins/s.sav"]
+    assert ui.server.uploads[0][1] == ["users/USER/Documents/My Games/Zelmoor Ruins/s.sav"]
 
 
 def test_a_new_prefix_warns_that_the_saves_may_be_in_the_old_one_and_takes_nothing_from_it(ui):
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.WINDOWS)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
     ui.win.choices[-1][3](importing.NEW_PREFIX)
 
@@ -243,7 +243,7 @@ def test_a_new_prefix_warns_that_the_saves_may_be_in_the_old_one_and_takes_nothi
 def _to_the_new_prefix_question(ui):
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.WINDOWS)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
     ui.win.choices[-1][3](importing.NEW_PREFIX)
     return ui.win.choices[-1]
@@ -255,7 +255,7 @@ def _pick_another_folder_for_the_new_prefix(ui, folder: Path):
 
 
 def test_a_folder_picked_for_the_new_prefix_that_is_not_called_pfx_is_offered_a_pfx_inside_it(ui):
-    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    chosen = ui.tmp / "Prefixes" / "zelmoor-ruins"
     chosen.mkdir(parents=True)
     _pick_another_folder_for_the_new_prefix(ui, chosen)
 
@@ -269,7 +269,7 @@ def test_a_folder_picked_for_the_new_prefix_that_is_not_called_pfx_is_offered_a_
 
 
 def test_saying_no_to_the_pfx_keeps_the_folder_as_picked(ui):
-    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    chosen = ui.tmp / "Prefixes" / "zelmoor-ruins"
     chosen.mkdir(parents=True)
     _pick_another_folder_for_the_new_prefix(ui, chosen)
 
@@ -290,7 +290,7 @@ def test_a_folder_picked_for_the_new_prefix_that_is_called_pfx_is_used_without_t
 
 
 def test_a_pfx_that_is_already_filled_is_not_offered_for_the_new_prefix(ui):
-    chosen = ui.tmp / "Prefixes" / "lost-ruins"
+    chosen = ui.tmp / "Prefixes" / "zelmoor-ruins"
     (chosen / "pfx").mkdir(parents=True)
     (chosen / "pfx" / "something").write_text("x")
     _pick_another_folder_for_the_new_prefix(ui, chosen)
@@ -306,12 +306,12 @@ def test_a_new_prefix_can_be_made_in_a_mog_library_as_a_mog_game_would_have_it(u
     title, _text, options, answer = _to_the_new_prefix_question(ui)
     assert [value for _label, value in options] == [importing.IN_GAME_FOLDER, importing.IN_LIBRARY, importing.ANOTHER_FOLDER]
     answer(importing.IN_LIBRARY)  # one library: nothing to choose
-    assert str(library / "Lost Ruins" / "pfx") in ui.win.asks[-1][0]
+    assert str(library / "Zelmoor Ruins" / "pfx") in ui.win.asks[-1][0]
     ui.win.asks[-1][1]()
 
     rec = load_library()[40]
-    assert (rec.prefix, rec.prefix_dedicated, rec.imported) == (str(library / "Lost Ruins" / "pfx"), True, True)
-    assert (library / "Lost Ruins" / "pfx").is_dir() and [p.name for p in (library / "Lost Ruins").iterdir()] == ["pfx"]
+    assert (rec.prefix, rec.prefix_dedicated, rec.imported) == (str(library / "Zelmoor Ruins" / "pfx"), True, True)
+    assert (library / "Zelmoor Ruins" / "pfx").is_dir() and [p.name for p in (library / "Zelmoor Ruins").iterdir()] == ["pfx"]
     assert not (ui.folder / "pfx").exists()  # the game's own folder is not written into
 
 
@@ -326,12 +326,12 @@ def test_with_several_libraries_it_asks_which_and_only_the_connected_ones_are_of
     title, _text, options, answer = ui.win.choices[-1]
     assert title == "Which MOG library?" and [value for _label, value in options] == [first, second]
     answer(second)
-    assert str(second / "Lost Ruins" / "pfx") in ui.win.asks[-1][0] and not (second / "Lost Ruins").exists()  # made when it is added
+    assert str(second / "Zelmoor Ruins" / "pfx") in ui.win.asks[-1][0] and not (second / "Zelmoor Ruins").exists()  # made when it is added
 
 
 def test_a_library_prefix_that_is_already_there_or_no_library_connected_is_refused(ui):
     library = ui.tmp / "Library"
-    (library / "Lost Ruins" / "pfx" / "drive_c").mkdir(parents=True)
+    (library / "Zelmoor Ruins" / "pfx" / "drive_c").mkdir(parents=True)
     ui.win.app.settings.install_dirs = [str(library)]
     _to_the_new_prefix_question(ui)[3](importing.IN_LIBRARY)
     assert "already there" in ui.win.messages[-1][1] and not ui.win.asks
@@ -342,13 +342,13 @@ def test_a_library_prefix_that_is_already_there_or_no_library_connected_is_refus
 
 
 def test_a_conflict_with_another_computers_saves_is_asked_and_keeping_ours_sends_them(ui):
-    ui.server.add_foreign_version({"xdg-data/LostRuins/slot1.sav": b"theirs"})
-    mine = write(ui.home / ".local/share/LostRuins/slot1.sav", b"mine")
+    ui.server.add_foreign_version({"xdg-data/ZelmoorRuins/slot1.sav": b"theirs"})
+    mine = write(ui.home / ".local/share/ZelmoorRuins/slot1.sav", b"mine")
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
-    ui.win.checklists[-1][2](["xdg-data/LostRuins"])
+    ui.win.checklists[-1][2](["xdg-data/ZelmoorRuins"])
 
     text, use_theirs, keep_mine = ui.win.asks[-1]
     assert "left others on the server" in text and mine.read_bytes() == b"mine"
@@ -370,7 +370,7 @@ def test_moving_into_mog_asks_twice_for_a_shared_prefix_and_then_moves(ui):
     shared = ui.home / ".wine"
     write(shared / "drive_c/users/me/Documents/x.sav", b"x")
     write(ui.folder / "lost.exe", b"MZ")
-    rec = manager.import_game({"id": 5, "name": "Lost Ruins"}, ui.folder, importer.WINDOWS, shared)
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.WINDOWS, shared)
     changed = []
 
     ui.flow.move_into_mog(rec, lambda: changed.append(1))
@@ -378,11 +378,11 @@ def test_moving_into_mog_asks_twice_for_a_shared_prefix_and_then_moves(ui):
     assert "MOVES" in text and "deleted from where they are" in text
     go()
     ui.win.choices[-1][3](True)
-    assert "Default or shared prefix" in ui.win.asks[-1][0] and not (root / "Lost Ruins").exists()
+    assert "Default or shared prefix" in ui.win.asks[-1][0] and not (root / "Zelmoor Ruins").exists()
     ui.win.asks[-1][1]()
 
     moved = load_library()[5]
-    assert moved.imported is False and (root / "Lost Ruins/pfx/drive_c/users/me/Documents/x.sav").is_file()
+    assert moved.imported is False and (root / "Zelmoor Ruins/pfx/drive_c/users/me/Documents/x.sav").is_file()
     assert not shared.exists() and changed == [1]
 
 
@@ -390,7 +390,7 @@ def test_removing_keeps_the_folder_and_the_prefix(ui):
     prefix = ui.home / "wine"
     write(prefix / "drive_c/users/me/Documents/x.sav", b"x")
     write(ui.folder / "lost.exe", b"MZ")
-    rec = manager.import_game({"id": 5, "name": "Lost Ruins"}, ui.folder, importer.WINDOWS, prefix)
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.WINDOWS, prefix)
 
     ui.flow.remove(rec, lambda: None)
     ui.win.asks[-1][1]()
@@ -401,7 +401,7 @@ def test_removing_keeps_the_folder_and_the_prefix(ui):
 def test_a_new_library_is_asked_for_by_name_and_folder_and_the_game_is_listed_under_it(ui):
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
 
     ui.win.choices[-1][3](importing.NEW_LIBRARY)
     title, default, named = ui.win.texts[-1]
@@ -422,13 +422,13 @@ def test_a_library_the_server_refuses_is_told_and_the_choice_comes_back(ui):
     ui.server.create_library = refuse
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](importing.NEW_LIBRARY)
     ui.win.texts[-1][2]("Old games")
     ui.win.texts[-1][2]("/library/old")
 
     assert "only an administrator" in ui.win.messages[-1][1]
-    assert ui.win.choices[-1][0] == "Which library is Lost Ruins in?" and ui.server.entries == []
+    assert ui.win.choices[-1][0] == "Which library is Zelmoor Ruins in?" and ui.server.entries == []
 
 
 def test_the_executable_is_asked_for_once_the_game_is_added_as_after_an_install(ui):
@@ -436,21 +436,21 @@ def test_the_executable_is_asked_for_once_the_game_is_added_as_after_an_install(
     ui.win.game_pages[40] = SimpleNamespace(choose_executable=asked.append, rebuild=lambda: None)
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
     ui.win.checklists[-1][2]([])
 
     assert [rec.game_id for rec in asked] == [40]
 
 
-SANDBOXED = "flatpak:io.itch.itch:xdg-config/unity3d/Studio/Lost Ruins"
+SANDBOXED = "flatpak:io.itch.itch:xdg-config/unity3d/Studio/Zelmoor Ruins"
 
 
 def test_a_game_found_saving_in_a_flatpak_apps_folders_is_added_with_that_sandbox(ui):
-    write(ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Lost Ruins/slot1.sav", b"s1")
+    write(ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Zelmoor Ruins/slot1.sav", b"s1")
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
 
     _title, items, done = ui.win.checklists[-1]
@@ -460,19 +460,19 @@ def test_a_game_found_saving_in_a_flatpak_apps_folders_is_added_with_that_sandbo
 
     rec = load_library()[40]
     assert rec.sandbox == "io.itch.itch" and rec.in_sandbox == "io.itch.itch"
-    assert load_state(40).includes == ["xdg-config/unity3d/Studio/Lost Ruins"]  # the usual key
-    assert ui.server.uploads == [("import", ["xdg-config/unity3d/Studio/Lost Ruins/slot1.sav"])]
+    assert load_state(40).includes == ["xdg-config/unity3d/Studio/Zelmoor Ruins"]  # the usual key
+    assert ui.server.uploads == [("import", ["xdg-config/unity3d/Studio/Zelmoor Ruins/slot1.sav"])]
 
 
 def test_folders_of_the_real_home_and_of_a_sandbox_cannot_be_taken_together(ui):
-    write(ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Lost Ruins/slot1.sav", b"s1")
-    write(ui.home / ".config/unity3d/Studio/Lost Ruins/slot1.sav", b"s2")
+    write(ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Zelmoor Ruins/slot1.sav", b"s1")
+    write(ui.home / ".config/unity3d/Studio/Zelmoor Ruins/slot1.sav", b"s2")
     ui.flow.folder_chosen(str(ui.folder))
     ui.win.choices[-1][3](importer.LINUX)
-    ui.win.texts[-1][2]("Lost Ruins")
+    ui.win.texts[-1][2]("Zelmoor Ruins")
     ui.win.choices[-1][3](1)
     _title, items, done = ui.win.checklists[-1]
-    both = [v for _l, v, _c in items if v.endswith("xdg-config/unity3d/Studio/Lost Ruins")]
+    both = [v for _l, v, _c in items if v.endswith("xdg-config/unity3d/Studio/Zelmoor Ruins")]
     assert len(both) == 2
 
     done(both)
@@ -481,9 +481,9 @@ def test_folders_of_the_real_home_and_of_a_sandbox_cannot_be_taken_together(ui):
 
 
 def test_another_folder_inside_a_sandbox_names_its_app(ui):
-    folder = ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Lost Ruins"
+    folder = ui.home / ".var/app/io.itch.itch/config/unity3d/Studio/Zelmoor Ruins"
     folder.mkdir(parents=True)
-    rec = manager.import_game({"id": 5, "name": "Lost Ruins"}, ui.folder, importer.LINUX)
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.LINUX)
     ui.flow.browse_saves(rec, [], [], lambda keys, sandbox: None)
 
     ui.win.on_pick(str(folder))
@@ -494,23 +494,23 @@ def test_another_folder_inside_a_sandbox_names_its_app(ui):
 
 def test_a_folder_that_was_a_mog_game_is_taken_back_without_the_questions_of_a_game_from_outside(ui):
     root = ui.tmp / "Games"
-    write(root / "Lost Ruins" / "data.bin", b"x")
+    write(root / "Zelmoor Ruins" / "data.bin", b"x")
     ui.win.app.settings.install_dirs = [str(root)]
-    ui.win.app.games = {5: {"id": 5, "name": "Lost Ruins", "fs_name": "Lost Ruins"}}
+    ui.win.app.games = {5: {"id": 5, "name": "Zelmoor Ruins", "fs_name": "Zelmoor Ruins"}}
     asked = []
     pages = SimpleNamespace(choose_executable=lambda rec: asked.append(rec.game_id))
     ui.win.game_pages = {5: pages}
 
-    ui.flow.folder_chosen(str(root / "Lost Ruins"))
+    ui.flow.folder_chosen(str(root / "Zelmoor Ruins"))
 
     rec = load_library()[5]
-    assert rec.state == "awaiting_executable" and not rec.imported and rec.install_dir == str(root / "Lost Ruins")
+    assert rec.state == "awaiting_executable" and not rec.imported and rec.install_dir == str(root / "Zelmoor Ruins")
     assert asked == [5] and ui.win.shown == [5] and not ui.win.choices and not ui.win.texts
     assert "already a MOG game" in ui.win.messages[-1][1]
 
 
 def test_any_other_folder_still_goes_through_the_questions(ui):
-    ui.win.app.games = {5: {"id": 5, "name": "Lost Ruins", "fs_name": "Lost Ruins"}}
+    ui.win.app.games = {5: {"id": 5, "name": "Zelmoor Ruins", "fs_name": "Zelmoor Ruins"}}
     write(ui.folder / "start.sh", b"#!/bin/sh")
 
     ui.flow.folder_chosen(str(ui.folder))  # in "itch", not in an install folder

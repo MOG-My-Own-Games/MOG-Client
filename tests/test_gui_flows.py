@@ -287,7 +287,7 @@ def _installed(tmp_path):
     from mog_client.config import InstalledGame
 
     return InstalledGame(
-        game_id=1, name="Jazz Jackrabbit 2", install_dir=str(tmp_path), executable=str(tmp_path / "Game/game.exe"),
+        game_id=1, name="Zippy Rabbit 2", install_dir=str(tmp_path), executable=str(tmp_path / "Game/game.exe"),
         state="installed", save_sync=False,
     )
 
@@ -299,7 +299,7 @@ def test_a_running_game_shows_the_message_and_stop_closes_it(win, qapp, tmp_path
     game = _game_process(tmp_path)
     try:
         win.begin_play(rec, game, poll=0.05, linger=0.2, appear_timeout=10)
-        assert win.playing.showing and win.playing.name.text() == "Jazz Jackrabbit 2"
+        assert win.playing.showing and win.playing.name.text() == "Zippy Rabbit 2"
         assert win.legend_context() == "playing"
 
         win.on_pad(gamepad.DOWN)  # nothing moves behind it
@@ -326,7 +326,7 @@ def test_a_game_played_from_here_has_its_time_sent_when_it_closes(win, qapp, tmp
     fake = SimpleNamespace(add_playtime=lambda game_id, started_at, seconds, device_id=None: sent.append((game_id, seconds)) or 200)
     monkeypatch.setattr(win.app, "client", lambda: fake)
     monkeypatch.setattr(playtime, "MIN_SECONDS", 0)  # the game here runs for a moment
-    win.app.games[1] = {"id": 1, "name": "Jazz Jackrabbit 2", "playtime_seconds": 100}
+    win.app.games[1] = {"id": 1, "name": "Zippy Rabbit 2", "playtime_seconds": 100}
     rec = _installed(tmp_path)
     game = _game_process(tmp_path)
     try:
@@ -363,6 +363,62 @@ def test_the_games_page_gets_its_default_button_back_when_the_playing_message_go
     win.playing.end()
     pump(qapp)
     assert win.overlay.showing and qapp.focusWidget() is not page.first
+
+
+def _game_page_with_play(win, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
+    monkeypatch.setattr(win.app, "load_size", lambda gid: None)
+    _activate(win, qapp)
+    _installed_game(win, qapp, tmp_path)
+    win.show_game(41)
+    pump(qapp)
+    page = win.current_page()
+    assert page.first.text() == "Play"
+    return page
+
+
+def test_a_message_read_over_buttons_that_were_made_again_gives_the_focus_to_the_new_default(win, qapp, tmp_path, monkeypatch):
+    """Caught on a Steam Deck: a message came up (an install ended), the page made its Play/Install button again under it, and
+    when OK was pressed the focus went to the old, gone button: nothing had it, and only leaving the page and coming back
+    put it on the buttons."""
+    page = _game_page_with_play(win, qapp, tmp_path, monkeypatch)
+    old = page.first
+
+    win.message("the install ended", "info")
+    page.rebuild()  # the buttons are made again while the message is up
+    pump(qapp)
+    assert page.first is not old
+    win.overlay.dismiss()
+    pump(qapp)
+
+    assert not win.overlay.showing
+    assert qapp.focusWidget() is page.first
+
+
+def test_a_message_that_came_when_nothing_had_the_focus_leaves_the_page_its_default_button(win, qapp, tmp_path, monkeypatch):
+    page = _game_page_with_play(win, qapp, tmp_path, monkeypatch)
+    page.first.clearFocus()
+    pump(qapp)
+    assert win.window().focusWidget() is None
+
+    win.message("something", "warning")
+    win.overlay.dismiss()
+    pump(qapp)
+
+    assert qapp.focusWidget() is page.first
+
+
+def test_a_message_gives_the_focus_back_to_the_button_that_had_it_and_not_to_the_default(win, qapp, tmp_path, monkeypatch):
+    page = _game_page_with_play(win, qapp, tmp_path, monkeypatch)
+    options = next(b for b in page.findChildren(QPushButton) if b.text() == "Options")
+    options.setFocus()
+    pump(qapp)
+
+    win.message("read me", "info")
+    win.overlay.dismiss()
+    pump(qapp)
+
+    assert qapp.focusWidget() is options
 
 
 def test_a_game_that_closes_by_itself_takes_the_message_down(win, qapp, tmp_path):
@@ -1084,7 +1140,7 @@ def _wait_for(qapp, cond, seconds=3):
 def test_an_archive_with_no_installer_asks_before_it_is_installed_and_yes_extracts_it(win, qapp, monkeypatch):
     server = FakeServer()
     started = _extraction_win(win, monkeypatch, server)
-    win.install_game({"id": 7, "name": "Hearthlands"})
+    win.install_game({"id": 7, "name": "Mossglen"})
     assert _wait_for(qapp, lambda: isinstance(win.current_page(), gui.ConfirmPage))
     assert "Game.rar" in win.current_page().text_label.text() and started == []
     assert server.asked == [None, "Game.rar"]  # the default pick, then what is inside it
@@ -1095,7 +1151,7 @@ def test_an_archive_with_no_installer_asks_before_it_is_installed_and_yes_extrac
 
 def test_no_still_installs_it_the_usual_way(win, qapp, monkeypatch):
     started = _extraction_win(win, monkeypatch, FakeServer())
-    win.install_game({"id": 7, "name": "Hearthlands"})
+    win.install_game({"id": 7, "name": "Mossglen"})
     assert _wait_for(qapp, lambda: isinstance(win.current_page(), gui.ConfirmPage))
     win.current_page().no.click()
     assert _wait_for(qapp, lambda: started)
@@ -1236,14 +1292,14 @@ def test_the_library_puts_games_waiting_for_an_executable_first_then_the_install
 
 def test_saves_syncing_after_a_game_closes_show_in_the_sidebar_like_an_install(win, qapp, tmp_path):
     rec = _installed(tmp_path)
-    win.app.set_games([{"id": 1, "name": "Jazz Jackrabbit 2", "igdb_id": None}])
+    win.app.set_games([{"id": 1, "name": "Zippy Rabbit 2", "igdb_id": None}])
     win.begin_play(rec, None, poll=0.05, linger=0.05, appear_timeout=0.1)  # puts the message up
     assert win.playing.showing
 
     win._sync_started(rec)  # the game closed: the message goes, the sync is shown beside the library
     assert not win.playing.showing
     assert not win.library.installs_box.isHidden() and win.library.installs.count() == 1
-    assert win.library.installs.item(0).text() == "Jazz Jackrabbit 2\nSyncing saves..."
+    assert win.library.installs.item(0).text() == "Zippy Rabbit 2\nSyncing saves..."
 
     win._play_ended(rec, None, True, False, None)
     assert win.library.installs.count() == 0 and win.library.installs_box.isHidden()
@@ -1253,7 +1309,7 @@ def test_the_search_has_a_cross_that_empties_it_and_pad_and_keyboard_do_the_same
     box = win.search
     cross = box._clear
     assert not cross.isVisible()  # nothing to clear yet
-    box.setText("zelda")
+    box.setText("quest")
     assert cross.isVisible()
 
     cross.trigger()
@@ -1292,18 +1348,58 @@ def test_the_user_icon_is_the_last_thing_on_the_right_and_opens_a_menu(win, qapp
 
 
 def test_select_on_the_pad_and_ctrl_u_open_the_user_menu_and_the_same_again_closes_it(win, qapp):
+    """A card of the window, not a popup: on Wayland a popup needs input of the window's own, which a pad is not."""
     win.on_pad(gamepad.ACCOUNT)
-    assert win.user_menu.isVisible()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.UserMenuPage) and not win.user_menu.isVisible()
     win.on_pad(gamepad.ACCOUNT)
-    assert not win.user_menu.isVisible()
+    pump(qapp)
+    assert win.current_page() is win.library
 
-    win.open_user_menu()
+    win.open_user_menu()  # the button's own menu stays a popup
     assert win.user_menu.isVisible()
     win.user_menu.hide()
 
     win.open_settings()
     win.on_pad(gamepad.ACCOUNT)  # not on the settings page: the button is not there
-    assert not win.user_menu.isVisible()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.SettingsPage)
+
+
+def test_the_menu_card_has_the_rows_of_the_menu_and_a_row_does_what_it_says(win, qapp, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(win.app, "refresh", lambda: refreshed.append(1))
+    win.on_pad(gamepad.MENU)
+    pump(qapp)
+    card = win.current_page()
+    rows = [b.text() for b in card.findChildren(QPushButton) if b.text() != "Close"]
+    assert rows == _menu_texts(win) and win.modal.showing
+
+    next(b for b in card.findChildren(QPushButton) if b.text() == "Refresh library").click()
+    pump(qapp)
+    assert refreshed == [1] and win.current_page() is win.library
+
+
+def test_b_closes_the_menu_card_and_down_reaches_its_close_button(win, qapp):
+    win.activateWindow()
+    pump(qapp)
+    win.on_pad(gamepad.MENU)
+    pump(qapp)
+    card = win.current_page()
+    assert QApplication.focusWidget() is card.first and card.first.text() == "Settings"
+
+    seen = []
+    for _ in range(12):
+        win.on_pad(gamepad.DOWN)
+        for _ in range(3):
+            pump(qapp)
+        seen.append(QApplication.focusWidget())
+    assert win.modal.close_button in seen
+
+    win.on_pad(gamepad.BACK)
+    for _ in range(3):
+        pump(qapp)
+    assert win.current_page() is win.library
 
 
 def test_the_menu_rows_do_what_they_say(win, qapp, monkeypatch):
@@ -1434,12 +1530,14 @@ def test_start_and_ctrl_comma_open_the_user_menu_on_its_first_row_and_the_guide_
     from mog_client.gui import legend
 
     win.on_pad(gamepad.MENU)  # Start
-    assert win.user_menu.isVisible() and win.user_menu.activeAction().text() == "Settings"
-    win.user_menu.hide()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.UserMenuPage) and win.current_page().first.text() == "Settings"
+    win.back()
 
     win._shortcut_menu()  # what Ctrl+, and Ctrl+U run
-    assert win.user_menu.isVisible() and win.user_menu.activeAction().text() == "Settings"
-    win.user_menu.hide()
+    pump(qapp)
+    assert isinstance(win.current_page(), gui.UserMenuPage) and win.current_page().first.text() == "Settings"
+    win.back()
 
     entry = next(e for e in legend.LEGENDS[legend.LIBRARY] if e.label == "Menu")
     assert entry.pad == ("start",) and entry.keys == ("ctrl", "comma")
@@ -1642,7 +1740,9 @@ def test_the_sidebar_lists_never_scroll_sideways_and_their_rows_are_as_wide_as_w
 def test_the_library_chosen_in_the_sidebar_is_kept_for_the_next_visit_and_the_next_start(win, qapp):
     libraries = [{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}]
     win.library.set_libraries(libraries)
-    win.library.libs.setCurrentRow(2)  # Restricted
+    win.library.libs.setCurrentRow(2)  # Restricted: the pad is on it, nothing is chosen yet
+    assert win.library.library_filter is None
+    win.library.libs.itemActivated.emit(win.library.libs.item(2))  # A
     pump(qapp)
     assert win.library.library_filter == 2 and load_settings().library_filter == 2
 
@@ -1680,13 +1780,20 @@ def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_al
     monkeypatch.setattr(QApplication, "activeWindow", staticmethod(lambda: win))
     win.activateWindow()
     library = win.library
+    pump(qapp)
+    pump(qapp)
+    library.show_loading(False)
     if not library.sidebar.isVisibleTo(library):
         library.toggle_sidebar()
     win.refresh_legend()
     assert win.legend_context() == legend.LIBRARY
     library.libs.setFocus()
 
-    win.on_pad(gamepad.BACK)  # B
+    win.on_pad(gamepad.BACK)  # B from the sidebar is back to the games, the sidebar stays
+    pump(qapp)
+    assert library.sidebar.isVisibleTo(library) and library.grid.hasFocus() and win.current_page() is library
+
+    win.on_pad(gamepad.BACK)  # B from the games closes it
     pump(qapp)
     assert not library.sidebar.isVisibleTo(library) and win.current_page() is library
     assert win.legend_context() == legend.LIBRARY_ALONE
@@ -1697,6 +1804,7 @@ def test_back_closes_the_sidebar_on_the_pad_and_the_keyboard_and_is_then_left_al
     assert win.current_page() is library and not library.sidebar.isVisibleTo(library)
 
     library.toggle_sidebar()
+    library.grid.setFocus()
     QTest.keyClick(library.grid, Qt.Key_Escape)  # Esc is the same key
     pump(qapp)
     assert not library.sidebar.isVisibleTo(library)
@@ -1760,7 +1868,7 @@ def _rich_game(win, monkeypatch):
     monkeypatch.setattr(win.app, "fetch_images", lambda urls, gid: None)
     game = {
         "id": 41,
-        "name": "Final Fantasy Tactics: The Ivalice Chronicles",
+        "name": "Crystal Tactics: The Verdant Chronicles of the Far Reaches",
         "library_id": None,
         "igdb_id": 5,
         "summary": "A long description of the game. " * 30,
@@ -1840,7 +1948,7 @@ def test_a_long_title_is_cut_short_instead_of_holding_the_window_wide(win, qapp,
     _rich_game(win, monkeypatch)
     win.show_game(41)
     _settle(win, qapp, 800, 600)
-    assert win.title.text() == "Final Fantasy Tactics: The Ivalice Chronicles"  # the title is kept whole
+    assert win.title.text() == "Crystal Tactics: The Verdant Chronicles of the Far Reaches"  # the title is kept whole
     assert win.title.width() < win.title.fontMetrics().horizontalAdvance(win.title.text())  # and drawn cut short here
     assert "..." in QLabel.text(win.title) or "\u2026" in QLabel.text(win.title)
 
@@ -1990,7 +2098,7 @@ def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_h
     monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
     asked = []
     monkeypatch.setattr(win.app, "load_installers", lambda gid: asked.append(gid))
-    win.app.set_games([{"id": 41, "name": "Gothic II", "fs_name": "Gothic II", "library_id": None, "igdb_id": None}])
+    win.app.set_games([{"id": 41, "name": "Amber Keep II", "fs_name": "Amber Keep II", "library_id": None, "igdb_id": None}])
     win.show_game(41)
     pump(qapp)
     page = win.current_page()
@@ -2003,13 +2111,13 @@ def test_an_install_the_server_cannot_choose_an_installer_for_opens_the_picker_h
     picker = win.current_page()
     assert isinstance(picker, gui.InstallerPickerPage) and asked == [41]
     assert not win.overlay.showing  # no message sending the user to the server
-    picker.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
+    picker.on_installers(41, [{"path": "Setup/amberkeep2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
     assert "could not tell which installer" in picker.status.text()
     rows = _rows(picker)
-    assert any("gothic2.exe" in r for r in rows)
+    assert any("amberkeep2.exe" in r for r in rows)
 
-    picker.choose(picker.list.item(_index_of(picker, "Setup/gothic2.exe")))
-    assert started == [(41, {"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
+    picker.choose(picker.list.item(_index_of(picker, "Setup/amberkeep2.exe")))
+    assert started == [(41, {"path": "Setup/amberkeep2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"})]
 
 
 def test_when_the_game_page_is_not_in_front_the_user_is_told_to_open_it(win, qapp, monkeypatch):
@@ -2018,7 +2126,7 @@ def test_when_the_game_page_is_not_in_front_the_user_is_told_to_open_it(win, qap
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
     monkeypatch.setattr(win.app, "load_mods", lambda gid: None)
-    win.app.set_games([{"id": 41, "name": "Gothic II", "library_id": None, "igdb_id": None}])
+    win.app.set_games([{"id": 41, "name": "Amber Keep II", "library_id": None, "igdb_id": None}])
     win.show_game(41)
     pump(qapp)
     page = win.current_page()
@@ -2052,8 +2160,8 @@ def test_the_mods_page_shows_each_mods_progress_on_its_own_row_also_when_opened_
 
 
 def test_the_sidebar_rows_wrap_a_long_name_instead_of_cutting_it(win, qapp):
-    win.app.set_games([{"id": 7, "name": "Gothic II: The Chronicles of Myrtana: Archolos Extended Edition", "igdb_id": None}])
-    win.app.mod_jobs[(7, "Gothic Online multiplayer mod for the Night of the Raven")] = ("Downloading", 70)
+    win.app.set_games([{"id": 7, "name": "Amber Keep II: The Chronicles of Veldor: Aurelian Extended Edition", "igdb_id": None}])
+    win.app.mod_jobs[(7, "Amber Keep Online multiplayer mod for the Night of the Crow")] = ("Downloading", 70)
     win.library.update_active()
     qapp.processEvents()
 
@@ -3384,7 +3492,7 @@ def test_a_game_without_a_cover_gets_the_grey_controller_in_the_grid_and_on_its_
 def test_a_game_page_that_was_already_built_follows_an_install_that_starts_elsewhere(win, qapp, monkeypatch):
     monkeypatch.setattr(win.app, "fetch_header_art", lambda game: None)
     monkeypatch.setattr(win.app, "load_size", lambda gid: None)
-    win.app.set_games([{"id": 92, "name": "Olden Era", "library_id": None}])
+    win.app.set_games([{"id": 92, "name": "Gilded Era", "library_id": None}])
     win.show_game(92)
     pump(qapp)
     page = win.current_page()
@@ -3949,7 +4057,7 @@ def test_ok_and_the_cards_close_button_sit_in_one_row_and_it_says_back_over_anot
     _rich_game(win, monkeypatch)
     win.show_game(41)
     win.push(gui.SavesOptionsPage(win, win.current_page(), rec))
-    win.choose("Restore which save?", "Put a saved version back.", [("karasu: 2026-10-10 20:25", 1)], lambda _v: None)
+    win.choose("Restore which save?", "Put a saved version back.", [("desktop: 2026-10-10 20:25", 1)], lambda _v: None)
     pump(qapp)
     page = win.current_page()
     ok = next(b for b in page.findChildren(QPushButton) if b.text() == "OK")
@@ -4210,9 +4318,9 @@ def test_the_installer_picker_is_answered_by_ok_not_by_picking_the_entry(win, qa
     game_page, page = _picker_for(win, qapp, monkeypatch)
     started = []
     monkeypatch.setattr(game_page, "start_with", lambda *a, **k: started.append(a))
-    page.on_installers(41, [{"path": "Setup/gothic2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
+    page.on_installers(41, [{"path": "Setup/amberkeep2.exe", "file_size_bytes": 1000, "kind": "exe", "category": "game"}], "")
     rows = [page.list.item(i) for i in range(page.list.count())]
-    row = next(r for r in rows if "gothic2.exe" in page.text_of(r))
+    row = next(r for r in rows if "amberkeep2.exe" in page.text_of(r))
     page.list.setCurrentItem(row)
     page.list.itemActivated.emit(row)
     assert win.current_page() is page and page.ok.isEnabled() and started == []  # only selected
@@ -4874,7 +4982,7 @@ def _install_click(win, qapp, monkeypatch, server, installed=False, games=None):
     monkeypatch.setattr(win.app, "run_bg", run_now)
     started = []
     monkeypatch.setattr(win, "install_game", lambda game, installer=None, then=None, extract=False, steps=None: started.append((installer, steps)))
-    win.app.set_games(games or [{"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": None, "installed": installed}])
+    win.app.set_games(games or [{"id": 41, "name": "Zippy", "fs_name": "Zippy", "library_id": None, "igdb_id": None, "installed": installed}])
     win.show_game(41)
     pump(qapp)
     page = win.current_page()
@@ -4929,8 +5037,8 @@ def test_a_failed_lookup_never_stops_the_install(win, qapp, monkeypatch):
 
 def _two_versions():
     return [
-        {"id": 41, "name": "Jazz", "fs_name": "Jazz", "library_id": None, "igdb_id": 9, "installed": False},
-        {"id": 42, "name": "Jazz GOG", "fs_name": "Jazz GOG", "library_id": None, "igdb_id": 9, "installed": False},
+        {"id": 41, "name": "Zippy", "fs_name": "Zippy", "library_id": None, "igdb_id": 9, "installed": False},
+        {"id": 42, "name": "Zippy GOG", "fs_name": "Zippy GOG", "library_id": None, "igdb_id": 9, "installed": False},
     ]
 
 
@@ -5214,7 +5322,7 @@ def test_select_without_a_game_on_the_grid_is_still_the_user_menu(win, qapp, tmp
     assert win.legend_context() in (legend.LIBRARY, legend.LIBRARY_ALONE)
     win.on_pad_event(gamepad.ACCOUNT)
     pump(qapp)
-    assert win.current_page() is win.library  # no Options page, the menu under the user's picture instead
+    assert isinstance(win.current_page(), gui.UserMenuPage)  # no Options page, the user menu instead
 
 
 def test_a_game_page_opens_on_its_first_button_and_the_tab_rotation_stops_on_the_cover(win, qapp, tmp_path, monkeypatch):
@@ -5888,7 +5996,7 @@ def test_notification_rows_wrap_to_the_list_and_never_scroll_sideways(win, qapp)
 def test_ok_with_a_pasted_path_not_yet_entered_opens_that_folder_instead_of_taking_the_old_one(win, qapp, tmp_path):
     """A path pasted in the folder picker and OK pressed before Enter must not take the folder it was opened in: the
     game was once added from the home folder that way."""
-    game = tmp_path / "Games" / "Zelda" / "Harkinian"
+    game = tmp_path / "Games" / "Quest" / "Remix"
     game.mkdir(parents=True)
     picked = []
     win.push(gui.BrowsePage(win, tmp_path, picked.append, folders=True))
@@ -6027,3 +6135,235 @@ def test_the_picker_that_takes_anything_lists_every_file_and_picks_a_file_or_the
     page.accept()
 
     assert picked == [str(tmp_path), str(tmp_path / "config.ini")]
+
+
+def _focus_in(win, widget):
+    focus = QApplication.focusWidget()
+    return focus is not None and (focus is widget or widget.isAncestorOf(focus))
+
+
+def test_l2_opens_the_sidebar_then_focuses_it_then_closes_it(win, qapp):
+    library = win.library
+    library.show_loading(False)  # the games, not Mog at work
+    win.activateWindow()
+    pump(qapp)
+    pump(qapp)
+    library.sidebar.setVisible(False)
+    library.grid.setFocus()
+    pump(qapp)
+
+    win.on_pad(gamepad.TRIGGER_L)  # closed: opens, and the pad is on it
+    pump(qapp)
+    assert library.sidebar.isVisible() and _focus_in(win, library.sidebar)
+
+    library.grid.setFocus()  # open but the pad is on the games: L2 goes to the sidebar, it does not close it
+    pump(qapp)
+    win.on_pad(gamepad.TRIGGER_L)
+    pump(qapp)
+    assert library.sidebar.isVisible() and _focus_in(win, library.sidebar)
+
+    win.on_pad(gamepad.TRIGGER_L)  # the pad is on it: closes
+    pump(qapp)
+    assert not library.sidebar.isVisible() and library.grid.hasFocus()
+
+
+def test_back_from_the_sidebar_is_back_to_the_games_and_from_the_games_it_closes_the_sidebar(win, qapp):
+    library = win.library
+    library.show_loading(False)  # the games, not Mog at work
+    win.activateWindow()
+    pump(qapp)
+    pump(qapp)
+    library.sidebar.setVisible(True)
+    library.libs.setFocus()
+    pump(qapp)
+
+    win.on_pad(gamepad.BACK)
+    for _ in range(3):
+        pump(qapp)
+    assert library.sidebar.isVisible() and library.grid.hasFocus() and win.current_page() is library
+
+    win.on_pad(gamepad.BACK)
+    for _ in range(3):
+        pump(qapp)
+    assert not library.sidebar.isVisible() and win.current_page() is library
+
+
+def test_the_sidebar_row_the_pad_is_on_is_told_from_the_one_that_is_only_chosen(win, qapp):
+    library = win.library
+    library.sidebar.setVisible(True)
+    library.set_libraries([{"id": 1, "name": "Retro"}, {"id": 2, "name": "Modern"}])
+    win.activateWindow()
+    library.grid.setFocus()
+    pump(qapp)
+    assert library.libs.property("held") is not True
+
+    library.libs.setFocus()
+    pump(qapp)
+    assert library.libs.property("held") is True
+
+    library.sorts.setFocus()
+    pump(qapp)
+    assert library.libs.property("held") is False and library.sorts.property("held") is True
+
+
+def test_the_pad_reaches_close_on_a_card_opened_from_another_card(win, qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(gui.sys, "platform", "linux")
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {})
+    rec = _game_record(tmp_path, "g.exe")
+    _rich_game(win, monkeypatch)
+    win.show_game(41)
+    options = gui.OptionsPage(win, win.current_page(), rec)
+    win.push(options)
+    pump(qapp)
+    win.activateWindow()
+    next(b for b in options.findChildren(QPushButton) if b.text() == "Linux Options").click()
+    pump(qapp)
+    win.current_page().focus_default()
+    pump(qapp)
+
+    seen = []
+    for _ in range(20):
+        win.on_pad(gamepad.DOWN)
+        for _ in range(3):
+            pump(qapp)
+        seen.append(QApplication.focusWidget())
+    assert win.modal.close_button in seen
+
+
+def test_down_from_the_media_strip_reaches_the_buttons_even_after_they_were_rebuilt(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.resize(1400, 1000)
+    pump(qapp)
+    win.show_game(41)
+    page = win.current_page()
+    pump(qapp)
+    win.activateWindow()
+    shot = QPixmap(300, 200)
+    shot.fill(Qt.red)
+    for url in page.shot_urls:
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        shot.save(buf, "PNG")
+        page._on_image(url, bytes(buf.data()))
+    page.rebuild()  # the buttons are made again, after everything else in the focus chain
+    pump(qapp)
+    page.shots.setFocus()
+    pump(qapp)
+
+    win.on_pad(gamepad.DOWN)
+    pump(qapp)
+    assert QApplication.focusWidget() is page.first
+
+
+def _side_ready(win, qapp):
+    library = win.library
+    library.show_loading(False)
+    library.sidebar.setVisible(True)
+    library.set_libraries([{"id": 1, "name": "Games"}, {"id": 2, "name": "Restricted"}])
+    win.activateWindow()
+    pump(qapp)
+    pump(qapp)
+    return library
+
+
+def test_moving_over_the_libraries_chooses_nothing_and_a_does(win, qapp):
+    library = _side_ready(win, qapp)
+    library.libs.setFocus()
+    pump(qapp)
+
+    win.on_pad(gamepad.DOWN)
+    win.on_pad(gamepad.DOWN)
+    pump(qapp)
+    assert library.libs.currentRow() == 2 and library.library_filter is None  # the pad is on Restricted
+
+    win.on_pad(gamepad.ACCEPT)
+    pump(qapp)
+    assert library.library_filter == 2
+    assert [library.libs.item(i).data(gui.ROLE_ON) for i in range(3)] == [False, False, True]
+
+
+def test_down_from_the_last_row_of_the_sidebar_goes_round_to_the_top_and_up_goes_to_the_bottom(win, qapp):
+    library = _side_ready(win, qapp)
+    last = library.sorts
+    last.setFocus()
+    pump(qapp)
+    last.setCurrentRow(last.count() - 1)
+
+    win.on_pad(gamepad.DOWN)
+    pump(qapp)
+    assert QApplication.focusWidget() is library.libs_section.heading  # no installs running: the first control
+
+    win.on_pad(gamepad.UP)
+    pump(qapp)
+    assert QApplication.focusWidget() is last and last.currentRow() == last.count() - 1
+
+
+def test_the_rows_of_active_installs_take_the_focus_and_show_where_the_pad_is(win, qapp):
+    library = _side_ready(win, qapp)
+    win.app.set_games([{"id": 5, "name": "Gamma", "library_id": None}])
+    win.app.installs[5] = threading.Event()
+    library.update_active()
+    pump(qapp)
+
+    win.on_pad(gamepad.TRIGGER_L)  # the pad is on the games: onto the sidebar, whose first list is the installs
+    pump(qapp)
+    assert QApplication.focusWidget() is library.installs and library.installs.currentRow() == 0
+
+    library.libs_section.heading.setFocus()
+    win.on_pad(gamepad.UP)  # from the Libraries heading, up to the installs' last row
+    pump(qapp)
+    assert QApplication.focusWidget() is library.installs
+    win.app.installs.clear()
+
+
+def test_the_arrows_on_a_games_page_go_round_the_buttons_and_up_reaches_the_media(win, qapp, monkeypatch):
+    _rich_game(win, monkeypatch)
+    win.resize(1400, 1000)
+    pump(qapp)
+    win.show_game(41)
+    page = win.current_page()
+    pump(qapp)
+    win.activateWindow()
+    pump(qapp)
+    shot = QPixmap(300, 200)
+    shot.fill(Qt.red)
+    for url in page.shot_urls:
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        shot.save(buf, "PNG")
+        page._on_image(url, bytes(buf.data()))
+    page.focus_default()
+    pump(qapp)
+    buttons = [page.buttons.itemAt(i).widget() for i in range(page.buttons.count()) if page.buttons.itemAt(i).widget()]
+    assert len(buttons) >= 2 and QApplication.focusWidget() is buttons[0]
+
+    for _ in range(len(buttons) + 1):  # Right never leaves the buttons: it comes round to the first
+        win.on_pad(gamepad.RIGHT)
+        for _ in range(3):
+            pump(qapp)
+        assert QApplication.focusWidget() in buttons
+    assert QApplication.focusWidget() is buttons[1 % len(buttons)]
+
+    win.on_pad(gamepad.UP)
+    for _ in range(3):
+        pump(qapp)
+    assert QApplication.focusWidget() is page.shots
+
+    win.on_pad(gamepad.DOWN)
+    for _ in range(3):
+        pump(qapp)
+    assert QApplication.focusWidget() is page.first
+
+
+def test_r2_from_the_sidebar_goes_to_the_games_and_leaves_the_sidebar_open(win, qapp):
+    library = _side_ready(win, qapp)
+    win.search.setText("mario")
+    library.libs.setFocus()
+    pump(qapp)
+
+    win.on_pad(gamepad.TRIGGER_R)
+    pump(qapp)
+    assert library.sidebar.isVisible() and library.grid.hasFocus() and win.search.text() == "mario"
+
+    win.on_pad(gamepad.TRIGGER_R)  # on the games it is what it was: it clears the search
+    assert win.search.text() == ""
