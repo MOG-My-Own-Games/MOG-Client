@@ -1,4 +1,4 @@
-"""The newest Proton-GE release of each major version (GE-Proton8-32, GE-Proton9-27, GE-Proton10-N, ...), which umu and
+"""The newest Proton-GE release of each major version (GE-Proton7-55, GE-Proton8-32, GE-Proton9-27, GE-Proton10-N, ...), which umu and
 Faugus download by name on first use, and the few other builds games are known to need (`EXTRA`). An old game often runs better on an old major, and the last release of a major is
 the one that is usually right. Stdlib only."""
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 RELEASES_URL = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=100"
 # Majors that are finished, so the list does not depend on the release list reaching back that far.
-FINISHED = {8: "GE-Proton8-32", 9: "GE-Proton9-27"}
+FINISHED = {7: "GE-Proton7-55", 8: "GE-Proton8-32", 9: "GE-Proton9-27"}
 # Releases that are no major's last, offered too: some games need exactly one (UMU-Proton, from Open-Wine-Components, for the
 # Proton 9.0 line). Oldest first, like the rest; they are downloaded when chosen.
 EXTRA = ("UMU-Proton-9.0-2", "UMU-Proton-9.0-4e")

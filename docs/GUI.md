@@ -94,7 +94,7 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       (Left and Right move between the lists). Picking only selects: **OK** applies the engine and version, **Default**
       selects the default engine and version (apply them with OK), and Back leaves without changing anything.
       - Faugus, umu and Proton run Proton builds: the Default, the builds on this device (Steam's library,
-        `compatibilitytools.d`) and the last Proton-GE of every major (GE-Proton8-32, GE-Proton9-27, ...; the list comes
+        `compatibilitytools.d`) and the last Proton-GE of every major (GE-Proton7-55, GE-Proton8-32, GE-Proton9-27, ...; the list comes
         from GitHub, kept for a day), as an old game often runs best on an old major, and a few other builds some games
         need exactly: UMU-Proton-9.0-2 and UMU-Proton-9.0-4e (the Proton 9.0 line, from the umu-proton releases). Any
         other Proton-GE or UMU-Proton release a game is pinned to on the server (GE-Proton8-4, say) is downloaded too, by
