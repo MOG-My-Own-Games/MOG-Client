@@ -214,6 +214,10 @@ saves to back up, so its log is sent apart, whenever the launch settings could n
 minutes of starting (or never showed up), with winetricks' and winecfg's output (`tool-<id>.log`) added. The
 server keeps the newest one per device under Profile > My devices > Log.
 
+To see why a game dies with no message, have Proton write its own debug log: start the client with `MOG_PROTON_LOG=1`, or create an
+empty file `proton-log` in the client's data folder (for a client started from Steam). Each game then starts with `PROTON_LOG=1` in
+its own folder, and the end of the newest `steam-*.log` there is sent with the rest. Off by default: the log is large and slows the game.
+
 ## The library marks
 
 A game whose files are gone from the server but whose saves are kept has an amber corner and a floppy disk; a game added from

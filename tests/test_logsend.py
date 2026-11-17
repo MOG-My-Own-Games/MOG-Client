@@ -104,3 +104,15 @@ def test_a_machine_the_server_does_not_know_yet_or_that_fails_sends_nothing_and_
 
     monkeypatch.setattr(devices, "known_device", broken)
     assert logsend.send_for_game(Server(), Settings(upload_logs=True), 5) is False
+
+
+def test_the_newest_proton_log_of_the_game_folder_goes_with_the_game_log(logs, monkeypatch, tmp_path):
+    folder = tmp_path / "game"
+    folder.mkdir()
+    (folder / "steam-1.log").write_text("proton says\n")
+    monkeypatch.setattr(config, "load_library", lambda: {5: SimpleNamespace(install_dir=str(folder))})
+
+    text = logsend.collect(5)
+
+    assert "--- steam-1.log ---" in text and text.index("game output") < text.index("proton says")
+    assert "steam-" not in logsend.collect(None)

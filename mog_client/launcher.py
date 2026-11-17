@@ -574,10 +574,12 @@ def launch_command(
     program: str | None = None,
     args: tuple[str, ...] = (),
     offline: bool = False,
+    proton_log: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Command + extra environment that runs the game's chosen executable, or, with `program` (winecfg, regedit), that
     program in the game's prefix through the same engine. `offline` keeps umu from looking for a newer Steam Linux Runtime
-    (what makes it slow to start without internet); a launch script written for Steam or the desktop never passes it."""
+    (what makes it slow to start without internet); a launch script written for Steam or the desktop never passes it.
+    `proton_log` has Proton write its own debug log (`steam-*.log`) into the game's folder, which `logsend` sends along."""
     if program is None and not game.executable:
         raise RuntimeError("no executable chosen for this game")
     if program is None:
@@ -610,6 +612,8 @@ def launch_command(
     env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game), **language}
     if offline:
         env["UMU_RUNTIME_UPDATE"] = "0"  # read by umu and Faugus; Wine and Proton return their own env below
+    if proton_log and program is None and launcher in ("faugus", "umu", "proton"):
+        env.update(PROTON_LOG="1", PROTON_LOG_DIR=str(game.install_dir))  # a folder the engine can write to: the prefix is in it
     build, _problem = resolve_proton(game.proton, launcher)
     if offline and launcher == "umu" and not (build and Path(build).is_dir()):
         build = local_ge_proton() or build  # "GE-Proton" or a release not here would send umu looking for it online
@@ -627,6 +631,7 @@ def launch_command(
             "STEAM_COMPAT_DATA_PATH": str(prefix),
             "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
             **language,
+            **{k: v for k, v in env.items() if k.startswith("PROTON_LOG")},
         }
     if launcher == "faugus":
         if eaten := faugus_takes_as_env(args):
@@ -726,6 +731,13 @@ def host_environ() -> dict[str, str]:
     return env
 
 
+def proton_log_requested() -> bool:
+    """Whether to have Proton write its debug log for the games started from here: the variable MOG_PROTON_LOG, or an empty
+    file `proton-log` in the data folder (for a client started from Steam, where there is no variable to set). Off by default:
+    the log is large and slows a game down."""
+    return bool(os.environ.get("MOG_PROTON_LOG")) or (data_dir() / "proton-log").exists()
+
+
 def launch_log_path(game: InstalledGame) -> Path:
     return data_dir() / "logs" / f"launch-{game.game_id}.log"
 
@@ -752,7 +764,7 @@ def _spawn(
 
 def launch(game: InstalledGame, preference: str = "auto") -> subprocess.Popen:
     """Start the game through its launcher, detached, with the launcher's output in a log file."""
-    cmd, extra = launch_command(game, preference, offline=connectivity.is_offline())
+    cmd, extra = launch_command(game, preference, offline=connectivity.is_offline(), proton_log=proton_log_requested())
     return _spawn(game, cmd, extra, launch_log_path(game))
 
 

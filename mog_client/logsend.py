@@ -15,6 +15,7 @@ from mog_client.version import __version__
 
 CLIENT_LOG_BYTES = 400 * 1024
 GAME_LOG_BYTES = 100 * 1024
+PROTON_LOG_BYTES = 300 * 1024  # the end of Proton's debug log: what the game did before it stopped
 MIN_GAP = 30.0  # seconds between two uploads: a start-up check over many games must not send the log for each
 
 _lock = threading.Lock()
@@ -36,6 +37,16 @@ def tail(path: Path, limit: int) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _proton_log(game_id: int) -> tuple[str, str] | None:
+    """The newest `steam-*.log` Proton left in the game's folder, as (name, its end)."""
+    from mog_client.config import load_library
+
+    rec = load_library().get(game_id)
+    found = sorted(Path(rec.install_dir).glob("steam-*.log"), key=lambda p: p.stat().st_mtime) if rec and rec.install_dir else []
+    text = tail(found[-1], PROTON_LOG_BYTES) if found else ""
+    return (found[-1].name, text) if text else None
+
+
 def collect(game_id: int | None = None) -> str:
     """The client's log (the older copy first when the newest is short), then the game's own launch log."""
     logs = data_dir() / "logs"
@@ -45,6 +56,8 @@ def collect(game_id: int | None = None) -> str:
         parts += [f"--- launch-{game_id}.log ---", launch]
     if game_id is not None and (tool := tail(logs / f"tool-{game_id}.log", GAME_LOG_BYTES)):  # winetricks, winecfg, regedit
         parts += [f"--- tool-{game_id}.log ---", tool]
+    if game_id is not None and (proton := _proton_log(game_id)):  # only when `launcher.proton_log_requested`
+        parts += [f"--- {proton[0]} ---", proton[1]]
     return "\n".join(parts)
 
 

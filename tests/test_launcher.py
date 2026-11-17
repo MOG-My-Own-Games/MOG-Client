@@ -1,3 +1,4 @@
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -434,3 +435,29 @@ def test_the_launch_script_commands_never_carry_the_offline_variable(monkeypatch
     connectivity.set_forced(True)
     cmd, extra = launcher.launch_command(_game(tmp_path), require_umu=False)  # what a Steam or desktop entry runs
     assert "UMU_RUNTIME_UPDATE" not in extra
+
+
+def test_proton_log_is_asked_of_the_engines_only_when_requested(monkeypatch, tmp_path):
+    umu = tmp_path / "umu-run"
+    umu.write_text("")
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-run"], str(umu), False))
+    game = _game(tmp_path)
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
+    assert "PROTON_LOG" not in launcher.launch_command(game)[0][-1]
+    assert f"PROTON_LOG=1 PROTON_LOG_DIR={shlex.quote(str(game.install_dir))}" in launcher.launch_command(game, proton_log=True)[0][-1]
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "umu")
+    extra = launcher.launch_command(game, require_umu=False, proton_log=True)[1]
+    assert extra["PROTON_LOG"] == "1" and extra["PROTON_LOG_DIR"] == str(game.install_dir)
+
+
+def test_proton_log_is_switched_on_by_the_variable_or_the_marker_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "data_dir", lambda: tmp_path)
+    monkeypatch.delenv("MOG_PROTON_LOG", raising=False)
+    assert not launcher.proton_log_requested()
+    (tmp_path / "proton-log").write_text("")
+    assert launcher.proton_log_requested()
+    (tmp_path / "proton-log").unlink()
+    monkeypatch.setenv("MOG_PROTON_LOG", "1")
+    assert launcher.proton_log_requested()
