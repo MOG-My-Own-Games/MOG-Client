@@ -4497,15 +4497,17 @@ def run_uninstall(
 
         def finish(leftovers: list[str], cache_error: str, had_cache: bool = True) -> None:
             app.jobs.pop(rec.game_id, None)
-            if cache_error:
-                app.bridge.error.emit(f"Could not delete the server cache: {cache_error}")
-            if leftovers:
-                win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
-            else:
-                cache = " and its server cache deleted" if had_cache else " (it had no cache on the server)"
-                win.message(f"{rec.name} uninstalled" + (cache if and_server_cache and not cache_error else ""), "info")
-            win.refresh_items()
-            on_change()
+            try:
+                if cache_error:
+                    app.bridge.error.emit(f"Could not delete the server cache: {cache_error}")
+                if leftovers:
+                    win.message(f"Could not remove everything, delete by hand: {', '.join(leftovers)}", "error")
+                else:
+                    cache = " and its server cache deleted" if had_cache else " (it had no cache on the server)"
+                    win.message(f"{rec.name} uninstalled" + (cache if and_server_cache and not cache_error else ""), "info")
+                win.refresh_items()
+            finally:
+                on_change()  # whatever went wrong above, the button must stop saying "Uninstalling..."
 
         def failed(message: str) -> None:
             app.jobs.pop(rec.game_id, None)

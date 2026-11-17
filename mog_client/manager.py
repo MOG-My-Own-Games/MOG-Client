@@ -827,9 +827,10 @@ def uninstall(rec: InstalledGame, delete_prefix: bool = False) -> list[str]:
         leftovers += left
         others.append(other)
     if not leftovers:
-        lib = load_library()
-        lib.pop(rec.game_id, None)
-        save_library(lib)
+        with _library_lock:  # a read-modify-write on another thread must not write the record back after this
+            lib = load_library()
+            lib.pop(rec.game_id, None)
+            save_library(lib)
         forget_game(rec.game_id)
         for folder in [install, *others]:
             prune_empty(folder, load_settings().install_roots)  # a prefix kept with nothing in it, or a folder left empty
