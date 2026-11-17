@@ -215,8 +215,8 @@ minutes of starting (or never showed up), with winetricks' and winecfg's output 
 server keeps the newest one per device under Profile > My devices > Log.
 
 To see why a game dies with no message, have Proton write its own debug log: start the client with `MOG_PROTON_LOG=1`, or create an
-empty file `proton-log` in the client's data folder (for a client started from Steam). Each game then starts with `PROTON_LOG=1` in
-its own folder, and the end of the newest `steam-*.log` there is sent with the rest. Off by default: the log is large and slows the game.
+empty file `proton-log` in the client's data folder. Each game started with the client's own Play button then runs with `PROTON_LOG=1`
+(not one started from its launch script, desktop entry or Steam shortcut, whose command is already written), and the end of the newest `steam-*.log` there is sent with the rest. Off by default: the log is large and slows the game.
 
 ## The library marks
 
