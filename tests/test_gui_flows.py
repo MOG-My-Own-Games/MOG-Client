@@ -6721,3 +6721,36 @@ def test_details_show_the_games_and_the_size_of_a_build(win, qapp, monkeypatch, 
     pump(qapp)
 
     assert "2.0 KiB" in told[0] and "- Alpha" in told[0] and "GE-Proton7-17" in told[0]
+
+
+def test_looking_up_every_release_shows_a_bar_meanwhile_and_a_second_press_does_not_ask_again(win, qapp, monkeypatch):
+    jobs, pushed = [], []
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: jobs.append((fn, on_error)))
+    monkeypatch.setattr(gui.protonge, "every", lambda *a, **k: ["GE-Proton7-17"])
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {})
+    monkeypatch.setattr(win, "push", pushed.append)
+
+    win.choose_proton_build(lambda name: None)
+    win.choose_proton_build(lambda name: None)  # OK pressed again while GitHub is being asked
+    pump(qapp)
+
+    mine = [fn for fn, _on_error in jobs if "choose_proton_build" in fn.__qualname__]  # the window has jobs of its own
+    assert win.busy.showing and len(mine) == 1 and pushed == []
+    mine[0]()
+    pump(qapp)
+    assert not win.busy.showing and isinstance(pushed[0], gui.ChoicePage)
+
+
+def test_a_failed_lookup_of_every_release_hides_the_bar_and_says_so(win, qapp, monkeypatch):
+    told = []
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: on_error("boom"))
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: told.append(text))
+
+    win.choose_proton_build(lambda name: None)
+    pump(qapp)
+
+    assert not win.busy.showing and told == ["boom"]
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: None)
+    win.choose_proton_build(lambda name: None)  # asking again is possible after a failure
+    assert win.busy.showing
+    win.hide_busy()

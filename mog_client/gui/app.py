@@ -7672,23 +7672,37 @@ class MainWindow(QMainWindow):
         """The list of every Proton-GE and UMU-Proton release (all the minor versions), newest first. The one picked is installed
         when this device lacks it, and `on_installed(name)` follows."""
 
+        if getattr(self, "_looking_up_versions", False):
+            return  # a second press while the first is still asking GitHub
+        self._looking_up_versions = True
+        self.show_busy("Looking up versions", "Proton-GE and UMU-Proton")  # the first time it takes a few requests
+        self.busy_waiting("Asking GitHub...")
+
         def pick(name: str) -> None:
             self.install_proton_build(name, on_installed)
+
+        def shown(options: list) -> None:
+            self._looking_up_versions = False
+            self.hide_busy()
+            self.choose(
+                "All versions",
+                "Every Proton-GE and UMU-Proton release. One that is not on this device is downloaded when you pick it.",
+                options,
+                pick,
+            )
+
+        def failed(message: str) -> None:
+            self._looking_up_versions = False
+            self.hide_busy()
+            self.message(message, "error")
 
         def work() -> None:
             names = protonge.every(data_dir() / "proton-all.json", proton_fetch)
             here = list_proton_builds()
             options = [(f"{name}   (installed)" if name in here else name, name) for name in reversed(names)]
-            self.app.bridge.call.emit(
-                lambda: self.choose(
-                    "All versions",
-                    "Every Proton-GE and UMU-Proton release. One that is not on this device is downloaded when you pick it.",
-                    options,
-                    pick,
-                )
-            )
+            self.app.bridge.call.emit(lambda: shown(options))
 
-        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(lambda: failed(m)))
 
     def pick_copy(self, rec: InstalledGame, title: str, on_pick, with_all: bool = False) -> None:
         """Ask which of a game's copies an action is about (the one in use first); `on_pick` gets the folder, or None for "All of
