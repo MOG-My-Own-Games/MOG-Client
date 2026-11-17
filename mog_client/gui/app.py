@@ -171,6 +171,7 @@ from mog_client.launcher import (
     list_executables,
     list_proton_builds,
     pfx_dir,
+    proton_install_root,
     remember_client,
     selection_problems,
     start_tool,
@@ -179,7 +180,7 @@ from mog_client.progress import RateMeter, format_eta
 from mog_client.saves import devices, importer, runner, sync, watcher
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
-from mog_client import launchargs, launchsettings, logsend, protonge, videos, winetricks
+from mog_client import launchargs, launchsettings, logsend, protonbuilds, protondl, protonge, videos, winetricks
 from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
@@ -2353,6 +2354,17 @@ class SideList(QListWidget):
             super().keyPressEvent(e)
 
 
+SHOW_ALL = "\0all"  # the last row of the versions: it opens the list of every release
+PROTON_ENGINES = ("faugus", "umu", "proton")
+
+
+def proton_fetch(url: str) -> bytes:
+    """GitHub's release lists for the Proton versions on offer; offline, the cached list (or the finished majors) is shown instead."""
+    if not connectivity.internet_ok():
+        raise RuntimeError("no internet connection")
+    return fetch_url(url, timeout=5.0 if connectivity.is_offline() else 30.0)
+
+
 class EnginePage(Page):
     """One game's launch engine on the left and, beside it, what that engine can run: the versions it supports or has
     installed on this device. Picking only selects (Enter moves on to the next control); OK applies both, and Default selects
@@ -2362,9 +2374,10 @@ class EnginePage(Page):
 
     title = "Engine and version"
 
-    def __init__(self, win: "MainWindow", rec: InstalledGame, on_done, releases: list[str] = ()):
+    def __init__(self, win: "MainWindow", rec: InstalledGame, on_done, releases: list[str] = (), on_all=None):
         super().__init__()
         self.win, self.rec, self.on_done, self.releases = win, rec, on_done, list(releases)
+        self.on_all = on_all  # opens the list of every release; it calls `add_version` with the one that was picked and installed
         self.engines = SideList()
         self.versions = SideList()
         for widget in (self.engines, self.versions):
@@ -2385,7 +2398,7 @@ class EnginePage(Page):
         self.versions.hands_down = True
         self.engines.itemActivated.connect(lambda _item: self.versions.setFocus())
         self.engines.sideways.connect(lambda step: self.versions.setFocus() if step > 0 else None)
-        self.versions.itemActivated.connect(lambda _item: self.ok.setFocus())
+        self.versions.itemActivated.connect(self._activated)
         self.versions.sideways.connect(lambda step: self.engines.setFocus() if step < 0 else None)
         self.defaults = QPushButton("Default")
         self.defaults.setToolTip("Select the default engine and its default version")
@@ -2421,6 +2434,26 @@ class EnginePage(Page):
     def _current_version(self, engine: str) -> str:
         return (self.rec.wine if engine == "wine" else self.rec.proton) or ""
 
+    def _activated(self, item: QListWidgetItem) -> None:
+        if item.data(Qt.UserRole) == SHOW_ALL:
+            self.show_all()
+        else:
+            self.ok.setFocus()
+
+    def show_all(self) -> None:
+        if self.on_all is not None:
+            self.on_all(self)
+
+    def add_version(self, name: str) -> None:
+        """A version picked in the list of every release (and installed by now): it is shown with the others and selected."""
+        if name not in self.releases:
+            self.releases.append(name)
+        self._fill_versions()
+        for row in range(self.versions.count()):
+            if self.versions.item(row).data(Qt.UserRole) == name:
+                self.versions.setCurrentRow(row)
+        self.versions.setFocus()
+
     def _fill_versions(self) -> None:
         """What the engine now on the left can run, the game's own choice ticked."""
         engine = self.engine()
@@ -2444,6 +2477,10 @@ class EnginePage(Page):
         if not listed:
             self.versions.addItem("This engine has no versions to pick")
             self.versions.item(0).setFlags(Qt.NoItemFlags)
+        elif engine in PROTON_ENGINES and self.on_all is not None:
+            more = QListWidgetItem("Show all versions...")
+            more.setData(Qt.UserRole, SHOW_ALL)
+            self.versions.addItem(more)
 
     def focus_default(self) -> None:
         self.engines.setFocus()
@@ -2458,6 +2495,9 @@ class EnginePage(Page):
         engine = self.engines.currentItem().data(Qt.UserRole)
         item = self.versions.currentItem()
         version = item.data(Qt.UserRole) if item is not None and item.flags() & Qt.ItemIsEnabled else ""
+        if version == SHOW_ALL:  # not a version: OK on that row opens the list
+            self.show_all()
+            return
         self.win.back()
         self.on_done(engine, version or "")
 
@@ -3296,7 +3336,7 @@ class AboutPage(Page):
 
 
 class SettingsPage(Page):
-    """Settings in tabs (General, Server, Library, Logs); the pad's L1 and R1 switch between them."""
+    """Settings in tabs (General, Server, Library, Engines on Linux, Logs); the pad's L1 and R1 switch between them."""
 
     title = "Settings"
     SAVED_TABS = (0, 1)  # the tabs with fields to save
@@ -3345,9 +3385,14 @@ class SettingsPage(Page):
         self.general = self._general_tab()
         self.server = self._server_tab()
         self.library_tab = self._library_tab()
+        self._engine_rows: list[OptionRow] = []
+        self._engine_releases: list[str] = []  # the shortlist of versions on offer, once looked up
+        self.engines_tab = self._engines_tab() if sys.platform.startswith("linux") else None  # Proton builds are for Linux
         self.tabs.addTab(self.general, "General")
         self.tabs.addTab(self.server, "Server")
         self.tabs.addTab(self.library_tab, "Library")
+        if self.engines_tab is not None:
+            self.tabs.addTab(self.engines_tab, "Engines")
         self.tabs.addTab(self.logview, "Logs")
         self.tabs.currentChanged.connect(self._on_tab)
         self.save_button = QPushButton("Save")
@@ -3364,6 +3409,7 @@ class SettingsPage(Page):
             *self._focus_targets(self.general, enabled_only=False),
             *self._focus_targets(self.server, enabled_only=False),
             *self._focus_targets(self.library_tab, enabled_only=False),
+            *(self._focus_targets(self.engines_tab, enabled_only=False) if self.engines_tab is not None else ()),
             *self.logview.findChildren(QPushButton),
             self.logview.view,
         )
@@ -3671,6 +3717,139 @@ class SettingsPage(Page):
 
         run_uninstall(self.win, rec, False, changed)
 
+    # --- Engines: the Proton builds on this device ---
+
+    def _engines_tab(self) -> MenuView:
+        menu = MenuView()
+        self._engines_menu = menu
+        self._engines_title = menu.section("Proton builds")
+        return menu
+
+    def refresh_engines(self) -> None:
+        """List the builds now, then look up the shortlist of versions on offer (the network, off the interface) and list again."""
+        self.render_engines()
+
+        def work() -> None:
+            releases = protonge.available(data_dir() / "proton-ge.json", proton_fetch)
+            self.win.app.bridge.call.emit(lambda: self._engine_releases_found(releases))
+
+        self.win.app.run_bg(work)
+
+    def _engine_releases_found(self, releases: list[str]) -> None:
+        if releases == self._engine_releases:
+            return
+        self._engine_releases = releases
+        try:
+            self.render_engines()
+        except RuntimeError:  # the page was closed meanwhile
+            pass
+
+    def render_engines(self) -> None:
+        """The same list as the game's Engines page (the builds here, then the ones that can be had), with what uses each and,
+        for a build here, Details and Remove; for the others, Install. One row opens the list of every release."""
+        menu = self._engines_menu
+        focus = QApplication.focusWidget()
+        held = next(
+            (i for i, row in enumerate(self._engine_rows) if focus is not None and (row is focus or row.isAncestorOf(focus))), None
+        )
+        for row in self._engine_rows:
+            menu.remove(row)
+        self._engine_rows = []
+        games = list(load_library().values())
+        builds = {b.name: b for b in protonbuilds.installed()}
+        listed = [v for v in engine_versions("umu", self._engine_releases) if v.key]
+        self._engines_title.setText(f"Proton builds - {len(builds)} installed".upper())
+
+        more = QPushButton("Show all versions...")
+        more.clicked.connect(lambda: self.win.choose_proton_build(lambda _name: self.render_engines()))
+        self._add_engine_row(OptionRow("Install another version", "Pick any Proton-GE or UMU-Proton release, every minor version.", more))
+        for version in listed:
+            using = protonbuilds.used_by(version.key, games)
+            buttons = QWidget()
+            line = QHBoxLayout(buttons)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(8)
+            build = builds.get(version.key)
+            if build is None:
+                install = QPushButton("Install")
+                install.clicked.connect(lambda _=False, n=version.key: self.engine_install(n))
+                line.addWidget(install)
+            else:
+                details = QPushButton("Details")
+                details.clicked.connect(lambda _=False, b=build, u=using: self.engine_details(b, u))
+                line.addWidget(details)
+                if build.removable:
+                    remove = QPushButton("Remove")
+                    remove.setProperty("danger", True)
+                    remove.clicked.connect(lambda _=False, b=build, u=using: self.engine_remove(b, u))
+                    line.addWidget(remove)
+            note = "" if build is not None else "Not installed"
+            row = OptionRow(version.key, note, buttons)
+            row.set_status(self._engine_use(using))
+            self._add_engine_row(row)
+        if held is not None and self._engine_rows:
+            row = self._engine_rows[min(held, len(self._engine_rows) - 1)]
+            (self._focus_targets_of(row) or [row.control])[0].setFocus()
+
+    @staticmethod
+    def _focus_targets_of(row: OptionRow) -> list[QWidget]:
+        return [w for w in (row.control, *row.control.findChildren(QWidget)) if w.focusPolicy() != Qt.NoFocus and not w.isHidden()]
+
+    def _add_engine_row(self, row: OptionRow) -> None:
+        self._engine_rows.append(self._engines_menu.add(row))
+        for widget in (row.control, *row.control.findChildren(QWidget)):
+            widget.installEventFilter(self)  # Up and Down walk through the rows, as on the other tabs
+
+    @staticmethod
+    def _engine_use(using: list[InstalledGame]) -> str:
+        return f"Used by {len(using)} MOG game{'s' if len(using) != 1 else ''}" if using else "No MOG game uses it"
+
+    @staticmethod
+    def _game_names(using: list[InstalledGame]) -> str:
+        return "\n".join(f"- {g.name}" for g in using)
+
+    def engine_install(self, name: str) -> None:
+        self.win.install_proton_build(name, lambda _n: self.render_engines())
+
+    def engine_details(self, build, using: list[InstalledGame]) -> None:
+        """Which MOG games use the build and what it takes (measured off the interface: it is a big folder)."""
+
+        def work() -> None:
+            size = protonbuilds.size(build)
+            text = f"{build.name}\n{build.folder}\nTakes {fmt_bytes(size)}\n\n" + (
+                f"{self._engine_use(using)}:\n{self._game_names(using)}" if using else "No MOG game uses it."
+            )
+            self.win.app.bridge.call.emit(lambda: self.win.message(text, "info", keep=False))
+
+        self.win.app.run_bg(work, on_error=lambda m: self.win.app.bridge.error.emit(m))
+
+    def engine_remove(self, build, using: list[InstalledGame]) -> None:
+        """Ask first, with the MOG games that use it and the reminder that others outside MOG might."""
+        who = f"{self._engine_use(using)}:\n{self._game_names(using)}\n\nThey download it again the next time MOG starts them." if using else (
+            "No MOG game uses it."
+        )
+
+        def go() -> None:
+            def work() -> None:
+                protonbuilds.remove(build)
+                self.win.app.bridge.call.emit(done)
+
+            def done() -> None:
+                self.win.message(f"{build.name} is removed", "info")
+                try:
+                    self.render_engines()
+                except RuntimeError:  # the page was closed meanwhile
+                    pass
+
+            self.win.app.run_bg(work, on_error=lambda m: self.win.app.bridge.error.emit(m))
+
+        self.win.ask(
+            f"Remove {build.name}?\n\n{who}\n\nGames outside MOG (Steam, Faugus, Heroic...) may use it too, and would not start "
+            "with it any more.",
+            go,
+            danger=True,
+        )
+
     def _server_tab(self) -> MenuView:
         menu = MenuView()
         menu.section("MOG-Server")
@@ -3686,6 +3865,8 @@ class SettingsPage(Page):
         self.save_button.setVisible(index in self.SAVED_TABS)
         if self.tabs.pages.widget(index) is self.library_tab:
             self.refresh_library()
+        elif self.engines_tab is not None and self.tabs.pages.widget(index) is self.engines_tab:
+            self.refresh_engines()
         if QApplication.focusWidget() is not self.tabs.tabBar():  # switching tabs from the bar keeps the focus there
             self.focus_default()
         self.win.refresh_legend()
@@ -3759,6 +3940,10 @@ class SettingsPage(Page):
         elif tab is self.library_tab:
             if self.library_tab.rows:  # its first row: the install folders (the games below are rebuilt as they are measured)
                 self.library_tab.rows[0].control.setFocus()
+        elif tab is self.engines_tab:
+            if self.engines_tab.rows:  # the rows are made again as the list is filled in: the first one's first button
+                found = self._focus_targets(self.engines_tab)
+                (found[0] if found else self.tabs.tabBar()).setFocus()
         else:
             self.sync_saves_box.setFocus()
 
@@ -5605,14 +5790,13 @@ class GamePage(Page):
 
             self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
 
-        def fetch(url: str) -> bytes:
-            if not connectivity.internet_ok():
-                raise RuntimeError("no internet connection")  # the cached list, or the finished majors, are shown instead
-            return fetch_url(url, timeout=5.0 if connectivity.is_offline() else 30.0)
-
         def show() -> None:
-            releases = protonge.available(data_dir() / "proton-ge.json", fetch)
-            self.app.bridge.call.emit(lambda: self.win.push(EnginePage(self.win, rec, done, releases)))
+            releases = protonge.available(data_dir() / "proton-ge.json", proton_fetch)
+            self.app.bridge.call.emit(
+                lambda: self.win.push(
+                    EnginePage(self.win, rec, done, releases, on_all=lambda page: self.win.choose_proton_build(page.add_version))
+                )
+            )
 
         self.app.run_bg(show, on_error=lambda m: self.app.bridge.error.emit(m))
 
@@ -7449,6 +7633,62 @@ class MainWindow(QMainWindow):
         self, title: str, text: str, options: list, on_choose, skip: str | None = None, game: int | None = None,
     ) -> None:
         self.push(ChoicePage(self, title, text, options, on_choose, skip, game))
+
+    def install_proton_build(self, name: str, on_done=None) -> None:
+        """Download the Proton-GE or UMU-Proton release `name` into the folder every launcher looks in, with a bar over the
+        window; `on_done(name)` runs once it is there (at once when it already is)."""
+        if name in list_proton_builds():
+            if on_done:
+                on_done(name)
+            return
+        if not connectivity.internet_ok():
+            self.message(f"There is no internet connection: {name} cannot be downloaded now", "warning")
+            return
+        self.show_busy("Downloading", name)
+        last = [0.0]
+
+        def progress(done: int, total: int) -> None:
+            now = time.monotonic()
+            if now - last[0] >= BUSY_EVERY or done >= total:
+                last[0] = now
+                self.app.bridge.call.emit(lambda: self.busy_progress(done, total, size_text(done, total)))
+
+        def finished(error: str | None) -> None:
+            self.hide_busy()
+            if error:
+                self.message(f"Could not fetch {name}: {error}", "error")
+                return
+            self.message(f"{name} is installed", "info")
+            if on_done:
+                on_done(name)
+
+        def work() -> None:
+            protondl.install(name, proton_install_root(), on_progress=progress)
+            self.app.bridge.call.emit(lambda: finished(None))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.call.emit(lambda: finished(m)))
+
+    def choose_proton_build(self, on_installed) -> None:
+        """The list of every Proton-GE and UMU-Proton release (all the minor versions), newest first. The one picked is installed
+        when this device lacks it, and `on_installed(name)` follows."""
+
+        def pick(name: str) -> None:
+            self.install_proton_build(name, on_installed)
+
+        def work() -> None:
+            names = protonge.every(data_dir() / "proton-all.json", proton_fetch)
+            here = list_proton_builds()
+            options = [(f"{name}   (installed)" if name in here else name, name) for name in reversed(names)]
+            self.app.bridge.call.emit(
+                lambda: self.choose(
+                    "All versions",
+                    "Every Proton-GE and UMU-Proton release. One that is not on this device is downloaded when you pick it.",
+                    options,
+                    pick,
+                )
+            )
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.error.emit(m))
 
     def pick_copy(self, rec: InstalledGame, title: str, on_pick, with_all: bool = False) -> None:
         """Ask which of a game's copies an action is about (the one in use first); `on_pick` gets the folder, or None for "All of

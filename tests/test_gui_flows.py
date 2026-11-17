@@ -89,6 +89,8 @@ def test_the_shoulders_switch_settings_tabs_and_the_stick_scrolls_the_log(win, q
     win.on_pad(gamepad.PAGE_NEXT)
     assert name() == "Library"
     win.on_pad(gamepad.PAGE_NEXT)
+    assert name() == "Engines"
+    win.on_pad(gamepad.PAGE_NEXT)
     assert name() == "Logs" and win.legend_context() == "logs"
     pump(qapp)
     bar = page.logview.view.verticalScrollBar()
@@ -98,7 +100,7 @@ def test_the_shoulders_switch_settings_tabs_and_the_stick_scrolls_the_log(win, q
     win.on_pad("scroll:1.000")
     assert bar.value() > end - 60
 
-    for _ in range(4):
+    for _ in range(5):
         win.on_pad(gamepad.PAGE_PREV)
     assert name() == "Logs" and win.legend_context() == "logs"  # wraps round, and About is not a tab any more
 
@@ -1433,7 +1435,7 @@ def test_about_is_in_the_user_menu_under_refresh_between_two_separators_and_not_
 
     win.open_settings()
     tabs = win.current_page().tabs
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Library", "Logs"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["General", "Server", "Library", "Engines", "Logs"]
 
 
 def test_going_offline_by_hand_shows_the_badge_and_keeps_the_server_unasked_until_going_online(win, qapp, monkeypatch):
@@ -3947,8 +3949,11 @@ def test_the_menus_opened_from_a_menu_say_back_and_return_to_it_where_the_first_
 
 
 def _engine_page(win, rec, monkeypatch, engines=("faugus", "umu", "proton", "wine"), releases=()):
+    from mog_client import launcher
+
     monkeypatch.setattr(gui, "available_launchers", lambda: list(engines))
     monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": engines[0])
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: None)  # the label does not depend on how this PC has Faugus
     return gui.EnginePage(win, rec, lambda _e, _v: None, list(releases))
 
 
@@ -4423,7 +4428,7 @@ def test_the_library_tab_holds_the_folders_and_the_launcher_scan_and_lists_games
     win.open_settings()
     page = win.current_page()
     names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-    assert names == ["General", "Server", "Library", "Logs"]
+    assert names == ["General", "Server", "Library", "Engines", "Logs"]
     in_general = {row.title.text() for row in page.general.rows}
     in_library = {row.title.text() for row in page.library_tab.rows}
     assert "Install folders" in in_library and "Install folders" not in in_general
@@ -6549,3 +6554,170 @@ def test_after_the_download_the_bar_starts_over_and_says_it_is_checking_the_file
     assert inside["finish"] == "Finishing up..."
     assert (0, 0, "Verifying the downloaded files (sha1)...") in seen  # the bar is busy until the size is known
     assert 5 not in win.app.stages  # and nothing is left once the install ended
+
+
+def test_the_engine_page_ends_its_versions_with_a_row_that_opens_the_list_of_every_release(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launcher
+    from mog_client.config import InstalledGame
+
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: {"GE-Proton9-27": "a"})
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), launcher="faugus", proton="GE-Proton9-27")
+    monkeypatch.setattr(gui, "available_launchers", lambda: ["faugus", "wine"])
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": "faugus")
+    opened, chosen = [], []
+    page = gui.EnginePage(win, rec, lambda e, v: chosen.append((e, v)), [], on_all=opened.append)
+
+    assert _items(page.versions)[-1] == "Show all versions..."
+    page.versions.setCurrentRow(page.versions.count() - 1)
+    page.versions.itemActivated.emit(page.versions.currentItem())  # Enter on it opens the list
+    page.ok.click()  # and so does OK: the row is not a version to apply
+    assert opened == [page, page] and chosen == []
+
+    page.engines.setCurrentRow(2)  # wine has no Proton builds to browse
+    assert "Show all versions..." not in _items(page.versions)
+
+
+def test_a_version_picked_from_every_release_is_listed_and_selected_in_the_engine_page(win, qapp, monkeypatch, tmp_path):
+    from mog_client import launcher
+    from mog_client.config import InstalledGame
+
+    builds = {"GE-Proton9-27": "a"}
+    monkeypatch.setattr(launcher, "list_proton_builds", lambda: dict(builds))
+    rec = InstalledGame(game_id=4, name="G", install_dir=str(tmp_path), launcher="faugus", proton="GE-Proton9-27")
+    monkeypatch.setattr(gui, "available_launchers", lambda: ["faugus"])
+    monkeypatch.setattr(gui, "detect_launcher", lambda pref="auto": "faugus")
+    page = gui.EnginePage(win, rec, lambda e, v: None, [], on_all=lambda p: None)
+
+    builds["GE-Proton7-17"] = "b"  # installed meanwhile
+    page.add_version("GE-Proton7-17")
+
+    assert page.versions.currentItem().data(gui.Qt.UserRole) == "GE-Proton7-17"
+    assert "GE-Proton7-17" in _items(page.versions) and _items(page.versions)[-1] == "Show all versions..."
+
+
+def test_every_release_is_offered_newest_first_and_the_one_picked_is_installed(win, qapp, monkeypatch):
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui.protonge, "every", lambda *a, **k: ["GE-Proton7-9", "GE-Proton7-17", "UMU-Proton-9.0-2"])
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {"GE-Proton7-17": "x"})
+    pushed, installed = [], []
+    monkeypatch.setattr(win, "push", pushed.append)
+    monkeypatch.setattr(win, "install_proton_build", lambda name, done=None: installed.append(name))
+
+    win.choose_proton_build(lambda name: None)
+    pump(qapp)
+
+    page = pushed[0]
+    assert isinstance(page, gui.ChoicePage)
+    assert [page.list.item(i).text() for i in range(page.list.count())] == [
+        "UMU-Proton-9.0-2", "GE-Proton7-17   (installed)", "GE-Proton7-9",
+    ]
+    monkeypatch.setattr(win, "back", lambda: None)
+    page.list.setCurrentRow(2)
+    page.accept()
+    assert installed == ["GE-Proton7-9"]
+
+
+def test_installing_a_proton_build_downloads_it_then_tells_and_calls_back(win, qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {})
+    monkeypatch.setattr(gui, "proton_install_root", lambda: tmp_path)
+    monkeypatch.setattr(gui.connectivity, "internet_ok", lambda: True)
+    got, told = [], []
+    monkeypatch.setattr(gui.protondl, "install", lambda name, root, on_progress=None: got.append((name, root)))
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: told.append((level, text)))
+
+    done = []
+    win.install_proton_build("GE-Proton7-17", done.append)
+    pump(qapp)
+
+    assert got == [("GE-Proton7-17", tmp_path)] and done == ["GE-Proton7-17"] and told == [("info", "GE-Proton7-17 is installed")]
+    win.hide_busy()
+
+
+def test_a_failed_download_of_a_proton_build_says_why_and_does_not_call_back(win, qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(win.app, "run_bg", lambda fn, on_error=None: _run_catching(fn, on_error))
+    monkeypatch.setattr(gui, "list_proton_builds", lambda: {})
+    monkeypatch.setattr(gui.connectivity, "internet_ok", lambda: True)
+
+    def broken(name, root, on_progress=None):
+        raise RuntimeError("checksum differs")
+
+    monkeypatch.setattr(gui.protondl, "install", broken)
+    told, done = [], []
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: told.append((level, text)))
+
+    win.install_proton_build("GE-Proton7-17", done.append)
+    pump(qapp)
+
+    assert done == [] and told and told[0][0] == "error" and "checksum differs" in told[0][1]
+
+
+def _run_catching(fn, on_error):
+    try:
+        fn()
+    except Exception as e:  # noqa: BLE001 - what run_bg hands to on_error
+        on_error(str(e))
+
+
+def _engines_page(win, monkeypatch, tmp_path, games=()):
+    from mog_client import launcher
+
+    root = tmp_path / "steam"
+    for rel in ("steamapps/common/Proton 9.0", "compatibilitytools.d/GE-Proton7-17"):
+        (root / rel).mkdir(parents=True)
+        (root / rel / "proton").write_text("x" * 2048)
+    monkeypatch.setattr(launcher, "steam_roots", lambda: [root])
+    config.save_library({g.game_id: g for g in games})
+    monkeypatch.setattr(gui, "list_proton_builds", launcher.list_proton_builds)
+    win.open_settings()
+    page = win.current_page()
+    monkeypatch.setattr(page.win.app, "run_bg", lambda fn, on_error=None: fn())
+    monkeypatch.setattr(gui.protonge, "available", lambda *a, **k: ["GE-Proton9-27"])
+    page.refresh_engines()
+    return page
+
+
+def test_the_engines_tab_lists_the_builds_with_what_uses_them_and_what_can_still_be_installed(win, qapp, monkeypatch, tmp_path):
+    games = [gui.InstalledGame(game_id=n, name=f"G{n}", install_dir="/x", state="installed", proton="GE-Proton7-17") for n in (1, 2)]
+    page = _engines_page(win, monkeypatch, tmp_path, games)
+
+    rows = {
+        r.title.text(): (r.status.text(), [b.text() for b in r.control.findChildren(QPushButton)] or [r.control.text()])
+        for r in page._engine_rows
+    }
+
+    assert rows["GE-Proton7-17"] == ("Used by 2 MOG games", ["Details", "Remove"])
+    assert rows["Proton 9.0"] == ("No MOG game uses it", ["Details"])  # Steam's own: it is not for MOG to remove
+    assert rows["GE-Proton9-27"] == ("No MOG game uses it", ["Install"])
+    assert rows["Install another version"][1] == ["Show all versions..."]
+    assert page._engines_title.text() == "PROTON BUILDS - 2 INSTALLED"
+
+
+def test_removing_a_build_asks_with_the_games_that_use_it_and_deletes_only_after_yes(win, qapp, monkeypatch, tmp_path):
+    games = [gui.InstalledGame(game_id=1, name="Alpha", install_dir="/x", state="installed", proton="GE-Proton7-17")]
+    page = _engines_page(win, monkeypatch, tmp_path, games)
+    asked = []
+    monkeypatch.setattr(win, "ask", lambda text, yes, **k: asked.append((text, yes, k)))
+    monkeypatch.setattr(win, "message", lambda *a, **k: None)
+    folder = tmp_path / "steam/compatibilitytools.d/GE-Proton7-17"
+
+    next(b for r in page._engine_rows if r.title.text() == "GE-Proton7-17" for b in r.control.findChildren(QPushButton) if b.text() == "Remove").click()
+
+    text, yes, kwargs = asked[0]
+    assert "Alpha" in text and "outside MOG" in text and kwargs == {"danger": True} and folder.is_dir()
+    yes()
+    pump(qapp)
+    assert not folder.exists()
+    assert "GE-Proton7-17" not in {r.title.text() for r in page._engine_rows}  # listed no more
+
+
+def test_details_show_the_games_and_the_size_of_a_build(win, qapp, monkeypatch, tmp_path):
+    games = [gui.InstalledGame(game_id=1, name="Alpha", install_dir="/x", state="installed", proton="GE-Proton7-17")]
+    page = _engines_page(win, monkeypatch, tmp_path, games)
+    told = []
+    monkeypatch.setattr(win, "message", lambda text, level="error", *a, **k: told.append(text))
+
+    next(b for r in page._engine_rows if r.title.text() == "GE-Proton7-17" for b in r.control.findChildren(QPushButton) if b.text() == "Details").click()
+    pump(qapp)
+
+    assert "2.0 KiB" in told[0] and "- Alpha" in told[0] and "GE-Proton7-17" in told[0]

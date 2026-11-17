@@ -99,6 +99,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
         need exactly: UMU-Proton-9.0-2 and UMU-Proton-9.0-4e (the Proton 9.0 line, from the umu-proton releases). Any
         other Proton-GE or UMU-Proton release a game is pinned to on the server (GE-Proton8-4, say) is downloaded too, by
         its name, the first time that game is played here.
+      - The last row of the versions, **Show all versions...**, opens the list of every Proton-GE and UMU-Proton release, all the
+        minor versions (GE-Proton7-17, say), newest first and with the ones this device has marked. Picking one downloads it
+        at once if it is not here (with a bar over the window), then shows it in the versions, selected; OK applies it.
       - Wine runs the system's wine or a build Lutris or Bottles keeps.
       - The engine is per game and overrides the one in Settings; the launch script is rewritten, so the desktop entry and
         Steam shortcut follow. A Proton version is kept on the server (after choosing you say whether it holds for all of the
@@ -323,12 +326,18 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   Notifications (with the unread count), Refresh library, Add local game (see [SAVES.md](SAVES.md)), Go offline / Go online, About and Sign out.
 - Settings is a menu of rows, each with what it does under its name and its control on the right. The arrows move between
   rows and Enter (or A) changes or opens one, so a drop-down never changes as the arrows pass over it.
-- Four tabs, switched with L1 and R1 (Ctrl+Page Up/Down; the triggers do not switch them), each one landing on its first entry: General (saves, launcher, updates, sounds), Server, Library and
+- Four tabs (five on Linux, with Engines), switched with L1 and R1 (Ctrl+Page Up/Down; the triggers do not switch them), each one landing on its first entry: General (saves, launcher, updates, sounds), Server, Library and
   Logs.
 - The Library tab holds the install folders and "Scan for launchers", and below them every game installed on this device
   with the space it takes, the biggest first, and an Uninstall button (the same questions as Uninstall in the game's own
   Options: its saves are backed up first and the prefix is only deleted when asked). A game whose folder is not there
   (a drive that is not connected) is listed last, without a size.
+- The Engines tab (Linux only) lists the Proton builds on this device and the ones that can be had, the same list as a game's
+  Engine page: each with how many MOG games use it. A build here has **Details** (the MOG games that use it and what it takes on
+  disk) and **Remove** (it asks first, with the list of MOG games that use it, which download it again the next time MOG starts
+  them, and the reminder that games outside MOG may use it too); one that is not here has **Install**. "Show all versions..."
+  opens the list of every release to install any. Only builds in `compatibilitytools.d` can be removed: the ones in Steam's
+  library are Steam's.
 - The Logs tab shows everything the client logged (white for info, yellow for warnings, red for errors), filterable by
   level and scrollable with the right stick. The same log is kept in `logs/client.log` in the client's data folder.
 - About (in the user menu) has two tabs, About and Changelog, switched with L1 and R1. Changelog lists what changed in the
