@@ -150,6 +150,34 @@ def test_the_executable_picker_does_not_look_inside_the_prefix(tmp_path):
     assert [p.name for p in launcher.list_executables(game)] == ["game.exe", "other.exe"]
 
 
+def test_a_batch_file_that_starts_the_game_is_offered_before_the_runtime_programs_buried_in_it(tmp_path):
+    """Magic Dice Waifu Roll: `Play Magic Dice.bat` (which runs the bundled Python) and `runtime/python.exe`, nothing else.
+    The client listed only the python.exe files, so the one way to start the game was not offered."""
+    game = tmp_path / "Magic Dice"
+    (game / "runtime").mkdir(parents=True)
+    for name in ("Play Magic Dice.bat", "runtime/python.exe", "runtime/pythonw.exe", "INSTALL_OR_UPDATE.bat", "Uninstall.cmd"):
+        (game / name).write_bytes(b"x")
+
+    assert [p.name for p in launcher.list_executables(game)] == ["Play Magic Dice.bat", "python.exe", "pythonw.exe"]
+
+
+def test_a_batch_file_beside_the_games_own_exe_comes_after_it(tmp_path):
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "Game.exe").write_bytes(b"x")
+    (game / "run windowed.bat").write_bytes(b"x")
+
+    assert [p.name for p in launcher.list_executables(game)] == ["Game.exe", "run windowed.bat"]
+
+
+def test_a_batch_file_in_a_redistributable_folder_is_not_offered(tmp_path):
+    game = tmp_path / "Game"
+    (game / "_CommonRedist").mkdir(parents=True)
+    (game / "_CommonRedist" / "run.bat").write_bytes(b"x")
+
+    assert launcher.list_executables(game) == []
+
+
 def test_the_executable_picker_only_looks_at_files_that_could_be_executables(tmp_path, monkeypatch):
     game = tmp_path / "Game"
     (game / "mods").mkdir(parents=True)

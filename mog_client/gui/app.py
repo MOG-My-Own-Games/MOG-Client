@@ -157,6 +157,7 @@ from mog_client.gui.widgets import (
     clear_icon,
 )
 from mog_client.launcher import (
+    BATCH_SUFFIXES,
     Version,
     all_executables,
     available_launchers,
@@ -4135,7 +4136,7 @@ class BrowsePage(Page):
         entries += [
             (c.name + ("/" if c.is_dir() else ""), c)
             for c in children
-            if c.is_dir() or self.anything or (not self.folders and c.suffix.lower() == ".exe")
+            if c.is_dir() or self.anything or (not self.folders and c.suffix.lower() in (".exe", *BATCH_SUFFIXES))
         ]
         for label, target in entries:
             item = QListWidgetItem(label)
@@ -6131,7 +6132,7 @@ class GamePage(Page):
         root = Path(rec.install_dir)
         options = [(label, ("tool", tool)) for label, tool in PREFIX_TOOLS]
         try:
-            candidates = [p for p in list_executables(root) if p.suffix.lower() == ".exe"]
+            candidates = [p for p in list_executables(root) if p.suffix.lower() in (".exe", *BATCH_SUFFIXES)]
             others = [p for p in all_executables(root) if p not in candidates]
         except OSError:
             candidates, others = [], []

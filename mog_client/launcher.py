@@ -23,6 +23,10 @@ _NOT_A_GAME = re.compile(
     r"cleanup|launcherhelper|vulkan|dxcpl|dosbox|7z|notification_helper)",
     re.IGNORECASE,
 )
+# A batch file that is the game's way to start is offered; one that sets up, updates or removes it is not (a game shipped ready to
+# play carries an `INSTALL_OR_UPDATE.bat` next to its own start script).
+_NOT_A_GAME_BATCH = re.compile(r"(install|setup|update|upgrade|patch|unins|uninst)", re.IGNORECASE)
+BATCH_SUFFIXES = (".bat", ".cmd")
 _REDIST_DIRS = re.compile(r"(redist|directx|dotnet|vcredist|_commonredist|__installer|support)", re.IGNORECASE)
 
 
@@ -102,7 +106,8 @@ def list_executables(install_dir: Path) -> list[Path]:
     """Candidate game executables under install_dir, the ones that run natively first: on Linux the game's own start
     script (the `start.sh` GOG's Linux games have at the top, then any other script, shallowest first) comes before
     every .exe, the biggest first (the game binary is nearly always the biggest one that isn't a redistributable).
-    Scripts are Linux's way to start a game and are not offered on Windows, where the .exe files are all there is."""
+    Scripts are Linux's way to start a game and are not offered on Windows, where the .exe files are all there is. A .bat or
+    .cmd that starts the game is offered on both (Wine, Proton and Windows run it), see `_NOT_A_GAME_BATCH`."""
     found = []
     for dirpath, dirnames, filenames in os.walk(install_dir):
         here = Path(dirpath)
@@ -111,7 +116,7 @@ def list_executables(install_dir: Path) -> list[Path]:
         dirnames[:] = [d for d in dirnames if d not in _INSTALLER_DATA_DIRS]
         for name in filenames:
             suffix = os.path.splitext(name)[1].lower()
-            if suffix not in (".exe", ".sh", ".appimage", ".desktop"):
+            if suffix not in (".exe", ".sh", ".appimage", ".desktop", *BATCH_SUFFIXES):
                 continue  # most of a big install is none of them: no stat for those (a modded game has tens of thousands of files)
             if suffix == ".appimage" and sys.platform == "win32":
                 continue
@@ -121,6 +126,9 @@ def list_executables(install_dir: Path) -> list[Path]:
             rel = path.relative_to(install_dir)
             if path.suffix.lower() == ".exe":
                 if _NOT_A_GAME.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
+                    continue
+            elif suffix in BATCH_SUFFIXES:
+                if _NOT_A_GAME.search(path.stem) or _NOT_A_GAME_BATCH.search(path.stem) or any(_REDIST_DIRS.search(p) for p in rel.parts[:-1]):
                     continue
             elif suffix == ".appimage":
                 if not _has_elf_header(path):
@@ -132,10 +140,16 @@ def list_executables(install_dir: Path) -> list[Path]:
                 continue
             found.append(path)
 
+    top_exe = any(p.suffix.lower() == ".exe" and len(p.relative_to(install_dir).parts) == 1 for p in found)
+
     def rank(path: Path) -> tuple[int, int, int]:
         rel = path.relative_to(install_dir)
         if path.suffix.lower() == ".exe":
             return 2, 0, -path.stat().st_size
+        if path.suffix.lower() in BATCH_SUFFIXES:
+            # The start file of a game whose programs are all buried (a bundled runtime's python.exe): before them. Beside the
+            # game's own .exe it is a helper more often than the way to start it: after every .exe.
+            return (1, 1, 1) if len(rel.parts) == 1 and not top_exe else (3, len(rel.parts), 0)
         if rel.name.lower() == "start.sh" and len(rel.parts) == 1:
             return 0, 0, 0
         return 1, len(rel.parts), 0
