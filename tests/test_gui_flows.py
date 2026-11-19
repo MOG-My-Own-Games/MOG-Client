@@ -37,6 +37,7 @@ def win(qapp, monkeypatch, tmp_path):
     app = gui.App()
     monkeypatch.setattr(app, "fetch_videos", lambda game_id: None)  # no test reaches for the network
     monkeypatch.setattr(spacecheck, "check", lambda *a, **k: None)  # the room check asks the server: a test says its own
+    monkeypatch.setattr(gui.GamePage, "offer_web_game", lambda self, rec, then: then())  # no look in the folder before a start
     window = gui.MainWindow(app)
     window.resize(1100, 640)
     window.show()
@@ -6754,3 +6755,18 @@ def test_a_failed_lookup_of_every_release_hides_the_bar_and_says_so(win, qapp, m
     win.choose_proton_build(lambda name: None)  # asking again is possible after a failure
     assert win.busy.showing
     win.hide_busy()
+
+
+def test_a_message_still_shows_when_qt_deleted_the_notifications_row_of_the_menu(win):
+    """Caught live: the account menu's Notifications action was gone, and setting its count raised from every message, so the
+    winetricks job never started (its "Installing..." message came first) and the menu card lost the row."""
+    import shiboken6
+
+    shiboken6.delete(win.notifications_action)
+
+    win.message("Installing cnc_ddraw with winetricks. This can take a while.", "info")
+
+    assert win.notifications_action.text() == "Notifications (1)"
+    labels = [a.text() for a in win.user_menu.actions()]
+    assert labels[:2] == ["Settings", "Notifications (1)"]
+    assert win.overlay.showing

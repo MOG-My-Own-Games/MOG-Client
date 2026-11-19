@@ -7415,7 +7415,9 @@ class MainWindow(QMainWindow):
         self.playing.ended.connect(self.refocus_page)
         self.busy.ended.connect(self.refocus_page)
         QApplication.instance().focusChanged.connect(lambda *_: self.refresh_legend())  # Options shows once the grid has a game
-        self.modal = ModalHost(central)  # a modal page's card, under any message
+        self.modal = ModalHost(
+            central, suspended=lambda: self.overlay.isVisible() or self.playing.isVisible() or self.busy.isVisible()
+        )  # a modal page's card, under any message
         self.modal.dismissed.connect(self.back)
         self.overlay = MessageOverlay(central)  # created last: a message is shown over everything
         self.overlay.changed.connect(self.refresh_legend)
@@ -8741,10 +8743,25 @@ class MainWindow(QMainWindow):
         self.notifications = self.local_notifications + self.server_notifications
         unread = self._server_unread + sum(not n["read"] for n in self.local_notifications)
         self.user_btn.set_count(unread)
-        self.notifications_action.setText(f"Notifications ({unread})" if unread else "Notifications")
+        self._show_unread_in_menu(unread)
         page = self.current_page()
         if isinstance(page, NotificationsPage):
             page.populate()
+
+    def _show_unread_in_menu(self, unread: int) -> None:
+        """The count on the menu's Notifications row. Qt was seen to delete that action while the window lived, and the error
+        reached whoever showed a message (winetricks never started, and the menu lost its row): it is made again, in its place."""
+        text = f"Notifications ({unread})" if unread else "Notifications"
+        try:
+            self.notifications_action.setText(text)
+            return
+        except RuntimeError:
+            logstore.warning("The Notifications row of the account menu was deleted by Qt: made again")
+        action = QAction(text, self.user_menu)
+        action.triggered.connect(self.open_notifications)
+        actions = self.user_menu.actions()
+        self.user_menu.insertAction(actions[1] if len(actions) > 1 else None, action)  # after Settings
+        self.notifications_action = action
 
     def add_local_notification(
         self, kind: str, title: str, body: str | None, game_id: int | None = None, log: bool = True
