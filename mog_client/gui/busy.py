@@ -6,6 +6,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QLabel, QProgressBar, QPushButton, QWidget
 
+from mog_client.gui import focusguard
+
 COVER_HEIGHT = 200
 MIB = 1024 * 1024
 
@@ -113,7 +115,7 @@ class BusyOverlay(QWidget):
     def _keep_focus(self, _old: QWidget | None, new: QWidget | None) -> None:
         """Nothing behind this may take the focus (Tab, a click), unless a message is over it."""
         if self.isVisible() and not self.suspended() and new is not None and not self.isAncestorOf(new):
-            self.cancel_button.setFocus()
+            focusguard.take(self.cancel_button.setFocus)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Escape and self.cancel_button.isEnabled() and self.cancel_button.isVisible():

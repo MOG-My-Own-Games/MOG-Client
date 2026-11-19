@@ -9,6 +9,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from mog_client.gui import focusguard
+
 ICON_HEIGHT = 96
 TITLES = {"error": "Something went wrong", "warning": "Attention", "info": "Done"}
 
@@ -157,7 +159,7 @@ class MessageOverlay(QWidget):
     def _keep_focus(self, _old: QWidget | None, new: QWidget | None) -> None:
         """Nothing behind the message may take the focus (Tab, a click) while it is up."""
         if self.isVisible() and new is not None and new is not self.ok and not self.isAncestorOf(new):
-            (self.action_button if self.action_button.isVisible() else self.ok).setFocus()
+            focusguard.take((self.action_button if self.action_button.isVisible() else self.ok).setFocus)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         if e.key() == Qt.Key_Escape:

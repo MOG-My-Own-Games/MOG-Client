@@ -3,9 +3,13 @@ still a page of the window (Back, Esc and the pad's B close it, and the stack of
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+
+from mog_client.gui import focusguard
 
 MAX_WIDTH = 780
 MAX_HEIGHT = 540
@@ -35,8 +39,9 @@ class ModalHost(QWidget):
 
     dismissed = Signal()
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, suspended: Callable[[], bool] = lambda: False) -> None:
         super().__init__(parent)
+        self.suspended = suspended  # true while a message, the playing message or the busy one is over the card and has the focus
         self.setObjectName("modalHost")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.page: QWidget | None = None
@@ -153,6 +158,6 @@ class ModalHost(QWidget):
         e.accept()
 
     def _keep_focus(self, _old: QWidget | None, new: QWidget | None) -> None:
-        """Nothing behind the card may take the focus (Tab, a click) while it is up."""
-        if self.isVisible() and self.page is not None and new is not None and not self.isAncestorOf(new):
-            self.page.focus_default()
+        """Nothing behind the card may take the focus (Tab, a click) while it is up, unless a message is over it."""
+        if self.isVisible() and not self.suspended() and self.page is not None and new is not None and not self.isAncestorOf(new):
+            focusguard.take(self.page.focus_default)

@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QLabel, QPushButton, QWidget
 
+from mog_client.gui import focusguard
+
 COVER_HEIGHT = 240
 
 
@@ -90,7 +92,7 @@ class PlayingOverlay(QWidget):
     def _keep_focus(self, _old: QWidget | None, new: QWidget | None) -> None:
         """Nothing behind this may take the focus (Tab, a click), unless a message is over it."""
         if self.isVisible() and not self.suspended() and new is not None and not self.isAncestorOf(new):
-            self.stop_button.setFocus()
+            focusguard.take(self.stop_button.setFocus)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
         e.accept()  # Esc and the arrows do nothing here: only Stop ends a game by mistake-proof choice

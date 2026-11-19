@@ -77,6 +77,7 @@ mog_client/
     extsaves.py the questions of Import external saves (Options > Saves...); Qt-free like saves_ui
     definesaves.py the questions of Define saves (Options > Saves...): the rules of a game and the files of a saved version; Qt-free like saves_ui, the pages are DefineSavesPage and SaveFilesPage in app.py
     overlay.py  the message laid over the window with an OK button (queued; the pad's A and B answer it)
+    focusguard.py the overlays (message, playing, busy, card) take the focus back from what is behind them; this keeps two of them up at once from taking it from each other forever
     logview.py  the Logs tab; logstore.py (outside gui/) is the in-memory log it shows
     about.py    the About page's tabs (About, Changelog); legend.py builds the guide at the bottom per page, with button and key icons
     sounds.py   menu sounds (QSoundEffect; silent when the setting is off or there is no audio)
