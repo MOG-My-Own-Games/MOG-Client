@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mog_client import connectivity, launchargs, protondl, umudb, winetricks
+from mog_client import connectivity, launchargs, protondl, umudb, webgame, winetricks
 from mog_client.api import safe_dirname
 from mog_client.config import InstalledGame, config_dir, data_dir
 
@@ -656,6 +656,8 @@ def launch_command(
             args = (*launchargs.words(game.launch_args), *args)  # the game's own arguments come first, tag after tag
         except ValueError:  # a tag with a quote that is never closed (typed on the server's web page, say)
             raise RuntimeError("a launch argument of this game has a quote that is never closed: edit it and start the game again") from None
+        if webgame.takes_over(game):  # MOG opens the game's page in a browser of its own (saves/runner.py, the GUI): the game must not
+            args = (*args, game.web_no_open_arg)
     exe = program or game.executable
     if game.native and program is not None:
         raise RuntimeError("a Linux game runs as it is: it has no Wine prefix")

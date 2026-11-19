@@ -244,6 +244,14 @@ class InstalledGame:
     # in the folder, whatever the launcher writes into it.
     quiver_id: str | None = None
     explicit_saves: bool = False
+    # A game that runs in the browser, against a server of its own on this machine (see webgame.py): the address it is served at
+    # and what its launcher takes to start without opening the person's browser. MOG opens a browser profile of its own for it, in
+    # the game's folder, and that profile's storage is what the save sync takes (`explicit_saves` is on for it). `web_browser` is a
+    # program the person chose to open it with; `web_asked` is whether the question was answered (or nothing was found to ask about).
+    web_origin: str | None = None
+    web_no_open_arg: str | None = None
+    web_browser: str | None = None
+    web_asked: bool = False
 
     def __post_init__(self) -> None:
         # An earlier version kept the arguments as one text: they become tags the first time the record is read.

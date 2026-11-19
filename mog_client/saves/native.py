@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from mog_client import webgame
 from mog_client.config import InstalledGame
 from mog_client.saves.locations import (
     DENY_DIRS,
@@ -310,4 +311,5 @@ def included_files(includes: Iterable[str], install_dir: Path, sandbox: str | No
         if path.is_file():
             yield Candidate(prefix, path)
         elif path.is_dir():
-            yield from walk(path, prefix)
+            # A browser's storage is taken whole: the `.log` files of its database hold what was written last.
+            yield from walk(path, prefix, deny=not webgame.is_storage_key(prefix))

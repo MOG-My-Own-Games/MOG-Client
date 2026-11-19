@@ -136,6 +136,28 @@ and nothing else in the folder, however new or changed a file there is (**listed
 - What would go up is checked before the archive is made: more than 512 MiB (what the server takes) is refused with the folders
   that weigh most, so a wrongly ticked folder of recompiled files stops at once instead of becoming gigabytes of saves.
 
+## Games that run in the browser
+
+Some games are a web page served from a small program on this computer (`http://127.0.0.1:41765`, say) and keep their progress in
+the browser's own storage. That storage is a database shared with every site in your browser, so there is nothing of the game's to
+back up. MOG gives such a game a browser profile of its own instead (Linux, and a Chromium-based browser: Chrome, Chromium, Brave,
+Edge, Vivaldi, also as a Flatpak).
+
+- **How MOG knows**: the game's folder holds a launcher that names an address on this computer with a fixed port, takes an option
+  to start without opening the browser (`--no-browser`, `--no-open`) and has an `index.html` to serve. Nothing is changed until you
+  answer: the first time the game starts from MOG you are asked, once, and **Options > Browser game...** asks again, or turns it
+  off. A game MOG does not take for one (no such option) keeps opening your browser.
+- **What changes**: the game starts with that option; when its server answers, MOG opens the page as an app window in
+  `<game folder>/mog-browser`, and closes it, waiting for it to write its data, when the game ends (closing the launcher's window).
+  The shortcuts (desktop entry, Steam) do the same through the client.
+- **What is saved**: only `Default/Local Storage` and `Default/IndexedDB` of that profile (`game/mog-browser/...`), taken whole,
+  including the database's `.log` files, which hold what was written last. Nothing else of the profile, the game's folder or its
+  prefix counts, as for a game whose saves are listed (see Quiver Launcher below).
+- **Restoring** puts the files back and removes the ones of those folders that the backup did not hold (copied into the restore's
+  backup first): a database is a set of files that belong together. Do it with the game closed.
+- **Your progress in your own browser is not moved**: the game starts empty in MOG's browser the first time.
+- With no MOG client (a shortcut whose client was removed) the game starts without its browser; open its address by hand.
+
 ## Import external saves
 
 A game installed by MOG that you also had outside MOG (itch.io, a Wine prefix of its own) can take your old progress in place of

@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from mog_client import connectivity, logstore, played, playtime
+from mog_client import connectivity, logstore, played, playtime, webgame
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings, data_dir, load_library
 from mog_client.gui.saves_ui import when
@@ -132,6 +132,15 @@ def runtime_prefix_recorder(ctx: sync.Context) -> Callable[[Path], None]:
     return found
 
 
+def _both(first: Callable[[], None] | None, second: Callable[[], None]) -> Callable[[], None]:
+    def call() -> None:
+        if first:
+            first()
+        second()
+
+    return call
+
+
 def await_game_end(
     rec: InstalledGame,
     settings: Settings,
@@ -148,15 +157,20 @@ def await_game_end(
     on_prefix = None if rec.native else runtime_prefix_recorder(ctx)
     restore_when_made(ctx, log, stop)
     log(f"watching {rec.name} until it ends")
+    companion = webgame.Companion(rec, log)  # a browser game: its page is opened when it starts, and closed before the backup
+    if companion.active:
+        timing["on_started"] = _both(timing.get("on_started"), companion.start)
 
     def ran(began: float, seconds: float) -> None:
         if playtime.record(rec.game_id, began, seconds):
             log(f"played for {seconds / 60:.0f} min")
             playtime.flush(client, say=log)  # this process ends with the game: nothing else would send it
 
-    if not wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native, log=log, on_session=ran, **timing):
-        return None
-    return ctx
+    try:
+        began = wait_for_game(Path(rec.install_dir), on_prefix=on_prefix, stop=stop, native=rec.native, log=log, on_session=ran, **timing)
+    finally:
+        companion.close()
+    return ctx if began else None
 
 
 def watch_session(

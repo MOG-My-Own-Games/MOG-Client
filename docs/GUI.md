@@ -187,6 +187,10 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
       Steam shortcut are written again. If the game's folder is inside the place you pick, a warning asks first. A prefix other
       programs use, or one from a game added from outside MOG, is never moved from here (Move into MOG does that).
     - **Prefix location**: where the game's Wine prefix is, for the save sync (shown when save sync is on).
+  - **Browser game...** (Linux): for a game that runs in your browser against a server of its own on this computer. It looks for
+    that in the game's folder and asks whether MOG should open the game in a browser profile of its own, so its progress is
+    backed up with its saves (see "Games that run in the browser" in SAVES.md). For a game that already does, the button turns it
+    off. The same question is asked once, the first time the game starts from here.
   - **Shortcuts / executable**: confirming rebuilds the launch script, the desktop entry and the Steam shortcuts. Its
     **Launch arguments** row has an **Edit** button for what is put after the game's executable. The arguments are **tags**:
     each is one option with what goes with it (`-res 1280 720`, `--nosound`). In the page it opens, type arguments in the

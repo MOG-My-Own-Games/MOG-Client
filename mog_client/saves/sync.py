@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mog_client import connectivity, logsend, logstore
+from mog_client import connectivity, logsend, logstore, webgame
 from mog_client.api import MogClient
 from mog_client.config import InstalledGame, Settings
 from mog_client.saves import native
@@ -148,7 +148,9 @@ def _install_folder_candidates(ctx: Context) -> list[Candidate]:
 
 def _candidates(ctx: Context, drive_c: Path | None, includes: list[str] | None = None) -> list[Candidate]:
     found: list[Candidate] = []
-    if drive_c == WINDOWS_HOST:
+    if ctx.rec.web_origin:
+        pass  # a browser game's saves are the storage of its own browser profile, nothing of a prefix
+    elif drive_c == WINDOWS_HOST:
         found += list(windows_profile_candidates())
     elif drive_c is not None:
         found += list(profile_candidates(drive_c))
@@ -278,7 +280,7 @@ def _backup(ctx: Context, trigger: str, since_ns: int | None, force: bool, uploa
             f"Saves of {ctx.rec.name}: {len(candidates)} candidate files in {time.monotonic() - scan_began:.1f}s"
             f" (prefix: {found.prefix if found else 'none'})"
         )
-    if found is None and not candidates and prefixes.has_prefixes():
+    if found is None and not candidates and prefixes.has_prefixes() and not ctx.rec.web_origin:
         return BackupResult("needs-prefix")
 
     explicit = ctx.rec.explicit_saves
@@ -599,6 +601,9 @@ def _apply(
     written = extract_archive(
         archive, lambda key: target_for_key(key, drive_c, install_dir, rec.in_sandbox), backup=backup_zip, skip=rules.blocked
     )
+    if rec.web_origin and written:
+        for key in webgame.drop_stale(install_dir, {key for key, _ in written}, backup_zip):
+            state.tracked.pop(key, None)
     for key, path in written:
         try:
             stat = path.stat()

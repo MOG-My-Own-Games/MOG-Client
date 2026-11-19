@@ -122,14 +122,16 @@ def user_dir_name(drive_c: Path) -> str:
     return max(dirs, key=lambda d: d.stat().st_mtime).name
 
 
-def walk(root: Path, key_prefix: str, skip_top_dirs: tuple[str, ...] = ()) -> Iterator[Candidate]:
+def walk(root: Path, key_prefix: str, skip_top_dirs: tuple[str, ...] = (), deny: bool = True) -> Iterator[Candidate]:
+    """The files below `root` with their archive keys, without the cache, log and system noise unless `deny` is off (a folder that
+    is taken whole, such as a browser's storage, whose `.log` files are its newest data)."""
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(dirpath)
         rel_dir = here.relative_to(root)
         dirnames[:] = sorted(
             d
             for d in dirnames
-            if d.casefold() not in DENY_DIRS
+            if (not deny or d.casefold() not in DENY_DIRS)
             and not (here / d).is_symlink()
             and not (here == root and d in skip_top_dirs)
         )
@@ -138,7 +140,7 @@ def walk(root: Path, key_prefix: str, skip_top_dirs: tuple[str, ...] = ()) -> It
             if path.is_symlink() or not path.is_file():
                 continue
             rel = (*rel_dir.parts, name)
-            if is_denied(rel):
+            if deny and is_denied(rel):
                 continue
             yield Candidate(str(PurePosixPath(key_prefix, *rel)), path)
 

@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from mog_client import launchargs, logstore, steam
+from mog_client import launchargs, logstore, steam, webgame
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
 from mog_client.installdirs import (
@@ -88,6 +88,36 @@ def _update(rec: InstalledGame, **changes) -> None:
         lib = load_library()
         lib[rec.game_id] = rec
         save_library(lib)
+
+
+def _rewrite_launch_script(rec: InstalledGame, preference: str) -> None:
+    """The shortcuts run the launch script, which holds the option that keeps a browser game from opening the person's browser."""
+    if sys.platform == "win32" or rec.native or rec.state != "installed" or not rec.executable or not present(rec):
+        return
+    try:
+        write_launch_script(rec, preference)
+    except (RuntimeError, OSError) as e:
+        logstore.warning(f"Could not rewrite the launch script of {rec.name}: {e}")
+
+
+def enable_web_game(rec: InstalledGame, found: webgame.WebGame, preference: str = "auto") -> None:
+    """Make a game a browser game: MOG opens its page in a browser profile of its own, and the saves of the game are the storage
+    folders of that profile (nothing else of the game's folder or prefix)."""
+    _update(rec, **webgame.apply(rec, found))
+    state = load_state(rec.game_id)
+    state.includes = sorted({*(state.includes or []), *webgame.STORAGE_KEYS})
+    save_state(rec.game_id, state)
+    _rewrite_launch_script(rec, preference)
+
+
+def disable_web_game(rec: InstalledGame, asked: bool = True, preference: str = "auto") -> None:
+    """Back to a game that opens its own browser. Its profile and the saves already backed up are left as they are."""
+    state = load_state(rec.game_id)
+    if state.includes is not None:
+        state.includes = [k for k in state.includes if k not in webgame.STORAGE_KEYS]
+        save_state(rec.game_id, state)
+    _update(rec, web_origin=None, web_no_open_arg=None, web_asked=asked, explicit_saves=bool(rec.quiver_id))
+    _rewrite_launch_script(rec, preference)
 
 
 ARCHIVE_SOURCE_KINDS = ("disc image", "archive")

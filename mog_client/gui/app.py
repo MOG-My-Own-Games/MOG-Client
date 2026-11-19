@@ -103,6 +103,7 @@ from mog_client import (
     trace,
     umudb,
     updater,
+    webgame,
 )
 from mog_client import mods as mods_download
 from mog_client import played as played_at
@@ -1955,6 +1956,8 @@ class OptionsPage(Page):
             if not rec.imported and not gone:  # the files of a game from outside MOG are not the server's to check
                 add("Repair: check the installed files", lambda: page.repair(rec))
             add("Saves...", lambda: win.push(SavesOptionsPage(win, page, rec)), pop=0)
+            if sys.platform != "win32" and not rec.quiver_id:
+                add("Browser game..." if not rec.web_origin else "Browser game: stop using MOG's browser...", lambda: page.web_game_options(rec))
             if rec.imported and not rec.quiver_id:  # Quiver's folder stays Quiver's: it updates it, MOG never moves it
                 add("Move into MOG...", lambda: win.importing.move_into_mog(rec, page.rebuild), True)
             elif not rec.imported:
@@ -5509,7 +5512,80 @@ class GamePage(Page):
             self._set_starting(False)
             self._play(rec)
 
-        self.pull_launch_settings(rec, go)
+        self.offer_web_game(rec, lambda: self.pull_launch_settings(rec, go))
+
+    def offer_web_game(self, rec: InstalledGame, then) -> None:
+        """Before a game starts for the first time: when it runs in the browser (see webgame.py), say so and ask whether MOG should keep
+        its progress. Asked once; Options > Browser game... is the way back to it."""
+        if sys.platform == "win32" or rec.web_origin or rec.web_asked or rec.quiver_id:
+            then()
+            return
+
+        def work() -> None:
+            found = webgame.detect(Path(rec.install_dir))
+            self.app.bridge.call.emit(lambda: self._web_game_found(rec, found, then))
+
+        self.app.run_bg(work, on_error=lambda _m: self.app.bridge.call.emit(then))
+
+    def _web_game_found(self, rec: InstalledGame, found: "webgame.WebGame | None", then) -> None:
+        if found is None:
+            manager._update(rec, web_asked=True)  # nothing to ask about; Options > Browser game... looks again
+            then()
+            return
+        if webgame.find_browser(webgame.profile_dir(rec), rec.web_browser) is None:
+            then()  # no Chromium browser to open it in: the game opens its own, and the question waits for one
+            return
+        answered = [False]
+
+        def yes() -> None:
+            answered[0] = True
+            manager.enable_web_game(rec, found, self.app.settings.launcher)
+            self.win.message(f"{rec.name} will open in a browser of MOG's own, and its progress is backed up with its saves.", "info")
+            then()
+
+        def cancelled() -> None:  # No, Esc and B: the game starts as it always did, and the question is not asked again
+            if not answered[0]:
+                manager._update(rec, web_asked=True)
+                then()
+
+        self.win.ask(
+            f"{rec.name} looks like a game that runs in your browser ({found.origin}), where its progress is kept. Open it in a "
+            "browser of MOG's own, so that its progress is backed up with its saves and follows you between devices? Progress "
+            "already made in your own browser is not moved there.",
+            yes, yes_default=True, game=rec.game_id, on_cancel=cancelled,
+        )
+
+    def web_game_options(self, rec: InstalledGame) -> None:
+        """Options > Browser game...: turn it off for a game that uses it, or look for it (and ask) in one that does not."""
+        if rec.web_origin:
+            self.win.ask(
+                f"{rec.name} opens {rec.web_origin} in a browser of MOG's own. Go back to the game opening its own browser? "
+                "What was backed up stays on the server.",
+                lambda: (manager.disable_web_game(rec, preference=self.app.settings.launcher), self.win.message(f"{rec.name} opens its own browser again.", "info")),
+                game=rec.game_id,
+            )
+            return
+
+        def work() -> None:
+            found = webgame.detect(Path(rec.install_dir))
+            self.app.bridge.call.emit(lambda: self._web_game_option_found(rec, found))
+
+        self.app.run_bg(work, on_error=lambda m: self.win.message(f"Could not look: {m}", "error"))
+
+    def _web_game_option_found(self, rec: InstalledGame, found: "webgame.WebGame | None") -> None:
+        if found is None:
+            self.win.message(
+                f"{rec.name} does not look like a browser game: MOG needs a launcher that serves it at a fixed address on this computer "
+                "(http://127.0.0.1:port) and takes an option such as --no-browser.", "warning",
+            )
+        elif webgame.find_browser(webgame.profile_dir(rec), rec.web_browser) is None:
+            self.win.message("No Chromium-based browser (Chrome, Chromium, Brave, Edge) was found to open it in.", "warning")
+        else:
+            self.win.ask(
+                f"Open {rec.name} ({found.origin}) in a browser of MOG's own and back its progress up with its saves?",
+                lambda: (manager.enable_web_game(rec, found, self.app.settings.launcher), self.win.message(f"{rec.name} will open in a browser of MOG's own.", "info")),
+                yes_default=True, game=rec.game_id,
+            )
 
     def _start_note(self, text: str, percent: int | None = None) -> None:
         """What the wait of "Starting..." is doing (downloading a Proton build, installing a verb, applying settings), under the
@@ -8381,10 +8457,19 @@ class MainWindow(QMainWindow):
                             known["playtime_seconds"] = (known.get("playtime_seconds") or 0) + int(seconds)
                     playtime.send_in_background(client, say=say)
 
-            started = gameplay.watch(
-                Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, log=say,
-                on_started=lambda: status("Playing"), on_wait=waiting, on_session=ran, **timing,
-            )
+            companion = webgame.Companion(rec, say)  # a browser game: its page opens when it starts and closes before the backup
+
+            def playing() -> None:
+                status("Playing")
+                companion.start()
+
+            try:
+                started = gameplay.watch(
+                    Path(rec.install_dir), proc, stop.is_set, on_prefix=recorder, native=rec.native, log=say,
+                    on_started=playing, on_wait=waiting, on_session=ran, **timing,
+                )
+            finally:
+                companion.close()
             if not stop.is_set() and (not started or (time.time_ns() - started_ns) / 1e9 < SHORT_RUN):
                 say("the game ended within moments: sending the log, if that is allowed")
                 logsend.send_for_game(self.app.client(), self.app.settings, rec.game_id)  # a crash at start saves nothing to back up
