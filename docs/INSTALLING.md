@@ -124,6 +124,9 @@ A game installed from a native Linux installer is not run through Faugus, umu, P
   folder) are never offered. A folder with neither a `.exe` nor a script (an itch.io or engine game, `Game.x86_64`) offers
   its Linux programs as the last resort, found by their ELF header: the shallowest first, the one named like the game before
   the others, shared libraries (`*.so`) never.
+- A Linux program is recognised whether or not it is marked executable (an extraction that kept no modes unmarks every file):
+  an unmarked file counts when its ELF header names a loader, which a library does not. A game built for both systems (NW.js's
+  `nw` beside its `.exe`) offers that program before the `.exe` files; launching marks it executable.
 - On Linux, `.desktop` entries that start a program (a game's or a tool's own, not MOG's entry for the game) are offered too,
   after the scripts. Such an entry is not run itself: the program its `Exec` line names is, with the `%f`/`%U` field codes dropped.
 - The script is made executable and started as it is, by the launch script, the desktop entry and the Steam shortcut.

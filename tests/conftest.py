@@ -19,6 +19,9 @@ def _keep_the_users_data_untouched(monkeypatch, tmp_path):
     from mog_client import activity, config, launcher, played, snapshot, steam, trace
     from mog_client.saves import devices, state
 
+    # settings.json (server, user, password) lives under the config folder: a test that saves Settings must not rewrite the
+    # developer's own, which sent the first-run guide back at the next start. Tests that need another folder set it themselves.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setattr(launcher, "_known", None)  # the saved launcher scan, if a test loaded one
     monkeypatch.setattr(steam, "steam_running", lambda: False)  # not whether the developer has Steam open
     monkeypatch.setattr(config, "data_dir", lambda: tmp_path / "data")  # installed.json

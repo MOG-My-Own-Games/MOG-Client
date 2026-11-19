@@ -213,6 +213,44 @@ def test_the_binary_named_like_the_game_comes_before_the_others_and_a_file_witho
     assert names(game) == ["ZelmoorRuins", "other", "tools/editor"]
 
 
+def make_program(root: Path, name: str, interp: bool = True, mode: int = 0o644) -> Path:
+    """A 64-bit little-endian ELF with one program header: PT_INTERP for a dynamically linked program, PT_LOAD for what has no loader
+    to name (a shared library). Unmarked by default, as an archive that kept no modes leaves it."""
+    header = bytearray(b"\x7fELF\x02\x01\x01" + b"\x00" * 57)
+    header[32:40] = (64).to_bytes(8, "little")  # e_phoff
+    header[54:56] = (56).to_bytes(2, "little")  # e_phentsize
+    header[56:58] = (1).to_bytes(2, "little")  # e_phnum
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(header) + (3 if interp else 1).to_bytes(4, "little") + b"\x00" * 52)
+    path.chmod(mode)
+    return path
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_a_program_with_no_executable_bit_is_recognised_by_its_loader_not_a_library(tmp_path):
+    game = tmp_path / "Zelmoor Ruins"
+    program = make_program(game, "ZelmoorRuins")
+    make_program(game, "libother", interp=False)  # no .so name, no loader: not a program
+
+    assert names(game) == ["ZelmoorRuins"]
+    assert is_native_executable(program) and launcher.is_elf_program(program)
+    launcher.ensure_executable(str(program))
+    assert program.stat().st_mode & 0o100
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux programs")
+def test_the_linux_program_of_a_game_built_for_both_systems_is_offered_first_marked_or_not(tmp_path):
+    """NW.js games ship `nw` (the Linux program) beside the .exe: an extraction that kept no modes must not hide it."""
+    game = tmp_path / "Waifu Fighter"
+    make_program(game, "app/nw")
+    make_program(game, "app/chrome_crashpad_handler")
+    make_program(game, "app/lib/libnw", interp=False)
+    make(game, "app/Boxing.exe")
+
+    assert names(game) == ["app/nw", "app/Boxing.exe"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Linux programs")
 def test_the_fallback_is_only_for_a_game_with_nothing_else_to_offer(tmp_path):
     make_elf(tmp_path, "helper", 100)

@@ -140,8 +140,32 @@ def list_executables(install_dir: Path) -> list[Path]:
             return 0, 0, 0
         return 1, len(rel.parts), 0
 
+    found += _beside_the_exes(found)
     found.sort(key=lambda p: (*rank(p), p.name.lower()))
     return found or _native_programs(install_dir)
+
+
+def _beside_the_exes(found: list[Path]) -> list[Path]:
+    """A game built for both systems keeps its Linux program (NW.js's `nw`, say) in the folder of its .exe: on Linux that
+    program is offered too, before the .exe files, whether or not it is marked executable."""
+    if sys.platform == "win32":
+        return []
+    folders = {p.parent for p in found if p.suffix.lower() == ".exe"}
+    extra = []
+    for folder in sorted(folders):
+        try:
+            with os.scandir(folder) as entries:
+                names = sorted(e.name for e in entries if e.is_file(follow_symlinks=False))  # no stat of the folders beside
+        except OSError:
+            continue
+        for name in names:
+            path = folder / name
+            if path.suffix.lower() not in ("", ".x86_64", ".x86", ".bin", ".run", ".appimage"):
+                continue  # a folder of assets is not opened file by file
+            # Beside a .exe the program must name its loader: a marked file of the same header may be a helper of the Windows build.
+            if not _NOT_A_GAME.search(path.stem) and path not in found and _elf_program(path, True) and not is_mog_script(path):
+                extra.append(path)
+    return extra
 
 
 # How far down a folder with no .exe and no script is looked at for the program: a game's binary sits at its top (Unity's
@@ -175,18 +199,49 @@ def _squash(text: str) -> str:
 
 
 def is_elf_program(path: Path) -> bool:
-    """A Linux program the game starts: an executable file with an ELF header that is not a shared library (`libx.so`,
-    `libx.so.0`: those carry the same mode and header)."""
+    """A Linux program the game starts: an ELF file that is not a shared library (`libx.so`, `libx.so.0`: those carry the same
+    mode and header). The executable bit is not asked for: an archive that kept no modes leaves every file unmarked, and
+    launching marks it (`ensure_executable`). An unmarked file has to say it is a program itself, by the interpreter an ELF
+    program names and a library does not (`_names_an_interpreter`)."""
+    return _elf_program(path, False)
+
+
+def _elf_program(path: Path, loader_needed: bool) -> bool:
     name = path.name.lower()
     if name.endswith((".so", ".dll", ".exe")) or ".so." in name:
         return False
     try:
-        if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+        if path.is_symlink() or not path.is_file():
             return False
         with path.open("rb") as f:
-            return f.read(4) == b"\x7fELF"
+            head = f.read(64)
+            if head[:4] != b"\x7fELF":
+                return False
+            if not loader_needed and os.access(path, os.X_OK):
+                return True
+            return _names_an_interpreter(f, head)
     except OSError:
         return False
+
+
+def _names_an_interpreter(f, head: bytes) -> bool:
+    """Whether an ELF file has a PT_INTERP program header: what a dynamically linked program has (the loader to start it with)
+    and a shared library, started by no one, does not. `head` is the first 64 bytes, the ELF header."""
+    if len(head) < 52 or head[4] not in (1, 2) or head[5] not in (1, 2):
+        return False
+    wide = head[4] == 2
+    order = "little" if head[5] == 1 else "big"
+    if wide:
+        if len(head) < 64:
+            return False
+        phoff, phentsize, phnum = (int.from_bytes(head[o : o + n], order) for o, n in ((32, 8), (54, 2), (56, 2)))
+    else:
+        phoff, phentsize, phnum = (int.from_bytes(head[o : o + n], order) for o, n in ((28, 4), (42, 2), (44, 2)))
+    if not phoff or phentsize < 4 or not 0 < phnum <= 256:
+        return False
+    f.seek(phoff)
+    table = f.read(phentsize * phnum)
+    return any(int.from_bytes(table[i : i + 4], order) == 3 for i in range(0, len(table) - 3, phentsize))  # PT_INTERP
 
 
 def is_appimage(path: Path) -> bool:
