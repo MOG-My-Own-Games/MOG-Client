@@ -92,6 +92,19 @@ def metadata_lines(game: dict) -> list[tuple[str, str]]:
     return [(k, v) for k, v in rows if v]
 
 
+CONTROLLER_TEXT = {
+    "full": "Full controller support",
+    "partial": "Partial controller support",
+    "none": "Keyboard and mouse only",
+}
+
+
+def controller_line(game: dict) -> str:
+    """What the details page says of gamepad support, from the server's `controller_support`; "" when it does not know (a game not
+    on Steam), so the page shows no row."""
+    return CONTROLLER_TEXT.get(game.get("controller_support"), "")
+
+
 HLTB_STYLES = (("main_story", "Main Story"), ("main_plus_extra", "Main + Extra"), ("completionist", "Completionist"))
 
 

@@ -651,9 +651,11 @@ def launch_command(
     `proton_log` has Proton write its own debug log (`steam-*.log`) into the game's folder, which `logsend` sends along."""
     if program is None and not game.executable:
         raise RuntimeError("no executable chosen for this game")
+    user_env: dict[str, str] = {}  # the variables among the launch arguments: they are set before the game starts, not passed to it
     if program is None:
         try:
             args = (*launchargs.words(game.launch_args), *args)  # the game's own arguments come first, tag after tag
+            user_env = launchargs.env(game.launch_args)
         except ValueError:  # a tag with a quote that is never closed (typed on the server's web page, say)
             raise RuntimeError("a launch argument of this game has a quote that is never closed: edit it and start the game again") from None
         if webgame.takes_over(game):  # MOG opens the game's page in a browser of its own (saves/runner.py, the GUI): the game must not
@@ -671,16 +673,16 @@ def launch_command(
             argv = [game.executable]
         if not game.imported:  # the folder of a game added from outside MOG is left as it is
             ensure_native_permissions(game.install_dir)  # the start script runs programs of its own, which a download left unmarked
-        return [*argv, *args], sandbox_env(game)  # a Linux program: no launcher, no prefix
+        return [*argv, *args], {**sandbox_env(game), **user_env}  # a Linux program: no launcher, no prefix
     launcher = detect_launcher(effective_launcher(game, preference))
     if launcher is None:
         raise RuntimeError("no launcher found: install Faugus (Flatpak), umu-launcher, Proton or Wine")
     if launcher == "native":
-        return [exe, *args], {}
+        return [exe, *args], user_env
     prefix = pfx_dir(game)
     prefix.mkdir(parents=True, exist_ok=True)
     language = winetricks.locale_env(game.winetricks)  # the game's system language (LC_ALL and LANG), when it has one
-    env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game), **language}
+    env = {"WINEPREFIX": str(prefix), "GAMEID": umu_id(game), **language, **user_env}  # the game's own variables have the last word
     if offline:
         env["UMU_RUNTIME_UPDATE"] = "0"  # read by umu and Faugus; Wine and Proton return their own env below
     if proton_log and program is None and launcher in ("faugus", "umu", "proton"):
@@ -692,7 +694,7 @@ def launch_command(
         return _winetricks_command(game, launcher, prefix, build, args)
     if launcher == "wine":
         program, _problem = resolve_wine(game.wine)
-        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix), **language}
+        return [str(program or "wine"), exe, *args], {"WINEPREFIX": str(prefix), **language, **user_env}
     if launcher == "proton":
         proton = Path(build) if build else find_proton()
         steam_root = next(
@@ -703,6 +705,7 @@ def launch_command(
             "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
             **language,
             **{k: v for k, v in env.items() if k.startswith("PROTON_LOG")},
+            **user_env,
         }
     if launcher == "faugus":
         if eaten := faugus_takes_as_env(args):

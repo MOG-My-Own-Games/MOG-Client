@@ -61,6 +61,9 @@ class Settings:
     launcher: str = "auto"
     # Look for a newer release at startup (only in builds that can self-update).
     check_updates: bool = True
+    # Show the gamepad support the server knows for a game, and give a game with none the Steam Deck's keyboard and mouse template
+    # in its Steam shortcut (see steaminput.py).
+    controller_support: bool = True
     # The library page's left-hand sidebar (toggled with L2).
     show_sidebar: bool = True
     # Sidebar sections the user folded ("installs", "libraries", "sorts").

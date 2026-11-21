@@ -234,3 +234,25 @@ def test_a_prefix_missing_any_marker_or_a_user_is_not_made_yet(tmp_path):
     (base / "drive_c/users/steamuser").rmdir()
     assert not prefixes.prefix_made(root)  # only Public: Wine has not made the profile yet
     assert not prefixes.prefix_made(tmp_path / "missing")
+
+
+def test_a_steam_prefix_is_listed_with_the_name_of_its_game(tmp_path, monkeypatch):
+    from mog_client import steam
+
+    root = tmp_path / "steam"
+    compat = root / "steamapps/compatdata"
+    _prefix(compat / "3240220")
+    _prefix(compat / "3254321456")
+    _prefix(compat / "999")
+    _prefix(tmp_path / "home/Faugus/a")
+    (root / "steamapps/appmanifest_3240220.acf").write_text(
+        '"AppState"\n{\n\t"appid"\t\t"3240220"\n\t"name"\t\t"Grand Theft Auto V Enhanced"\n\t"installdir"\t"GTAV"\n}\n'
+    )
+    user = root / "userdata/1234"
+    steam.save_shortcuts(steam.shortcuts_path(user), {"shortcuts": {"0": {"appid": 3254321456 - (1 << 32), "appname": "Zero Zone"}}})
+    monkeypatch.setattr(steam, "steam_roots", lambda: [root])
+
+    assert prefixes.label(compat / "3240220") == f"{compat / '3240220'} (Grand Theft Auto V Enhanced)"
+    assert prefixes.label(compat / "3254321456") == f"{compat / '3254321456'} (Zero Zone)"  # a shortcut: its id is unsigned here
+    assert prefixes.label(compat / "999") == str(compat / "999")  # Steam no longer knows it
+    assert prefixes.label(tmp_path / "home/Faugus/a") == str(tmp_path / "home/Faugus/a")  # not a Steam folder

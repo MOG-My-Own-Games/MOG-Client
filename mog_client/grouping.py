@@ -68,3 +68,9 @@ def corner_state(game: dict) -> str | None:
     if game.get("addons_only") and not game.get("missing_from_fs"):
         return ADDONS_ONLY
     return None
+
+
+def keyboard_only(game: dict) -> bool:
+    """Whether the server knows the game has no gamepad support (the Steam store lists none for it): it is played with keyboard and
+    mouse. A game it does not know anything about (`controller_support` missing or null) is not."""
+    return game.get("controller_support") == "none"

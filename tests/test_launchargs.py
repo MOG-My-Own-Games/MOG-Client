@@ -15,6 +15,9 @@ from mog_client import launchargs
         ("-title 'My Game' -w", ["-title 'My Game'", "-w"]),
         ("-w -w -nosound", ["-w", "-nosound"]),
         ("-title 'oops -w", ["-title 'oops", "-w"]),
+        ('WINEDLLOVERRIDES="dinput8=n,b" -w', ["WINEDLLOVERRIDES=dinput8=n,b", "-w"]),
+        ("-res 1280 720 MANGOHUD=1 -w", ["-res 1280 720", "MANGOHUD=1", "-w"]),
+        ("FOO='a b' -x", ["'FOO=a b'", "-x"]),
     ],
 )
 def test_typed_arguments_split_into_tags_at_each_word_that_starts_with_a_dash(typed, tags):
@@ -50,3 +53,37 @@ def test_what_is_kept_as_tags_whatever_it_was():
 )
 def test_two_editors_are_merged_by_tag(base, ours, theirs, merged):
     assert launchargs.merge(base, ours, theirs) == merged
+
+
+def test_a_variable_among_the_tags_is_set_before_the_game_and_not_passed_to_it():
+    tags = ["-res 1280 720", "WINEDLLOVERRIDES=dinput8=n,b", "'FOO=a b'", "MANGOHUD=1", "-w", "MANGOHUD=0"]
+    assert launchargs.env(tags) == {"WINEDLLOVERRIDES": "dinput8=n,b", "FOO": "a b", "MANGOHUD": "0"}
+    assert launchargs.words(tags) == ["-res", "1280", "720", "-w"]
+    assert launchargs.env(["-x NAME=1", "-title 'x"]) == {} and launchargs.words(["-x NAME=1"]) == ["-x", "NAME=1"]
+
+
+def _game(tmp_path, tags):
+    from mog_client.config import InstalledGame
+
+    return InstalledGame(
+        game_id=7, name="Game", install_dir=str(tmp_path / "Game"), executable=str(tmp_path / "Game" / "game.exe"), launch_args=tags
+    )
+
+
+@pytest.mark.parametrize("engine", ["umu", "wine", "proton"])
+def test_the_variables_reach_the_game_through_each_engine_and_its_arguments_do_not_carry_them(engine, monkeypatch, tmp_path):
+    from mog_client import launcher
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": engine)
+    monkeypatch.setattr(launcher, "find_proton", lambda: tmp_path / "steamapps" / "Proton" / "proton")
+    cmd, env = launcher.launch_command(_game(tmp_path, ["-w", "WINEDLLOVERRIDES=dinput8=n,b"]))
+    assert env["WINEDLLOVERRIDES"] == "dinput8=n,b" and "WINEDLLOVERRIDES=dinput8=n,b" not in cmd and "-w" in cmd
+
+
+def test_faugus_gets_the_variables_in_front_of_the_command_it_runs(monkeypatch, tmp_path):
+    from mog_client import launcher
+
+    monkeypatch.setattr(launcher, "detect_launcher", lambda pref="auto": "faugus")
+    monkeypatch.setattr(launcher, "faugus_invocation", lambda: (["faugus-run"], str(tmp_path / "umu-run"), False))
+    cmd, env = launcher.launch_command(_game(tmp_path, ["WINEDLLOVERRIDES=dinput8=n,b", "-w"]), require_umu=False)
+    assert "WINEDLLOVERRIDES=dinput8=n,b " in cmd[-1] and cmd[-1].endswith("-w") and "WINEDLLOVERRIDES" not in env

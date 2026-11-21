@@ -12,9 +12,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from mog_client import launchargs, logstore, steam, webgame
+from mog_client import launchargs, logstore, steam, steaminput, webgame
 from mog_client.api import Client, MogClient, safe_dirname
 from mog_client.config import InstalledGame, Settings, load_library, load_settings, save_library
+from mog_client.grouping import keyboard_only
 from mog_client.installdirs import (
     default_root,
     copy_candidates,
@@ -350,7 +351,36 @@ def finish_setup(
         steam_users=[str(d) for d in steam_users],
         steam_pending=pending,
     )
+    apply_keyboard_profile(rec, game_meta)
     return steam_changed
+
+
+def apply_keyboard_profile(rec: InstalledGame, game_meta: dict) -> bool:
+    """For a game the server says has no gamepad support, give its Steam shortcuts the Steam Deck's "Keyboard (WASD) and Mouse"
+    controller template, so the Deck does not map a pad to a game that cannot use one. A game that already has a choice there is
+    left alone (see `steaminput`). Nothing is done while Settings > Gamepad support is off. Returns True when a file of Steam's was written."""
+    if not keyboard_only(game_meta) or not load_settings().controller_support:
+        return False
+    wrote = False
+    for entry in rec.steam_entries:
+        user_dir = Path(entry["shortcuts_path"]).parent.parent
+        try:
+            if steaminput.set_template(user_dir, rec.name):
+                logstore.info(f"{rec.name} has no gamepad support: Steam Input uses Keyboard and Mouse for it ({user_dir.name})")
+                wrote = True
+        except OSError as e:
+            logstore.warning(f"Could not set the controller template of {rec.name} in Steam: {e}")
+    return wrote
+
+
+def apply_keyboard_profiles(games: dict[int, dict]) -> list[str]:
+    """`apply_keyboard_profile` for every installed game with a Steam shortcut, from the server's list (`games`, by id), for a game
+    whose gamepad support was learned after its shortcut was made. Returns the names of the games that got the template."""
+    done = []
+    for rec in load_library().values():
+        if rec.state == "installed" and rec.steam_entries and rec.game_id in games and apply_keyboard_profile(rec, games[rec.game_id]):
+            done.append(rec.name)
+    return done
 
 
 def _sync_steam_entries(

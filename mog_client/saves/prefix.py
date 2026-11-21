@@ -8,6 +8,8 @@ programs already record, and asks when it cannot.
 from __future__ import annotations
 
 import json
+import re
+import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +149,40 @@ def is_default(prefix: Path) -> bool:
     if resolved in {(home / ".wine").resolve(), (home / "Games/umu/umu-default").resolve()}:
         return True
     return prefix.name.casefold() in DEFAULT_PREFIX_NAMES
+
+
+_ACF_NAME = re.compile(r'"name"\s+"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
+
+
+def steam_game_name(prefix: Path) -> str | None:
+    """The name of the Steam game (or non-Steam shortcut) that a `compatdata/<appid>` folder belongs to, from what Steam keeps on
+    this disk: the game's `appmanifest_<appid>.acf` beside `compatdata`, else the shortcut with that id. None for any other
+    folder, and for a game Steam no longer has on this disk."""
+    if prefix.parent.name != "compatdata" or not prefix.name.isdigit():
+        return None
+    appid = int(prefix.name)
+    try:
+        found = _ACF_NAME.search((prefix.parent.parent / f"appmanifest_{appid}.acf").read_text(errors="replace"))
+        if found and found.group(1):
+            return found.group(1).replace('\\"', '"').replace("\\\\", "\\")
+    except OSError:
+        pass
+    from mog_client import steam  # a shortcut's id is the folder's name, as an unsigned number
+
+    try:
+        for user_dir in steam.steam_user_dirs():
+            for entry in steam.load_shortcuts(steam.shortcuts_path(user_dir))["shortcuts"].values():
+                if entry.get("appid", 0) & 0xFFFFFFFF == appid and entry.get("appname"):
+                    return str(entry["appname"])
+    except (OSError, ValueError, IndexError, struct.error):
+        pass
+    return None
+
+
+def label(prefix: Path) -> str:
+    """A prefix as a list shows it: its path, and for a Steam game's folder (`.../compatdata/3240220`) the game's name after it."""
+    name = steam_game_name(prefix)
+    return f"{prefix} ({name})" if name else str(prefix)
 
 
 def candidate_prefixes() -> list[Path]:

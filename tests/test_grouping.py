@@ -71,3 +71,19 @@ def test_a_game_with_nothing_to_install_from_is_told_from_one_that_has_files():
 
     assert has_no_files({"imported": True}) and has_no_files({"saves_only": True, "missing_from_fs": True})
     assert not has_no_files({"library_id": None}) and not has_no_files({"missing_from_fs": True})  # still listed, maybe back soon
+
+
+def test_a_game_is_keyboard_only_when_the_server_says_it_has_no_gamepad_support():
+    from mog_client.grouping import keyboard_only
+
+    assert keyboard_only({"controller_support": "none"})
+    assert not any(keyboard_only(g) for g in ({"controller_support": "full"}, {"controller_support": "partial"}, {"controller_support": None}, {}))  # unknown is not "none"
+
+
+def test_the_details_page_says_what_the_server_knows_of_gamepad_support():
+    from mog_client.scrape import controller_line
+
+    assert controller_line({"controller_support": "full"}) == "Full controller support"
+    assert controller_line({"controller_support": "partial"}) == "Partial controller support"
+    assert controller_line({"controller_support": "none"}) == "Keyboard and mouse only"
+    assert controller_line({"controller_support": None}) == "" and controller_line({}) == ""  # unknown: no row
