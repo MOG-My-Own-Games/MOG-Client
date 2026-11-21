@@ -8,6 +8,7 @@ import pytest
 from mog_client import config, manager
 from mog_client.config import Settings
 from mog_client.saves import installed, state
+from mog_client.transfer import RepairResult
 from mog_client.saves.locations import install_candidates
 
 
@@ -152,6 +153,7 @@ def run(tmp_path, monkeypatch, writes, complete=True, listing=True):
     def verify(client, gid, out_dir, *, on_manifest=None, **k):
         if listing and on_manifest:
             on_manifest([entry(n, c) for n, c in writes.items()])
+        return RepairResult()
 
     monkeypatch.setattr(manager, "download_all_files", download)
     monkeypatch.setattr(manager, "verify_and_repair", verify)
