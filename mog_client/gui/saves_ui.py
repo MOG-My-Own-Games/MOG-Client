@@ -257,7 +257,7 @@ class SaveSync:
         change how the game is started."""
         own = pfx_dir(rec)
         options: list[tuple[str, object]] = [("Game's Folder (Default)", own)]
-        options += [(str(p), p) for p in prefixes.candidate_prefixes() if p.resolve() != own.resolve()]
+        options += [(prefixes.label(p), p) for p in prefixes.candidate_prefixes() if p.resolve() != own.resolve()]
         options.append(("Another folder...", "browse"))
 
         def store(path: Path) -> None:

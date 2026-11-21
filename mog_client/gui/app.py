@@ -118,7 +118,18 @@ from mog_client.config import (
     load_settings,
     save_settings,
 )
-from mog_client.grouping import GONE, SAVES_IMPORTED, SAVES_ONLY, Group, corner_state, gone_game, group_games, has_no_files, local_only
+from mog_client.grouping import (
+    GONE,
+    SAVES_IMPORTED,
+    SAVES_ONLY,
+    Group,
+    corner_state,
+    gone_game,
+    group_games,
+    has_no_files,
+    keyboard_only,
+    local_only,
+)
 from mog_client.gui import gamepad, keyboard, legend, osk
 from mog_client.gui import saves_ui as sync_ui
 from mog_client.gui.firstrun import FirstRunPage
@@ -183,7 +194,7 @@ from mog_client.saves import devices, importer, runner, sync, watcher
 from mog_client.saves.state import load_state, save_install_manifest
 from mog_client.saves.sync import enabled as sync_enabled
 from mog_client import launchargs, launchsettings, logsend, protonbuilds, protondl, protonge, videos, winetricks
-from mog_client.scrape import artwork_urls, hltb_lines, metadata_lines, screenshot_urls
+from mog_client.scrape import artwork_urls, controller_line, hltb_lines, metadata_lines, screenshot_urls
 from mog_client.stopactions import StopActions
 from mog_client.transfer import sha1_of
 from mog_client.version import __version__
@@ -3377,6 +3388,8 @@ class SettingsPage(Page):
         self.sounds_box.setChecked(s.sounds)
         self.check_updates_box = Toggle()
         self.check_updates_box.setChecked(s.check_updates)
+        self.controller_support_box = Toggle()
+        self.controller_support_box.setChecked(s.controller_support)
         if updater.supported():
             win.app.bridge.update_checked.connect(self.on_checked)
 
@@ -3519,6 +3532,15 @@ class SettingsPage(Page):
                 else "Games run directly.",
                 self.launcher,
                 wide=True,
+            )
+        )
+        menu.add(
+            OptionRow(
+                "Gamepad support",
+                "Show on a game's page whether it plays with a gamepad (from its Steam store page, as the server knows it), and "
+                "give a game with none the Steam Deck's Keyboard and Mouse controller template in its Steam shortcut. What was "
+                "already set in Steam stays when this is turned off.",
+                self.controller_support_box,
             )
         )
         menu.section("Application")
@@ -3967,8 +3989,12 @@ class SettingsPage(Page):
             sync_window=self.sync_window_box.isChecked(),
             upload_logs=self.upload_logs_box.isChecked(),
             sounds=self.sounds_box.isChecked(),
+            controller_support=self.controller_support_box.isChecked(),
         )
         save_settings(self.win.app.settings)
+        for page in self.win.game_pages.values():
+            page._show_controller()  # the Gamepad row of the pages already made follows the switch
+        self.win.set_keyboard_profiles()
         self.win.back()
         self.win.app.connect_and_refresh()
         warning = net.plain_http_warning(self.win.app.settings.base)
@@ -4200,8 +4226,9 @@ class BrowsePage(Page):
 
 
 class LaunchArgsPage(EntriesPage):
-    """The arguments the game's executable is started with, as tags: each is one option with what goes with it. Typed text is
-    split into tags at each word that starts with - or --. OK keeps the list, and every launch and shortcut uses it from then
+    """The arguments the game's executable is started with, as tags: each is one option with what goes with it, or an environment
+    variable (NAME=value) set before the game starts. Typed text is split into tags at each word that starts with - or --, and
+    at each NAME=value. OK keeps the list, and every launch and shortcut uses it from then
     on; the server gets it merged tag by tag with its own."""
 
     def __init__(self, win: "MainWindow", page: "ExecutablePage", rec: InstalledGame):
@@ -4210,9 +4237,9 @@ class LaunchArgsPage(EntriesPage):
         super().__init__(
             win,
             "Launch arguments",
-            "Each tag is an option with what goes with it. Type arguments and press + to add them: they split at each - or "
-            "--. Press Enter on a tag, or its minus, to take it out.",
-            "e.g. -windowed -res 1280 720",
+            "Each tag is an option with what goes with it, or an environment variable (NAME=value) the game starts with. Type "
+            "arguments and press + to add them: they split at each - or --. Press Enter on a tag, or its minus, to take it out.",
+            "e.g. -windowed -res 1280 720 WINEDLLOVERRIDES=dinput8=n,b",
             list((current or rec).launch_args),
             launchargs.split_tags,
             lambda tag: None if launchargs.is_tag(tag) else "A launch argument can be 200 characters at most, on one line",
@@ -4810,6 +4837,21 @@ class GamePage(Page):
         # width, and when the window is short the form rows are squeezed under their own height.
         for label, value in metadata_lines(game):
             row(label, ParagraphLabel(value, max_lines=3, min_lines=1))
+        self.controller_icon, self.controller_label = QLabel(), QLabel()
+        self.controller_icon.setFixedSize(30, 30)
+        pad = QWidget()
+        pad_row = QHBoxLayout(pad)
+        pad_row.setContentsMargins(0, 0, 0, 0)
+        pad_row.setSpacing(8)
+        pad_row.addWidget(self.controller_icon)
+        pad_row.addWidget(self.controller_label, 1)
+        self.controller_label.setObjectName("metaValue")
+        self.controller_key = QLabel("GAMEPAD")
+        self.controller_key.setObjectName("metaKey")
+        self.controller_key.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.addRow(self.controller_key, pad)
+        self.info_form, self.controller_row = form, pad
+        self._show_controller()
         self.size_label = QLabel("...")
         row("Size on server", self.size_label)
         self.played_label = QLabel()
@@ -4909,6 +4951,16 @@ class GamePage(Page):
         self.hltb_box.setVisible(self.has_hltb and not narrow)
         self.head.setContentsMargins(*((8, 8, 8, 8) if short else (14, 14, 14, 14)))
 
+    def _show_controller(self) -> None:
+        """What the server says of gamepad support, with the crossed-out gamepad for a game that has none (it is played with
+        keyboard and mouse); no row at all when it does not know."""
+        text = controller_line(self.game) if self.app.settings.controller_support else ""
+        self.info_form.setRowVisible(self.controller_row, bool(text))  # the row goes whole, with its spacing
+        self.controller_label.setText(text)
+        icon = bool(text) and keyboard_only(self.game)
+        self.controller_icon.setPixmap(no_gamepad_icon(30) if icon else QPixmap())
+        self.controller_icon.setVisible(icon)
+
     def _show_hltb(self) -> None:
         """The HowLongToBeat times as a small table at the right of the header; no table when there are none."""
         grid = self.hltb_box.layout()
@@ -5005,6 +5057,7 @@ class GamePage(Page):
         self._set_cover(self.win.cover_for(game["id"]))
         self._update_version_label()
         self.size_label.setText("...")
+        self._show_controller()
         self._show_hltb()
         self.header.set_image(None)
         self.app.fetch_header_art(game)
@@ -6433,6 +6486,35 @@ def paint_state_badge(painter: QPainter, cover: QRect, state: str) -> None:
         painter.setPen(Qt.NoPen)
         painter.setBrush(white)
     painter.drawPath(glyph)
+
+
+def no_gamepad_icon(size: int = 36) -> QPixmap:
+    """A gamepad crossed out in red on a dark disc with a light rim: the game has no gamepad support, so it is played with the
+    keyboard and the mouse. Drawn on a 30 unit grid, at `size` pixels."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(size / 30, size / 30)
+    painter.setPen(QPen(QColor(255, 255, 255, 200), 1.2))
+    painter.setBrush(QColor(14, 16, 20, 235))
+    painter.drawEllipse(QRectF(0.6, 0.6, 28.8, 28.8))
+    white = QColor("white")
+    painter.setPen(QPen(white, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(Qt.NoBrush)
+    body = QPainterPath()
+    body.addRoundedRect(QRectF(5, 10, 20, 11), 5.5, 5.5)
+    painter.drawPath(body)
+    painter.drawLine(QPointF(9, 15.5), QPointF(13, 15.5))  # the d-pad
+    painter.drawLine(QPointF(11, 13.5), QPointF(11, 17.5))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(white)
+    painter.drawEllipse(QPointF(19, 14.5), 1.3, 1.3)  # two buttons
+    painter.drawEllipse(QPointF(21.5, 17), 1.3, 1.3)
+    painter.setPen(QPen(QColor("#ff4d4d"), 2.6, Qt.SolidLine, Qt.RoundCap))
+    painter.drawLine(QPointF(6, 24), QPointF(24, 6))  # the slash
+    painter.end()
+    return pix
 
 
 def grid_scale(room: int) -> float:
@@ -8554,6 +8636,19 @@ class MainWindow(QMainWindow):
 
         self.app.run_bg(work, on_error=lambda m: self.app.bridge.note.emit(f"Steam shortcuts: {m}"))
 
+    def set_keyboard_profiles(self) -> None:
+        """The games the server says have no gamepad support get the Steam Deck's Keyboard and Mouse template in their Steam
+        shortcuts (the gamepad support of a game can be learned after its shortcut was made)."""
+        games = {g["id"]: g for g in self.app.games.values() if g.get("controller_support") == "none"}
+        if not games or not self.app.settings.configured or not self.app.settings.controller_support:
+            return
+
+        def work() -> None:
+            if done := manager.apply_keyboard_profiles(games):
+                self.app.bridge.note.emit("Keyboard and Mouse controller profile in Steam for: " + ", ".join(done))
+
+        self.app.run_bg(work, on_error=lambda m: self.app.bridge.note.emit(f"Steam controller profile: {m}"))
+
     def _on_error(self, text: str) -> None:
         self.message(text, "error")
         if self.library.shelf.currentWidget() is self.library.loading:
@@ -8570,6 +8665,7 @@ class MainWindow(QMainWindow):
         self.saves.check_all()
         self.adopt_folders(games)
         self.settle_steam()
+        self.set_keyboard_profiles()
         self._resume_background()
         if self._pending_link:
             link, self._pending_link = self._pending_link, None

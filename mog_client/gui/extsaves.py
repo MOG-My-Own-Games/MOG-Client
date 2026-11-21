@@ -69,7 +69,7 @@ class ExternalSaves:
         mine = prefixes.resolve_prefix(rec, "auto", load_state(rec.game_id).prefix, load_state(rec.game_id).prefix_source)
         own = mine.prefix.resolve() if mine else None
         options = [
-            (f"{p}   (Default: shared with other games)" if prefixes.is_default(p) else str(p), p)
+            (f"{p}   (Default: shared with other games)" if prefixes.is_default(p) else prefixes.label(p), p)
             for p in prefixes.candidate_prefixes()
             if p.resolve() != own
         ] + [("Another folder...", ANOTHER_FOLDER)]

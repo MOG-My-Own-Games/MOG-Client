@@ -278,7 +278,7 @@ class ImportFlow:
 
     def browse_prefix(self, draft: Draft) -> None:
         options = [
-            (f"{p}   (Default: shared with other games)" if prefixes.is_default(p) else str(p), p)
+            (f"{p}   (Default: shared with other games)" if prefixes.is_default(p) else prefixes.label(p), p)
             for p in prefixes.candidate_prefixes()
         ] + [("Another folder...", ANOTHER_FOLDER)]
 
