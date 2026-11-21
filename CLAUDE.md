@@ -56,6 +56,7 @@ mog_client/
   saves/        Save sync: prefix discovery, scan/diff, archives, device identity, orchestration (sync.py), process watcher; rules.py is the server's per-game blacklist/whitelist of save paths (Qt-free): what a backup leaves out or adds, and the key of a path picked on this disk; importer.py works out where the saves of a game added from outside MOG are (Qt-free) and makes the first sync take all of them; external.py finds a MOG game's old saves in another prefix or game folder and puts them in place of the fresh ones
   quiver.py     Quiver Launcher's installed games read from its own files, 3.x (`apps.json`) and 4.x (`installs.json`) (Qt-free): data folder, install folder, program, prefix, the save places of known ports; `InstalledGame.quiver_id`/`explicit_saves` make the sync take only those places
   steam.py      shortcuts.vdf read/write + grid artwork
+  steaminput.py The Steam Deck's controller template for a shortcut, written into Steam's `configset_controller_neptune.vdf` as text (Qt-free): a game with no gamepad support (`controller_support` `none` from the server) gets Keyboard and Mouse, one with a choice already is left alone
   selfsteam.py  MOG Client itself as a Steam shortcut (artwork in gui/assets/steam, made from .github/res/SteamGridDB); asked once per version
   scrape.py     Artwork URLs from the server's already-scraped metadata
   winecfg.py    What winecfg changed in a prefix as .reg text: export from user.reg, and the filter an import goes through (Qt-free)

@@ -55,6 +55,12 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
   It is never removed on its own: this computer may still send its saves or mods, which makes the entry again. A game whose entry
   is still there with only saves or mods has the other corners. The list is trusted only when the server sent games and the client
   is online.
+- A game's page has a **Gamepad** row from what the Steam store says (the server's `controller_support`): "Full controller support",
+  "Partial controller support", or, for a game that lists none, a crossed-out gamepad with "Keyboard and mouse only" (it is played
+  with the keyboard and the mouse). A game the server does not know the support of (not on Steam) has no row. The covers in the
+  library carry no mark for it. **Settings > General > Games > Gamepad support** (on by default) turns the row off, and with it the
+  keyboard and mouse template in Steam (see STEAM.md); the server has a switch of its own (Settings > Controller support) that stops
+  the lookup and sends the games with no word on gamepads.
 - The arrow on a cover points down while saves are downloaded and up while they are uploaded (the server is above).
 - Everything the window tells you in a message is also in the notifications (a message about a game shows its icon at the
   left), and a message can carry an option (finishing
@@ -195,7 +201,9 @@ How the window, a game's page and its entries behave. For installing see [INSTAL
     **Launch arguments** row has an **Edit** button for what is put after the game's executable. The arguments are **tags**:
     each is one option with what goes with it (`-res 1280 720`, `--nosound`). In the page it opens, type arguments in the
     field and press **+** (or Enter on the field): the text splits into tags at each word that starts with `-` or `--` (a
-    negative number is a value), with quotes kept (`-title 'My Game'`). Each tag in the list has a **-** that takes it out
+    negative number is a value), with quotes kept (`-title 'My Game'`). A word `NAME=value` is a tag of its own, an
+    **environment variable**: it is set before the game starts instead of being passed to it, with Faugus, umu, Proton and
+    Wine alike and in the launch script (`WINEDLLOVERRIDES="dinput8=n,b"` loads the `dinput8` mod a game needs). Each tag in the list has a **-** that takes it out
     (Enter or A on a tag does the same), **OK** keeps the list and **Back**, in red beside OK, leaves without changes: the launch script is rewritten at once and every launch and shortcut passes the tags on, in order.
     - They are kept on the server with the other launch settings (for all of the game's devices, or for this one when the
       server holds an entry of its own for it) and the server's web page edits them too. Because they are tags, the two are

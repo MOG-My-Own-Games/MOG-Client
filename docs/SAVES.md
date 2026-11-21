@@ -165,6 +165,9 @@ the fresh saves it starts with: Options > Saves... > **Import external saves...*
 
 - It works once the game has saved from here at least once: that is how MOG learns which folders the game writes its saves to.
   Before that the button only says so (start the game, save, close it, come back).
+- In every list of prefixes, a Steam game's folder (`.../compatdata/3240220`) has the game's name after it
+  (`.../compatdata/3240220 (Grand Theft Auto V Enhanced)`), read from the `appmanifest` Steam keeps beside it, or from the
+  non-Steam shortcut with that id; a folder of a game Steam no longer has on this disk is shown as it is.
 - You say where the old saves are: **another Wine prefix** (the list of prefixes MOG knows, with Default ones marked, or any
   folder) for the saves the game keeps in its prefix, or **the old game folder** for those it keeps next to itself. A game that
   uses both is done in two steps. A native game that keeps its saves below `~/.config` or `~/.local/share` has nothing to

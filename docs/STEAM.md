@@ -33,4 +33,13 @@ resetting nothing.
   in place.
 - A game's artwork is the server's choice, with the cover, the screenshots and the cover again filling the banner, hero and
   icon it has not chosen. What is still missing is in the log.
+- **Controller profile.** A game the server says has no gamepad support (the Steam store lists none for it) gets the Steam Deck's
+  **Keyboard (WASD) and Mouse** template in its shortcut, so the Deck does not map a pad to a game that cannot use one. It is
+  written into the account's `configset_controller_neptune.vdf` (under `steamapps/common/Steam Controller Configs/<account>/config/`)
+  as a block named after the shortcut, when the shortcut is made or updated and each time the game list arrives (the support of a
+  game can be learned later). A game that already has a block there, whether a template, a layout of your own or a workshop one,
+  is never changed, and the first time the file is copied beside itself as `.mog-backup`. A game with full or partial support, and one
+  the server does not know the support of, is left as it is. Settings > General > Games > Gamepad support turns this off (what was
+  already written stays). Steam reads the file when it starts, so a change made while it ran shows
+  after a restart; if Steam rewrites the file from memory when it quits, the next start of MOG writes the block again.
 - The MOG shortcut follows the client if its file is moved or renamed.
