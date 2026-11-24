@@ -202,16 +202,22 @@ def folder_names(game: dict) -> list[str]:
     return list(dict.fromkeys(safe_dirname(n) for n in (game.get("fs_name") or game["name"], game["name"])))
 
 
+def mog_names(name: str) -> set[str]:
+    """What MOG itself keeps in a game's folder: the prefix, the icon, the launch files. Everything else is the game's."""
+    stem = safe_dirname(name)
+    return _MOG_FILES | {f"{stem}{ext}" for ext in (".sh", ".cmd", ".desktop", ".lnk")}
+
+
 def holds_game(folder: Path, name: str) -> bool:
     """Whether `folder` has anything of a game in it besides what MOG makes (the prefix, the launch files, the icon): the prefix
     that is kept when a game is uninstalled leaves a folder that is not a game."""
-    stem = safe_dirname(name)
+    mine = mog_names(name)
     try:
         entries = list(folder.iterdir())
     except OSError:
         return False
     for entry in entries:
-        if entry.name in _MOG_FILES or entry.name in {f"{stem}{ext}" for ext in (".sh", ".cmd", ".desktop", ".lnk")}:
+        if entry.name in mine:
             continue
         if not entry.is_dir() or entry.is_symlink() or _holds_files(entry):
             return True

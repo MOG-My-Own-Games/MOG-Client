@@ -88,7 +88,7 @@ class FakeWin:
     def checklist(self, title, text, items, on_done, exclusive=None, extra=None):
         self.checklists.append((title, items, on_done))
 
-    def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None):
+    def ask(self, text, on_yes, on_no=None, danger=False, yes_default=False, game=None, on_cancel=None, rich=False):
         self.asks.append((text, on_yes, on_no))
         self.red_no.append(yes_default)  # the default being Yes paints No red
 
@@ -375,15 +375,77 @@ def test_moving_into_mog_asks_twice_for_a_shared_prefix_and_then_moves(ui):
 
     ui.flow.move_into_mog(rec, lambda: changed.append(1))
     text, go, _no = ui.win.asks[-1]
-    assert "MOVES" in text and "deleted from where they are" in text
+    assert "MOVES" in text and "deleted</b> from where they are" in text
     go()
     ui.win.choices[-1][3](True)
     assert "Default or shared prefix" in ui.win.asks[-1][0] and not (root / "Zelmoor Ruins").exists()
     ui.win.asks[-1][1]()
+    title, text, options, answer = ui.win.choices[-1]
+    assert title == "A link where it was?" and [label for label, _ in options] == ["Leave a link", "Leave nothing"]
+    assert str(shared) in text and not (root / "Zelmoor Ruins").exists()
+    answer(False)
 
     moved = load_library()[5]
     assert moved.imported is False and (root / "Zelmoor Ruins/pfx/drive_c/users/me/Documents/x.sav").is_file()
     assert not shared.exists() and changed == [1]
+
+
+def test_moving_into_mog_can_leave_a_link_where_the_game_was(ui):
+    root = ui.tmp / "MOG-games"
+    root.mkdir()
+    ui.win.app.settings.install_dirs = [str(root)]
+    write(ui.folder / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.LINUX)
+
+    ui.flow.move_into_mog(rec, lambda: None)
+    ui.win.asks[-1][1]()
+    ui.win.choices[-1][3](True)
+
+    assert ui.folder.is_symlink() and ui.folder.resolve() == (root / "Zelmoor Ruins/Zelmoor Ruins").resolve()
+    assert (ui.folder / "lost.exe").is_file()  # the link goes to the game's own folder, where what started it from here finds it
+
+
+def test_the_move_warning_names_where_from_and_where_to_and_the_link(ui):
+    root = ui.tmp / "MOG-games"
+    root.mkdir()
+    ui.win.app.settings.install_dirs = [str(root)]
+    folder = ui.tmp / "Tom & Jerry <demo>"
+    prefix = ui.home / "wine"
+    write(prefix / "drive_c/x.sav", b"x")
+    write(folder / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, folder, importer.WINDOWS, prefix)
+
+    ui.flow.move_into_mog(rec, lambda: None)
+
+    text = ui.win.asks[-1][0]
+    assert "<b" in text and ">MOVES</b>" in text  # the page shows it as HTML
+    assert "Tom &amp; Jerry &lt;demo&gt;" in text and "Tom & Jerry" not in text  # a path cannot break the markup
+    assert text.index("the game's folder") < text.index(str(root / "Zelmoor Ruins")) < text.index("and the prefix")
+    assert str(prefix) in text and str(root / "Zelmoor Ruins" / "pfx") in text
+    assert "deleted" in text and "symbolic link" in text
+
+
+def test_putting_back_asks_with_where_from_and_where_to_and_the_prefix_and_then_returns_the_game(ui):
+    root = ui.tmp / "MOG-games"
+    root.mkdir()
+    ui.win.app.settings.install_dirs = [str(root)]
+    prefix = ui.home / "wine"
+    write(prefix / "drive_c/x.sav", b"x")
+    write(ui.folder / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 5, "name": "Zelmoor Ruins"}, ui.folder, importer.WINDOWS, prefix)
+    manager.move_into_mog(rec, ui.win.app.settings)
+    moved, changed = load_library()[5], []
+
+    ui.flow.put_back(moved, lambda: changed.append(1))
+
+    text, go, _no = ui.win.asks[-1]
+    assert ">PUTS BACK</b>" in text and str(ui.folder) in text and str(prefix) in text and "and the prefix" in text
+    assert str(root / "Zelmoor Ruins/Zelmoor Ruins") in text and str(root / "Zelmoor Ruins/pfx") in text
+    go()
+
+    back = load_library()[5]
+    assert back.imported is True and (ui.folder / "lost.exe").is_file() and (prefix / "drive_c/x.sav").is_file()
+    assert not (root / "Zelmoor Ruins").exists() and changed == [1]
 
 
 def test_removing_keeps_the_folder_and_the_prefix(ui):

@@ -110,7 +110,14 @@ icon are kept in MOG's data folder (`imports/<game id>`), never in the game's fo
 - **Remove from MOG** forgets the game on this computer (after a last backup); it never deletes the folder or the prefix, and the
   saves stay on the server. **Move into MOG...** is the other way: it moves the folder, and the prefix if you say so, into the
   install folder and makes it an ordinary MOG game. It deletes them from where they were, which breaks whatever else started
-  the game from there, and moving a prefix that is a Default or shared one takes the other games' data with it: it asks twice.
+  the game from there unless you ask for **Leave a link**: a symbolic link is left in the old place of the folder (and of the
+  prefix, when it is moved too). Moving a prefix that is a Default or shared one takes the other games' data with it: it asks twice.
+  A folder that is already in the install folder with no game in it (empty, or holding only this game's prefix) is taken over.
+  The game's own files go into a folder named for the game inside its folder, apart from MOG's (the prefix, the launch files,
+  the icon), as in any MOG game; one that is in a folder of its own already stays as it is. MOG remembers where the game was:
+  **Put it back...** (in the game's options, for a game moved this way) returns the folder, and the prefix if it was moved,
+  to that place, takes the link left there away, and makes it a game added from outside MOG again. It refuses a place that is
+  taken by something else, and a prefix made after the move stays where it is.
 - **Games started from a Flatpak app** (itch's, for one): Flatpak moves a game's `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` to
   `~/.var/app/<app id>/config`, `.../data` and `.../.local/state`, so its saves are not in `~/.config`. A folder named like the game in
   the folders of an app is offered with "(Flatpak: app id)", and ticking it records the app for the game. The saves keep the usual keys

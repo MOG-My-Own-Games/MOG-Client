@@ -228,6 +228,9 @@ class InstalledGame:
     # saves/importer.py). Its folder and prefix stay where they are, MOG's launch files live in the data folder, and removing
     # it from MOG never deletes either.
     imported: bool = False
+    # A game that was an imported one and was moved into MOG (manager.move_into_mog): where it was, so "Put it back" can return
+    # it. {"dir": its folder, "prefix": its prefix (None: it had none), "prefix_dedicated": bool, "prefix_shared": bool}.
+    moved_from: dict | None = None
     # What an imported game is made for: "windows" (a Wine prefix on Linux and macOS, the real profile on Windows) or "linux" or "macos".
     target: str | None = None
     # The prefix was made for this game alone (New Prefix), so everything in it is the game's.
