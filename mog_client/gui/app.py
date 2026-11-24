@@ -333,11 +333,18 @@ class App:
         return manager.make_client(self.settings)
 
     def run_bg(self, fn, on_error=None) -> None:
+        """Run `fn` on a worker thread. If it raises, `on_error(message)` runs on the GUI thread: handlers show messages
+        and touch widgets, which off that thread crashes Qt."""
+
         def wrapper():
             try:
                 fn()
             except Exception as e:  # noqa: BLE001 - surfaced in the UI
-                (on_error or self.bridge.error.emit)(str(e))
+                message = str(e)
+                if on_error is None:
+                    self.bridge.error.emit(message)
+                else:
+                    self.bridge.call.emit(lambda: on_error(message))
 
         threading.Thread(target=wrapper, daemon=True).start()
 
@@ -1151,12 +1158,14 @@ class ConfirmPage(Page):
 
     def __init__(
         self, win: "MainWindow", text: str, on_yes, title: str = "Are you sure?", danger: bool = False,
-        yes_default: bool = False, game: int | None = None,
+        yes_default: bool = False, game: int | None = None, rich: bool = False,
     ):
         super().__init__()
         self.title = title
         self.yes_default = yes_default
         self.text_label = QLabel(text)
+        if rich:
+            self.text_label.setTextFormat(Qt.RichText)
         self.text_label.setWordWrap(True)
         self.no, self.yes = QPushButton("No"), QPushButton("Yes")
         self.yes.setProperty("danger", danger)
@@ -1973,6 +1982,8 @@ class OptionsPage(Page):
                 add("Move into MOG...", lambda: win.importing.move_into_mog(rec, page.rebuild), True)
             elif not rec.imported:
                 add("Nuke custom settings", lambda: page.nuke_settings(rec), True)
+                if rec.moved_from:  # it was moved into MOG from outside: it can go back where it was
+                    add("Put it back...", lambda: win.importing.put_back(rec, page.rebuild), True)
         if rec and rec.imported:
             add("Remove from MOG...", lambda: win.importing.remove(rec, page.rebuild), True)
         elif rec:
@@ -7897,16 +7908,16 @@ class MainWindow(QMainWindow):
 
     def ask(
         self, text: str, on_yes, on_no=None, danger: bool = False, yes_default: bool = False, game: int | None = None,
-        on_cancel=None,
+        on_cancel=None, rich: bool = False,
     ) -> None:
         """A yes/no question; `game` (an id) puts that game's icon and name above it. `on_cancel` runs when it closes
-        without a Yes, however it was closed."""
+        without a Yes, however it was closed. `rich`: the text is HTML (what is not ours goes through `html.escape`)."""
 
         def no():
             if on_no:
                 on_no()
 
-        page = ConfirmPage(self, text, on_yes, danger=danger, yes_default=yes_default, game=game)
+        page = ConfirmPage(self, text, on_yes, danger=danger, yes_default=yes_default, game=game, rich=rich)
         page.on_cancel = on_cancel
         page.no.clicked.connect(no)
         self.push(page)
