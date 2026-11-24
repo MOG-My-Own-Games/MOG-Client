@@ -265,16 +265,249 @@ def test_moving_into_mog_takes_the_folder_and_the_prefix_and_makes_it_an_ordinar
     assert load_state(7).prefix == str(dest / "pfx")
 
 
+def test_moving_into_mog_leaves_a_link_where_the_folder_and_the_prefix_were_when_asked(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    prefix = world.tmp / "wineprefix"
+    write(prefix / "drive_c/s.sav", b"s")
+    exe = write(world.install / "bin/lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, prefix, executable=str(exe))
+
+    notes = manager.move_into_mog(rec, Settings(install_dirs=[str(root)]), link_back=True)
+
+    dest = root / "Zelmoor Ruins"
+    assert notes == []
+    assert world.install.is_symlink() and world.install.resolve() == dest.resolve()
+    assert prefix.is_symlink() and prefix.resolve() == (dest / "pfx").resolve()
+    assert (world.install / "bin/lost.exe").is_file() and (prefix / "drive_c/s.sav").is_file()
+    assert load_library()[7].install_dir == str(dest)  # the record keeps the real place, not the link
+
+
+def test_the_link_left_for_a_game_with_loose_files_points_at_the_folder_they_were_put_in(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]), link_back=True)
+
+    assert world.install.resolve() == (root / "Zelmoor Ruins/Zelmoor Ruins").resolve()
+    assert (world.install / "lost.exe").is_file()
+
+
+def test_moving_into_mog_leaves_no_link_unless_asked(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    assert not world.install.exists() and not world.install.is_symlink()
+
+
 def test_moving_into_mog_refuses_to_overwrite_and_leaves_everything_as_it_was(world):
+    root = world.tmp / "MOG-games"
+    write(root / "Zelmoor Ruins/other.exe", b"MZ")
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+
+    with pytest.raises(manager.MoveError, match="other things in it"):
+        manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    assert (world.install / "lost.exe").is_file() and (root / "Zelmoor Ruins/other.exe").is_file()
+    assert load_library()[7].imported is True
+
+
+def test_moving_into_mog_takes_the_place_of_an_empty_folder(world):
     root = world.tmp / "MOG-games"
     (root / "Zelmoor Ruins").mkdir(parents=True)
     write(world.install / "lost.exe", b"MZ")
     rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
 
-    with pytest.raises(manager.MoveError, match="already exists"):
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    assert (root / "Zelmoor Ruins/Zelmoor Ruins/lost.exe").is_file() and not world.install.exists()
+    assert load_library()[7].imported is False
+
+
+def test_moving_into_mog_puts_loose_game_files_in_a_folder_of_their_own_apart_from_mogs(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    prefix = world.install / "pfx"
+    write(prefix / "drive_c/s.sav", b"s")
+    exe = write(world.install / "Zelmoor Ruins.x86_64", b"ELF")
+    write(world.install / "Zelmoor Ruins_Data/level0", b"d")
+    write(world.install / ".itch/receipt", b"r")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX, prefix, executable=str(exe))
+
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    dest = root / "Zelmoor Ruins"
+    game = dest / "Zelmoor Ruins"
+    assert {p.name for p in dest.iterdir()} >= {"Zelmoor Ruins", "pfx"}
+    assert not {p.name for p in dest.iterdir()} & {"Zelmoor Ruins.x86_64", "Zelmoor Ruins_Data", ".itch"}  # none left among MOG's
+    assert (game / "Zelmoor Ruins.x86_64").is_file() and (game / "Zelmoor Ruins_Data/level0").is_file() and (game / ".itch/receipt").is_file()
+    assert not (dest / "Zelmoor Ruins.x86_64").exists() and (dest / "pfx/drive_c/s.sav").is_file()  # the prefix stays at the top
+    moved = load_library()[7]
+    assert (moved.files_dir, moved.executable, moved.prefix) == (str(game), str(game / "Zelmoor Ruins.x86_64"), str(dest / "pfx"))
+
+
+def test_moving_into_mog_leaves_a_game_already_in_a_folder_of_its_own_as_it_is(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    exe = write(world.install / "Game v3/lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, executable=str(exe))
+
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    moved = load_library()[7]
+    assert moved.files_dir is None and moved.executable == str(root / "Zelmoor Ruins/Game v3/lost.exe")
+    assert (root / "Zelmoor Ruins/Game v3/lost.exe").is_file()
+
+
+def test_a_game_folder_is_tucked_apart_from_a_prefix_inside_it_that_has_another_name(world):
+    write(world.install / "lost.exe", b"MZ")
+    write(world.install / "wineprefix/drive_c/s.sav", b"s")
+    rec = manager.import_game(
+        {"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, world.install / "wineprefix",
+        executable=str(world.install / "lost.exe"),
+    )
+
+    folder = manager.tuck_game_into_folder(rec)
+
+    assert folder == world.install / "Zelmoor Ruins"
+    assert (folder / "lost.exe").is_file() and rec.prefix == str(folder / "wineprefix") and rec.executable == str(folder / "lost.exe")
+
+
+def test_moving_into_mog_keeps_the_prefix_a_folder_with_only_it_already_holds(world):
+    root = world.tmp / "MOG-games"
+    prefix = root / "Zelmoor Ruins/pfx"
+    write(prefix / "drive_c/users/me/Documents/Zelmoor Ruins/s.sav", b"s")
+    exe = write(world.install / "bin/lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, prefix, executable=str(exe))
+
+    notes = manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+
+    dest = root / "Zelmoor Ruins"
+    assert notes == [] and not world.install.exists()
+    assert (dest / "bin/lost.exe").is_file() and (prefix / "drive_c/users/me/Documents/Zelmoor Ruins/s.sav").is_file()
+    moved = load_library()[7]
+    assert (moved.imported, moved.install_dir, moved.prefix, moved.prefix_shared) == (False, str(dest), str(prefix), False)
+    assert [p.name for p in root.iterdir()] == ["Zelmoor Ruins"]  # the prefix was not left aside
+
+
+def test_a_failed_move_puts_the_prefix_back_in_the_folder_it_was_in(world, monkeypatch):
+    root = world.tmp / "MOG-games"
+    prefix = root / "Zelmoor Ruins/pfx"
+    write(prefix / "drive_c/s.sav", b"s")
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, prefix)
+
+    def boom(src, dst):
+        raise manager.MoveError("disk full")
+
+    monkeypatch.setattr(manager, "_move_tree", boom)
+    with pytest.raises(manager.MoveError, match="disk full"):
         manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
 
-    assert (world.install / "lost.exe").is_file() and load_library()[7].imported is True
+    assert (prefix / "drive_c/s.sav").is_file() and (world.install / "lost.exe").is_file()
+    assert [p.name for p in root.iterdir()] == ["Zelmoor Ruins"] and load_library()[7].imported is True
+
+
+def test_putting_back_returns_the_folder_the_prefix_and_the_imported_state_and_takes_the_link_away(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    prefix = world.tmp / "wineprefix"
+    write(prefix / "drive_c/s.sav", b"s")
+    exe = write(world.install / "lost.exe", b"MZ")
+    write(world.install / "data/a.pak", b"p")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, prefix, executable=str(exe))
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]), link_back=True)
+    assert world.install.is_symlink() and prefix.is_symlink() and load_library()[7].moved_from["dir"] == str(world.install)
+
+    notes = manager.put_back(load_library()[7])
+
+    assert notes == [] and not root.joinpath("Zelmoor Ruins").exists()
+    assert not world.install.is_symlink() and (world.install / "lost.exe").is_file() and (world.install / "data/a.pak").is_file()
+    assert not prefix.is_symlink() and (prefix / "drive_c/s.sav").is_file()
+    back = load_library()[7]
+    assert (back.imported, back.install_dir, back.files_dir, back.prefix, back.moved_from) == (
+        True, str(world.install), None, str(prefix), None,
+    )  # fmt: skip
+    assert back.executable == str(world.install / "lost.exe")
+    assert not (world.install / "Zelmoor Ruins.sh").exists()
+
+
+def test_putting_back_a_game_that_was_in_one_folder_and_whose_prefix_stayed_outside(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    prefix = world.tmp / "wineprefix"
+    write(prefix / "drive_c/s.sav", b"s")
+    exe = write(world.install / "Game v3/lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.WINDOWS, prefix, executable=str(exe))
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]), move_prefix=False)
+
+    manager.put_back(load_library()[7])
+
+    back = load_library()[7]
+    assert (world.install / "Game v3/lost.exe").is_file() and back.executable == str(world.install / "Game v3/lost.exe")
+    assert back.prefix == str(prefix) and (prefix / "drive_c/s.sav").is_file() and not root.joinpath("Zelmoor Ruins").exists()
+
+
+def test_putting_back_keeps_a_prefix_made_after_the_move_where_it_is(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+    made = root / "Zelmoor Ruins/pfx"
+    write(made / "drive_c/new.sav", b"n")
+    rec = load_library()[7]
+    manager._update(rec, prefix=str(made))
+
+    notes = manager.put_back(load_library()[7])
+
+    assert (made / "drive_c/new.sav").is_file() and load_library()[7].prefix == str(made)
+    assert any("made after the move" in n for n in notes) and (world.install / "lost.exe").is_file()
+
+
+def test_putting_back_refuses_a_folder_that_is_taken_and_leaves_everything_as_it_was(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+    write(world.install / "someone-else.txt", b"x")
+
+    with pytest.raises(manager.MoveError, match="other things in it"):
+        manager.put_back(load_library()[7])
+
+    assert (root / "Zelmoor Ruins/Zelmoor Ruins/lost.exe").is_file() and load_library()[7].imported is False
+
+
+def test_a_game_that_never_came_from_outside_cannot_be_put_back(world):
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+
+    with pytest.raises(manager.MoveError, match="no place to put it back"):
+        manager.put_back(rec)
+
+
+def test_a_link_to_somewhere_else_is_not_taken_away_when_putting_back(world):
+    root = world.tmp / "MOG-games"
+    root.mkdir()
+    write(world.install / "lost.exe", b"MZ")
+    rec = manager.import_game({"id": 7, "name": "Zelmoor Ruins"}, world.install, importer.LINUX)
+    manager.move_into_mog(rec, Settings(install_dirs=[str(root)]))
+    elsewhere = world.tmp / "elsewhere"
+    elsewhere.mkdir()
+    world.install.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(manager.MoveError, match="link to somewhere else"):
+        manager.put_back(load_library()[7])
+
+    assert world.install.is_symlink() and (root / "Zelmoor Ruins/Zelmoor Ruins/lost.exe").is_file()
 
 
 # --- a game that runs in a Flatpak app's sandbox ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ they are; see `saves/importer.py` for what is looked for and `manager.import_gam
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,15 @@ NEW_ENTRY, BROWSE, NEW_PREFIX, ANOTHER_FOLDER = "*new*", "*browse*", "*new-prefi
 NEW_LIBRARY = "*new-library*"
 IN_GAME_FOLDER = "*in-game-folder*"
 IN_LIBRARY = "*in-library*"
+
+DANGER = "#e2574c"  # the colours of the theme: the red of a danger button, the blue of the focus
+PATH_COLOR = "#4c8dff"
+
+
+def _path(path: object) -> str:
+    """A path for a message in HTML: escaped, and in colour."""
+    return f'<span style="color:{PATH_COLOR}">{html.escape(str(path))}</span>'
+
 
 PREFIX_NOTE = (
     "Do not pick a Default prefix (like ~/.wine or umu-default): other games run there too, and their saves may be in it."
@@ -579,13 +589,19 @@ class ImportFlow:
         settings = self.app.settings
         dest = manager.move_target(rec, settings)
         old_prefix = Path(rec.prefix) if rec.prefix else None
-        outside = old_prefix is not None and not old_prefix.is_relative_to(Path(rec.install_dir))
+        outside = old_prefix is not None and not old_prefix.is_relative_to(Path(rec.install_dir)) and old_prefix != dest / PREFIX_DIR
         shared = outside and not rec.prefix_dedicated
+        def moved(what: str, was: object, now: object) -> str:
+            return f"{what}<br>{_path(was)}<br>to<br>{_path(now)}"
+
         warning = (
-            f"This MOVES {rec.install_dir} to {dest}"
-            + (f" and the prefix {old_prefix} into it" if outside else "")
-            + ".\nThe originals are deleted from where they are: other programs that started the game from there "
-            "(itch.io, Faugus, Steam, Lutris...) will not find it any more.\nDo this only if you know what you are doing."
+            f'<p>This <b style="color:{DANGER}">MOVES</b>:</p><p>'
+            + moved("the game's folder", rec.install_dir, dest)
+            + ("<br><br>" + moved("and the prefix", old_prefix, dest / PREFIX_DIR) if outside else "")
+            + "</p><p>The originals are <b>deleted</b> from where they are, so the other programs that started the game from "
+            "there (itch.io, Faugus, Steam, Lutris...) will not find it any more. You can decide next to leave a symbolic "
+            "link in their place: it points here, and they keep working.</p>"
+            "<p>Do this only if you know what you are doing.</p>"
         )
 
         def decided(move_prefix: bool) -> None:
@@ -601,7 +617,16 @@ class ImportFlow:
                 confirmed(move_prefix)
 
         def confirmed(move_prefix: bool) -> None:
-            self.win.saves.final_backup(rec, lambda: self.run_move(rec, move_prefix, on_change), action="Move")
+            def go(link_back: bool) -> None:
+                self.win.saves.final_backup(rec, lambda: self.run_move(rec, move_prefix, on_change, link_back), action="Move")
+
+            self.win.choose(
+                "A link where it was?",
+                f"A symbolic link in {rec.install_dir}" + (f" and in {old_prefix}" if move_prefix and outside else "")
+                + " keeps what started the game from there (itch.io, Faugus, Steam, Lutris...) working.",
+                [("Leave a link", True), ("Leave nothing", False)],
+                lambda answer: go(bool(answer)) if answer is not None else None,
+            )
 
         def after_warning() -> None:
             if not outside:
@@ -615,13 +640,61 @@ class ImportFlow:
                 lambda answer: decided(bool(answer)) if answer is not None else None,
             )
 
-        self.win.ask(warning, after_warning, danger=True, game=rec.game_id)
+        self.win.ask(warning, after_warning, danger=True, game=rec.game_id, rich=True)
 
-    def run_move(self, rec: InstalledGame, move_prefix: bool, on_change: Callable[[], None]) -> None:
+    # --- putting it back ---
+
+    def put_back(self, rec: InstalledGame, on_change: Callable[[], None]) -> None:
+        """Move the game's folder, and its prefix when it was moved, back to where it was before it went into MOG. Asks first."""
+        was = rec.moved_from or {}
+        old_dir = was.get("dir", "")
+        folder = rec.files_dir or rec.install_dir
+        prefix = Path(rec.prefix) if rec.prefix else None
+        original = was.get("prefix")
+        prefix_back = prefix is not None and bool(original) and prefix != Path(original) and prefix.exists()
+
+        def moved(what: str, now: object, then: object) -> str:
+            return f"{what}<br>{_path(now)}<br>back to<br>{_path(then)}"
+
+        warning = (
+            f'<p>This <b style="color:{PATH_COLOR}">PUTS BACK</b>:</p><p>'
+            + moved("the game's folder", folder, old_dir)
+            + ("<br><br>" + moved("and the prefix", prefix, original) if prefix_back else "")
+            + f"</p><p>The game is one added from outside MOG again: MOG's launch files leave {_path(rec.install_dir)} "
+            "and its folder and prefix are no longer MOG's to delete. A link left in the old place is taken away.</p>"
+        )
+
+        def go() -> None:
+            self.win.saves.final_backup(rec, lambda: self.run_put_back(rec, on_change), action="Put back")
+
+        self.win.ask(warning, go, danger=True, game=rec.game_id, rich=True)
+
+    def run_put_back(self, rec: InstalledGame, on_change: Callable[[], None]) -> None:
+        self.win.show_busy("Putting back", rec.name, rec.game_id)
+
+        def work() -> None:
+            notes = manager.put_back(rec, self.app.settings.launcher)
+
+            def done() -> None:
+                self.win.hide_busy()
+                self.win.refresh_items()
+                on_change()
+                self.win.message(f"{rec.name} is back in {rec.install_dir}. " + " ".join(notes), "info", rec.game_id)
+
+            self.gui(done)
+
+        def failed(message: str) -> None:
+            self.win.hide_busy()
+            self.win.message(f"Could not put {rec.name} back: {message}", "error", rec.game_id)
+            on_change()
+
+        self.app.run_bg(work, on_error=failed)
+
+    def run_move(self, rec: InstalledGame, move_prefix: bool, on_change: Callable[[], None], link_back: bool = False) -> None:
         self.win.show_busy("Moving into MOG", rec.name, rec.game_id)
 
         def work() -> None:
-            notes = manager.move_into_mog(rec, self.app.settings, move_prefix, self.app.settings.launcher)
+            notes = manager.move_into_mog(rec, self.app.settings, move_prefix, self.app.settings.launcher, link_back)
 
             def done() -> None:
                 self.win.hide_busy()

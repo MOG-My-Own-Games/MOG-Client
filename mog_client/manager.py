@@ -25,6 +25,7 @@ from mog_client.installdirs import (
     ignore_folder,
     ignored_folders,
     looks_like,
+    mog_names,
     present,
     prune_empty,
     rebase,
@@ -1108,10 +1109,52 @@ def move_target(rec: InstalledGame, settings: Settings) -> Path:
     return default_root(settings) / safe_dirname(rec.name)
 
 
-def move_into_mog(rec: InstalledGame, settings: Settings, move_prefix: bool = True, preference: str = "auto") -> list[str]:
+def tuck_game_into_folder(rec: InstalledGame) -> Path | None:
+    """Put the game's own files, loose in its install folder among MOG's (the prefix, the launch files, the icon), into a
+    folder named for the game, as an install does (`tuck_into_folder`), and let the record follow (`files_dir`, the executable,
+    a prefix that was among them). Does nothing when the record has such a folder or the files are all in one folder already.
+    Returns the folder, or None when nothing was moved."""
+    root = Path(rec.install_dir)
+    if rec.files_dir or not root.is_dir():
+        return None
+    mine = mog_names(rec.name)
+    tops = sorted(p.name for p in root.iterdir() if p.name not in mine)
+    if not tops or (len(tops) == 1 and (root / tops[0]).is_dir() and not (root / tops[0]).is_symlink()):
+        return None
+    folder, _ = tuck_into_folder(root, [{"path": t} for t in tops], safe_dirname(rec.name))
+
+    def follow(path: str | None) -> str | None:
+        """Where a path that was in the install folder is now."""
+        if not path:
+            return path
+        try:
+            relative = Path(path).relative_to(root)
+        except ValueError:
+            return path
+        return str(folder / relative) if relative.parts and relative.parts[0] in tops else path
+
+    _update(rec, files_dir=str(folder), executable=follow(rec.executable), prefix=follow(rec.prefix))
+    return folder
+
+
+def move_target_is_free(rec: InstalledGame, dest: Path) -> bool:
+    """True when `dest` holds no game: it is not there, or it is empty, or all it has is the prefix this game already keeps
+    there (what an earlier, half-done move leaves behind). A folder with anything else in it is somebody's."""
+    if not dest.exists() and not dest.is_symlink():
+        return True
+    if dest.is_symlink() or not dest.is_dir():
+        return False
+    names = [p.name for p in dest.iterdir()]
+    return not names or (names == [PREFIX_DIR] and bool(rec.prefix) and Path(rec.prefix) == dest / PREFIX_DIR)
+
+
+def move_into_mog(
+    rec: InstalledGame, settings: Settings, move_prefix: bool = True, preference: str = "auto", link_back: bool = False
+) -> list[str]:
     """Move a game added from outside MOG, and its prefix, into the install folder, and make it an ordinary MOG game. This
     deletes them from where they were. The prefix goes to `<game>/pfx`; one that sits inside the game's folder goes with it;
-    with `move_prefix` False an outside one stays where it is. Returns notes for the person (what could not be done).
+    with `move_prefix` False an outside one stays where it is. With `link_back` a symbolic link is left where the folder (and
+    the prefix, when it came from outside) was, so what started the game from there still finds it. Returns notes for the person (what could not be done).
     Raises MoveError, with the record as it was, when the game's folder cannot be moved."""
     if not rec.imported:
         raise MoveError(f"{rec.name} is already a MOG game")
@@ -1119,30 +1162,70 @@ def move_into_mog(rec: InstalledGame, settings: Settings, move_prefix: bool = Tr
         raise MoveError(f"{rec.name} is kept up to date by Quiver Launcher, so its folder stays where Quiver put it")
     old_dir = Path(rec.install_dir)
     dest = move_target(rec, settings)
+    was = {"dir": str(old_dir), "prefix": rec.prefix, "prefix_dedicated": rec.prefix_dedicated, "prefix_shared": rec.prefix_shared}
     if not old_dir.is_dir():
         raise MoveError(f"{old_dir} is not there")
-    if dest.exists():
-        raise MoveError(f"{dest} already exists: nothing was moved")
+    if not move_target_is_free(rec, dest):
+        raise MoveError(f"{dest} already exists and has other things in it: nothing was moved")
     if dest == old_dir or old_dir in dest.parents or dest in old_dir.parents:
         raise MoveError(f"{dest} and {old_dir} are inside each other: nothing was moved")
     old_prefix = Path(rec.prefix) if rec.prefix else None
     inside = old_prefix is not None and old_prefix.is_relative_to(old_dir)
-    shared = bool(old_prefix) and not inside and not rec.prefix_dedicated
+    in_place = old_prefix is not None and old_prefix == dest / PREFIX_DIR  # the prefix is already where it would go
+    shared = bool(old_prefix) and not inside and not in_place and not rec.prefix_dedicated
     notes: list[str] = []
+    prefix_left_at: Path | None = None  # where an outside prefix was, once it has been moved
 
-    _move_tree(old_dir, dest)  # a failure here leaves everything as it was
+    aside: Path | None = None
+    if in_place and os.path.lexists(dest / PREFIX_DIR):
+        if os.path.lexists(old_dir / PREFIX_DIR):
+            raise MoveError(f"{old_dir} has a {PREFIX_DIR} folder of its own, and so has {dest}: nothing was moved")
+        aside = dest.with_name(f".{dest.name}.mog-prefix")  # same folder, so a rename; the game's folder takes dest's place
+        if os.path.lexists(aside):
+            raise MoveError(f"{aside} is in the way: remove it by hand, then try again")
+    try:
+        if aside is not None:
+            os.rename(dest / PREFIX_DIR, aside)
+        if dest.is_dir():
+            dest.rmdir()  # only an empty folder is here to be replaced
+    except OSError as e:
+        if aside is not None and os.path.lexists(aside) and not os.path.lexists(dest / PREFIX_DIR):
+            os.rename(aside, dest / PREFIX_DIR)
+        raise MoveError(f"could not clear {dest}: {e}") from e
+
+    def put_the_prefix_back() -> None:
+        if aside is not None:
+            dest.mkdir(parents=True, exist_ok=True)
+            os.rename(aside, dest / PREFIX_DIR)
+
+    try:
+        _move_tree(old_dir, dest)  # a failure here leaves everything as it was
+    except MoveError:
+        put_the_prefix_back()
+        raise
+    if aside is not None:
+        try:
+            os.rename(aside, dest / PREFIX_DIR)
+        except OSError as e:
+            notes.append(f"The prefix is in {aside}, not in {dest / PREFIX_DIR}: {e}")
     old_prefix_text = rec.prefix
     old_entries = entries_dir(rec)
     # From here the folder is in its new place: the record follows it at once, so a failure later cannot lose the game.
     changes = {k: rebase(getattr(rec, k), str(old_dir), str(dest)) for k in ("install_dir", "files_dir", "executable", "prefix")}
     _update(rec, **changes)
-    if old_prefix is not None and not inside and move_prefix:
+    try:
+        if tuck_game_into_folder(rec) is not None:  # the game's files do not sit among MOG's, as in any MOG game
+            changes["executable"], changes["prefix"] = rec.executable, rec.prefix
+    except OSError as e:
+        notes.append(f"The game's files could not be put in a folder of their own, they are in {dest}: {e}")
+    if old_prefix is not None and not inside and not in_place and move_prefix:
         new_prefix = dest / PREFIX_DIR
         try:
             if new_prefix.exists():
                 raise MoveError(f"{new_prefix} already exists")
             _move_tree(old_prefix, new_prefix)
             changes["prefix"] = str(new_prefix)
+            prefix_left_at = old_prefix
         except MoveError as e:
             notes.append(f"The prefix stays where it was: {e}")
     state = load_state(rec.game_id)
@@ -1151,10 +1234,158 @@ def move_into_mog(rec: InstalledGame, settings: Settings, move_prefix: bool = Tr
         save_state(rec.game_id, state)
     still_outside = bool(changes["prefix"]) and not Path(changes["prefix"]).is_relative_to(dest)
     # A prefix other programs use stays "shared" even in the game's folder: only the folders the user confirmed are its saves.
-    _update(rec, prefix=changes["prefix"], imported=False, prefix_dedicated=False, prefix_shared=shared and not still_outside)
+    _update(
+        rec, prefix=changes["prefix"], imported=False, prefix_dedicated=False, prefix_shared=shared and not still_outside,
+        moved_from=was,
+    )
     if (old_icon := old_entries / ".mog-icon").is_file():
         shutil.copy2(old_icon, icon_path(rec))  # an ordinary MOG game keeps its icon in its folder
     _rewrite_entries(rec, preference)
     shutil.rmtree(old_entries, ignore_errors=True)
+    if link_back:
+        # What was in the old folder is the game's own files: that is what the link points to, not the folder MOG keeps its files in.
+        for was, now in ((old_dir, Path(rec.files_dir) if rec.files_dir else dest), (prefix_left_at, Path(changes["prefix"]) if changes["prefix"] else None)):
+            if was is not None and now is not None:
+                try:
+                    os.symlink(now, was, target_is_directory=True)
+                except OSError as e:
+                    notes.append(f"Could not leave a link in {was}: {e}")
     logstore.info(f"{rec.name} was moved from {old_dir} into {dest}")
+    return notes
+
+
+def _make_room_for(target: Path, inside: Path) -> str | None:
+    """Clear `target` for what comes back to it: a link left there by the move (it must lead into `inside`) is taken away, an
+    empty folder is replaced, anything else is refused. Returns where a link led, to make it again if the move fails."""
+    if target.is_symlink():
+        if not Path(os.path.realpath(target)).is_relative_to(Path(os.path.realpath(inside))):
+            raise MoveError(f"{target} is a link to somewhere else: nothing was moved")
+        led_to = os.readlink(target)
+        target.unlink()
+        return led_to
+    if target.exists():
+        if not target.is_dir() or any(target.iterdir()):
+            raise MoveError(f"{target} already exists and has other things in it: nothing was moved")
+        target.rmdir()
+    return None
+
+
+def _link_again(target: Path, led_to: str | None) -> None:
+    if led_to is not None and not os.path.lexists(target):
+        try:
+            os.symlink(led_to, target, target_is_directory=True)
+        except OSError:
+            pass
+
+
+def _move_entry(src: Path, dst: Path) -> None:
+    """Move a file, a link or a folder (`_move_tree` for a folder)."""
+    if src.is_dir() and not src.is_symlink():
+        _move_tree(src, dst)
+        return
+    try:
+        shutil.move(str(src), str(dst))
+    except (OSError, shutil.Error) as e:
+        raise MoveError(f"could not move {src} to {dst}: {e}") from e
+
+
+def put_back(rec: InstalledGame, preference: str = "auto") -> list[str]:
+    """The other way of `move_into_mog`: the game's folder goes back to where it was, and its prefix too when it was moved, and
+    the game is one added from outside MOG again (its launch files in MOG's data folder, its folder and prefix not MOG's to
+    delete). A link left in the old place is taken away first. Returns notes for the person (what could not be done).
+    Raises MoveError, with the game as it was, when its folder cannot be moved back."""
+    was = rec.moved_from
+    if rec.imported or not was or not was.get("dir"):
+        raise MoveError(f"{rec.name} was not moved into MOG from here: there is no place to put it back to")
+    old_dir, here = Path(was["dir"]), Path(rec.install_dir)
+    if not here.is_dir():
+        raise MoveError(f"{here} is not there")
+    if old_dir == here or old_dir in here.parents or here in old_dir.parents:
+        raise MoveError(f"{old_dir} and {here} are inside each other: nothing was moved")
+    game = Path(rec.files_dir) if rec.files_dir else None
+    mine = mog_names(rec.name)
+    tops = [] if game else sorted(p for p in here.iterdir() if p.name not in mine)
+    if game is not None and not game.is_dir():
+        raise MoveError(f"{game} is not there")
+    notes: list[str] = []
+    prefix_before = rec.prefix
+
+    led_to = _make_room_for(old_dir, here)
+    done: list[Path] = []
+    try:
+        if game is not None:
+            _move_tree(game, old_dir)
+        else:
+            old_dir.mkdir(parents=True)
+            for top in tops:
+                _move_entry(top, old_dir / top.name)
+                done.append(top)
+    except (MoveError, OSError) as e:
+        for top in reversed(done):  # what went over comes back: the game stays whole where it is
+            try:
+                _move_entry(old_dir / top.name, top)
+            except MoveError:
+                pass
+        if game is None:
+            try:
+                old_dir.rmdir()
+            except OSError:
+                pass
+        _link_again(old_dir, led_to)
+        raise e if isinstance(e, MoveError) else MoveError(f"could not move {here} to {old_dir}: {e}") from e
+
+    launch_files = [here / n for n in mine if n != PREFIX_DIR]
+    base = game if game is not None else here
+    # The folder is in its old place: the record follows it at once, so a failure later cannot lose the game.
+    _update(
+        rec, install_dir=str(old_dir), files_dir=None, executable=rebase(rec.executable, str(base), str(old_dir)),
+        prefix=rebase(rec.prefix, str(game), str(old_dir)) if game is not None else rec.prefix,
+        imported=True, prefix_dedicated=bool(was.get("prefix_dedicated")), prefix_shared=bool(was.get("prefix_shared")),
+        moved_from=None,
+    )
+    original = was.get("prefix")
+    if original and rec.prefix != original and rec.prefix and os.path.lexists(rec.prefix):
+        target, current = Path(original), Path(rec.prefix)
+        try:
+            prefix_led_to = _make_room_for(target, here)
+            try:
+                _move_tree(current, target)
+            except MoveError:
+                _link_again(target, prefix_led_to)
+                raise
+            _update(rec, prefix=str(target))
+        except MoveError as e:
+            notes.append(f"The prefix stays in {current}: {e}")
+    elif original and not (rec.prefix and os.path.lexists(rec.prefix)):
+        _update(rec, prefix=original)  # it was never made, or is gone: the record says where it was
+    elif rec.prefix and not original:
+        notes.append(f"The prefix {rec.prefix} was made after the move: it stays there, the game keeps using it.")
+    state = load_state(rec.game_id)
+    if state.prefix and rec.prefix:
+        state.prefix = rec.prefix if state.prefix == prefix_before else rebase(state.prefix, str(base), str(old_dir))
+        save_state(rec.game_id, state)
+    elif state.prefix:
+        state.prefix = rebase(state.prefix, str(base), str(old_dir))
+        save_state(rec.game_id, state)
+
+    old_icon = here / ".mog-icon"
+    if old_icon.is_file():
+        entries_dir(rec).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old_icon, icon_path(rec))  # an imported game keeps its icon in MOG's data folder
+    _rewrite_entries(rec, preference)
+    for path in launch_files:
+        if path.is_file() or path.is_symlink():
+            try:
+                path.unlink()
+            except OSError as e:
+                notes.append(f"Could not delete {path}: {e}")
+    empty_prefix = here / PREFIX_DIR
+    if empty_prefix.is_dir() and not empty_prefix.is_symlink() and not any(empty_prefix.iterdir()) and rec.prefix != str(empty_prefix):
+        empty_prefix.rmdir()  # made for a prefix that stayed outside: nothing is in it
+    try:
+        here.rmdir()
+    except OSError:
+        if here.exists() and not (rec.prefix and Path(rec.prefix).is_relative_to(here)):
+            notes.append(f"{here} was not deleted: there is still something in it.")
+    logstore.info(f"{rec.name} was put back from {here} into {old_dir}")
     return notes
